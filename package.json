@@ -1,0 +1,238 @@
+{
+  "name": "document-editor",
+  "productName": "Document Editor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Create, edit, convert and password-protect documents (DOCX, PDF, ODT, RTF, Markdown, HTML, TXT) on the web or desktop.",
+  "author": "Document Editor",
+  "type": "module",
+  "main": "dist-electron/main.cjs",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "build:web": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "electron:compile": "node scripts/build-electron.mjs",
+    "electron:dev": "node scripts/build-electron.mjs && concurrently -k \"vite\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "electron:build": "cross-env ELECTRON=1 vite build && node scripts/build-electron.mjs",
+    "dist": "npm run electron:build && electron-builder --publish never",
+    "dist:win": "npm run electron:build && electron-builder --win --publish never",
+    "dist:mac": "npm run electron:build && electron-builder --mac --publish never",
+    "release": "npm run electron:build && electron-builder --publish always",
+    "postinstall": "node scripts/copy-pdfjs-assets.mjs"
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  },
+  "devDependencies": {
+    "@cantoo/pdf-lib": "^2.11.1",
+    "@noble/ciphers": "^2.4.0",
+    "@noble/hashes": "^2.4.0",
+    "@tiptap/extension-highlight": "^3.33.1",
+    "@tiptap/extension-image": "^3.33.1",
+    "@tiptap/extension-subscript": "^3.33.1",
+    "@tiptap/extension-superscript": "^3.33.1",
+    "@tiptap/extension-table": "^3.33.1",
+    "@tiptap/extension-text-align": "^3.33.1",
+    "@tiptap/extension-text-style": "^3.33.1",
+    "@tiptap/extensions": "^3.33.1",
+    "@tiptap/pm": "^3.33.1",
+    "@tiptap/react": "^3.33.1",
+    "@tiptap/starter-kit": "^3.33.1",
+    "@types/node": "^26.6.6",
+    "@types/pdfmake": "^0.3.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/turndown": "^5.0.6",
+    "@vitejs/plugin-react": "^6.3.0",
+    "cfb": "^1.2.2",
+    "concurrently": "^10.0.7",
+    "cross-env": "^10.1.0",
+    "docx": "^9.15.3",
+    "electron": "^45.3.0",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "html-to-pdfmake": "^2.5.36",
+    "jsdom": "^29.1.1",
+    "jszip": "^3.10.2",
+    "lucide-react": "^1.71.0",
+    "marked": "^18.2.0",
+    "officecrypto-tool": "^0.0.19",
+    "pdfjs-dist": "^6.5.438",
+    "pdfmake": "^0.3.14",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "turndown": "^7.2.5",
+    "turndown-plugin-gfm": "^1.0.2",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.7",
+    "vitest": "^5.1.0",
+    "wait-on": "^9.5.1"
+  },
+  "build": {
+    "appId": "com.documenteditor.app",
+    "productName": "Document Editor",
+    "copyright": "Copyright © 2026",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "asar": true,
+    "electronLanguages": [
+      "en-US",
+      "en-GB",
+      "es",
+      "fr",
+      "de",
+      "pt-BR",
+      "ja",
+      "zh-CN"
+    ],
+    "electronFuses": {
+      "runAsNode": false,
+      "enableCookieEncryption": true,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false,
+      "enableEmbeddedAsarIntegrityValidation": true,
+      "onlyLoadAppFromAsar": true,
+      "grantFileProtocolExtraPrivileges": false
+    },
+    "fileAssociations": [
+      {
+        "ext": [
+          "docx",
+          "docm",
+          "dotx"
+        ],
+        "name": "Word Document",
+        "description": "Word document",
+        "role": "Editor",
+        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      },
+      {
+        "ext": [
+          "doc",
+          "dot"
+        ],
+        "name": "Word 97-2003 Document",
+        "description": "Word 97-2003 document",
+        "role": "Editor",
+        "mimeType": "application/msword"
+      },
+      {
+        "ext": "pdf",
+        "name": "PDF Document",
+        "description": "PDF document",
+        "role": "Editor",
+        "mimeType": "application/pdf"
+      },
+      {
+        "ext": "odt",
+        "name": "OpenDocument Text",
+        "description": "OpenDocument text",
+        "role": "Editor",
+        "mimeType": "application/vnd.oasis.opendocument.text"
+      },
+      {
+        "ext": "rtf",
+        "name": "Rich Text Document",
+        "description": "Rich text document",
+        "role": "Editor",
+        "mimeType": "application/rtf"
+      },
+      {
+        "ext": [
+          "md",
+          "markdown"
+        ],
+        "name": "Markdown Document",
+        "description": "Markdown document",
+        "role": "Editor",
+        "mimeType": "text/markdown"
+      },
+      {
+        "ext": "txt",
+        "name": "Text Document",
+        "description": "Plain text",
+        "role": "Editor",
+        "mimeType": "text/plain"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "artifactName": "Document-Editor-Setup-${version}-${arch}.${ext}",
+      "verifyUpdateCodeSignature": true,
+      "signtoolOptions": {
+        "signingHashAlgorithms": [
+          "sha256"
+        ],
+        "rfc3161TimeStampServer": "http://timestamp.digicert.com"
+      }
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "universal"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "universal"
+          ]
+        }
+      ],
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "notarize": true,
+      "artifactName": "Document-Editor-${version}-${arch}.${ext}"
+    },
+    "dmg": {
+      "sign": false
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Office"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "YOUR_GITHUB_USER",
+        "repo": "document-editor",
+        "releaseType": "release"
+      }
+    ]
+  }
+}

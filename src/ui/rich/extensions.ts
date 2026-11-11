@@ -1,0 +1,75 @@
+import { Node, mergeAttributes, type Extensions } from '@tiptap/core';
+import StarterKit from '@tiptap/starter-kit';
+import { Color, FontFamily, FontSize, TextStyle } from '@tiptap/extension-text-style';
+import Highlight from '@tiptap/extension-highlight';
+import TextAlign from '@tiptap/extension-text-align';
+import { TableKit } from '@tiptap/extension-table';
+import Image from '@tiptap/extension-image';
+import Subscript from '@tiptap/extension-subscript';
+import Superscript from '@tiptap/extension-superscript';
+import { CharacterCount, Placeholder } from '@tiptap/extensions';
+
+declare module '@tiptap/core' {
+  interface Commands<ReturnType> {
+    pageBreak: {
+      insertPageBreak: () => ReturnType;
+    };
+  }
+}
+
+/** Hard page break — serialised as <div data-page-break="true"> (see core/types.ts). */
+export const PageBreak = Node.create({
+  name: 'pageBreak',
+  group: 'block',
+  atom: true,
+  selectable: true,
+  parseHTML() {
+    return [{ tag: 'div[data-page-break]' }];
+  },
+  renderHTML({ HTMLAttributes }) {
+    return ['div', mergeAttributes(HTMLAttributes, { 'data-page-break': 'true' })];
+  },
+  addCommands() {
+    return {
+      insertPageBreak:
+        () =>
+        ({ chain }) =>
+          chain().insertContent([{ type: this.name }, { type: 'paragraph' }]).run(),
+    };
+  },
+  addKeyboardShortcuts() {
+    return { 'Mod-Enter': () => this.editor.commands.insertPageBreak() };
+  },
+});
+
+/** The editor schema. It is deliberately the same vocabulary as the HTML contract. */
+export function createExtensions(): Extensions {
+  return [
+    StarterKit.configure({
+      heading: { levels: [1, 2, 3, 4, 5, 6] },
+      link: {
+        openOnClick: false,
+        autolink: true,
+        protocols: ['http', 'https', 'mailto', 'tel'],
+        HTMLAttributes: { rel: 'noopener noreferrer nofollow', target: null },
+      },
+    }),
+    TextStyle,
+    Color,
+    FontFamily,
+    FontSize,
+    Highlight.configure({ multicolor: true }),
+    TextAlign.configure({ types: ['heading', 'paragraph'] }),
+    TableKit.configure({ table: { resizable: false, HTMLAttributes: {} } }),
+    Image.configure({
+      inline: true,
+      allowBase64: true,
+      resize: { enabled: true, minWidth: 24, minHeight: 24, alwaysPreserveAspectRatio: true },
+    }),
+    Subscript,
+    Superscript,
+    PageBreak,
+    CharacterCount,
+    Placeholder.configure({ placeholder: 'Start typing…' }),
+  ];
+}
