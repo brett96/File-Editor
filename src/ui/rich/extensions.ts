@@ -7,6 +7,7 @@ import { TableKit } from '@tiptap/extension-table';
 import Image from '@tiptap/extension-image';
 import Subscript from '@tiptap/extension-subscript';
 import Superscript from '@tiptap/extension-superscript';
+import { FindReplace } from './search-extension';
 import { CharacterCount, Placeholder } from '@tiptap/extensions';
 
 declare module '@tiptap/core' {
@@ -69,6 +70,7 @@ export function createExtensions(): Extensions {
     Subscript,
     Superscript,
     PageBreak,
+    FindReplace,
     CharacterCount,
     Placeholder.configure({ placeholder: 'Start typing…' }),
   ];

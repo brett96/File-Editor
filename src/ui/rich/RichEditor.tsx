@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from 'react';
 import { EditorContent, useEditor, useEditorState, type Editor } from '@tiptap/react';
 import {
   AlignCenter,
@@ -18,6 +18,7 @@ import {
   Minus,
   Redo2,
   RemoveFormatting,
+  Search,
   SeparatorHorizontal,
   Settings2,
   Strikethrough,
@@ -32,6 +33,10 @@ import { getHost } from '../../platform/host';
 import { ColorPicker, Divider, Field, IconButton, MenuItem, Modal, Popover, PromptModal, Select } from '../components';
 import { IMAGE_EXTENSIONS, loadImageFile } from '../image-utils';
 import { createExtensions } from './extensions';
+import { FindBar } from '../FindBar';
+import { DEFAULT_SEARCH, type SearchOptions } from '../../core/search';
+import { getFind, gotoMatch, replaceAll, replaceCurrent, setSearch } from './search-extension';
+import { usePinchZoom } from '../usePinchZoom';
 
 export interface RichEditorHandle {
   getDocument(): RichDocument;
@@ -40,9 +45,11 @@ export interface RichEditorHandle {
 interface Props {
   initial: RichDocument;
   zoom: number;
+  /** Pinch / Ctrl+wheel zoom requests. */
+  onZoom?: (zoom: number) => void;
   onChange: () => void;
   onStats?: (stats: { words: number; characters: number }) => void;
-  onError: (message: string) => void;
+  onError: (message: string, kind?: 'error' | 'info') => void;
 }
 
 const FONT_FAMILIES = ['Arial', 'Calibri', 'Cambria', 'Courier New', 'Garamond', 'Georgia', 'Helvetica', 'Tahoma', 'Times New Roman', 'Trebuchet MS', 'Verdana'];
@@ -67,7 +74,7 @@ function normalizeUrl(raw: string): string {
   return 'https://' + v;
 }
 
-function Toolbar({ editor, onPageSetup, onError }: { editor: Editor; onPageSetup: () => void; onError: (m: string) => void }) {
+function Toolbar({ editor, onPageSetup, onFind, onError }: { editor: Editor; onPageSetup: () => void; onFind: () => void; onError: (m: string) => void }) {
   const [linkOpen, setLinkOpen] = useState(false);
   const s = useEditorState({
     editor,
@@ -206,6 +213,7 @@ function Toolbar({ editor, onPageSetup, onError }: { editor: Editor; onPageSetup
       <IconButton label="Page break (Ctrl+Enter)" onClick={() => chain().insertPageBreak().run()}><SeparatorHorizontal size={16} /></IconButton>
       <Divider />
       <IconButton label="Page setup" onClick={onPageSetup}><Settings2 size={16} /></IconButton>
+      <IconButton label="Find & replace (Ctrl+F)" onClick={onFind}><Search size={16} /></IconButton>
 
       {linkOpen && (
         <PromptModal
@@ -292,9 +300,16 @@ function PageSetupModal({ value, onApply, onClose }: { value: PageSetup; onApply
   );
 }
 
-export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initial, zoom, onChange, onStats, onError }, ref) {
+export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initial, zoom, onZoom, onChange, onStats, onError }, ref) {
   const [pageSetup, setPageSetup] = useState<PageSetup>(initial.pageSetup ?? DEFAULT_PAGE_SETUP);
   const [setupOpen, setSetupOpen] = useState(false);
+  const [find, setFind] = useState<{ replace: boolean; token: number } | null>(null);
+  const [query, setQuery] = useState('');
+  const [searchOpts, setSearchOpts] = useState<SearchOptions>(DEFAULT_SEARCH);
+  const [findInfo, setFindInfo] = useState({ total: 0, current: -1 });
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const [sheetEl, setSheetEl] = useState<HTMLDivElement | null>(null);
+  usePinchZoom(scrollEl, sheetEl, zoom, onZoom, { min: 0.25, max: 4 });
   const extensions = useMemo(() => createExtensions(), []);
 
   const editor = useEditor({
@@ -360,17 +375,59 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
     [editor, initial, pageSetup],
   );
 
-  // Ctrl/Cmd+K opens the link dialog through the toolbar button
+  // keep the find bar's "n of m" in step with the editor (typing can add or remove matches)
+  useEffect(() => {
+    if (!editor) return;
+    const sync = () => {
+      const f = getFind(editor.view);
+      setFindInfo((cur) => (cur.total === f.matches.length && cur.current === f.current ? cur : { total: f.matches.length, current: f.current }));
+    };
+    editor.on('transaction', sync);
+    return () => {
+      editor.off('transaction', sync);
+    };
+  }, [editor]);
+
+  const openFind = useCallback(
+    (replace: boolean) => {
+      // start from the selected text, like Word and browsers do
+      const sel = editor ? editor.state.doc.textBetween(editor.state.selection.from, editor.state.selection.to, ' ') : '';
+      if (sel && sel.length < 200 && !sel.includes('\n')) setQuery(sel);
+      setFind((f) => ({ replace: replace || !!f?.replace, token: (f?.token ?? 0) + 1 }));
+    },
+    [editor],
+  );
+
+  const closeFind = () => {
+    setFind(null);
+    if (editor) {
+      setSearch(editor.view, '', searchOpts);
+      editor.commands.focus();
+    }
+  };
+
+  // search as you type
+  useEffect(() => {
+    if (!editor || !find) return;
+    setSearch(editor.view, query, searchOpts);
+  }, [editor, find, query, searchOpts]);
+
+  // Ctrl/Cmd+K opens the link dialog; Ctrl/Cmd+F find; Ctrl/Cmd+H find & replace
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === 'k') {
         e.preventDefault();
         document.querySelector<HTMLButtonElement>('button[aria-label="Link (Ctrl+K)"]')?.click();
+      } else if (k === 'f' || k === 'h') {
+        e.preventDefault();
+        openFind(k === 'h');
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [openFind]);
 
   if (!editor) return null;
 
@@ -379,9 +436,31 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
 
   return (
     <div className="editor-root">
-      <Toolbar editor={editor} onPageSetup={() => setSetupOpen(true)} onError={onError} />
-      <div className="workspace" onMouseDown={(e) => e.target === e.currentTarget && editor.commands.focus('end')}>
+      <Toolbar editor={editor} onPageSetup={() => setSetupOpen(true)} onFind={() => openFind(false)} onError={onError} />
+      {find && (
+        <FindBar
+          replaceOpen={find.replace}
+          onToggleReplace={() => setFind((f) => f && { ...f, replace: !f.replace })}
+          query={query}
+          onQuery={setQuery}
+          options={searchOpts}
+          onOptions={setSearchOpts}
+          total={findInfo.total}
+          current={findInfo.current}
+          focusToken={find.token}
+          onNext={() => gotoMatch(editor.view, findInfo.current + 1)}
+          onPrev={() => gotoMatch(editor.view, findInfo.current - 1)}
+          onReplace={(r) => replaceCurrent(editor.view, r)}
+          onReplaceAll={(r) => {
+            const n = replaceAll(editor.view, r);
+            if (n) onError(`Replaced ${n} ${n === 1 ? 'match' : 'matches'}. Undo (Ctrl+Z) puts them all back.`, 'info');
+          }}
+          onClose={closeFind}
+        />
+      )}
+      <div className="workspace zoom-scroll" ref={setScrollEl} onMouseDown={(e) => e.target === e.currentTarget && editor.commands.focus('end')}>
         <div
+          ref={setSheetEl}
           className="page-sheet"
           style={{
             width: px(dims.width),

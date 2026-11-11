@@ -4,6 +4,7 @@ import {
   ArrowUp,
   PanelLeftClose,
   PanelLeftOpen,
+  Search,
   Circle,
   Copy,
   Eraser,
@@ -37,6 +38,9 @@ import {
 import { getHost, type OpenedFile } from '../../platform/host';
 import { ColorPicker, Divider, IconButton, MenuItem, Popover, PromptModal, Select, cx } from '../components';
 import { IMAGE_EXTENSIONS, loadImageFile } from '../image-utils';
+import { FindBar } from '../FindBar';
+import { DEFAULT_SEARCH, findMatches, replaceMatches, type SearchOptions, type TextMatch } from '../../core/search';
+import { usePinchZoom } from '../usePinchZoom';
 import { ALL_HANDLES, CORNER_HANDLES, HANDLE_CURSOR, HANDLE_POS, mapPoint, resizeBox, type Box, type Handle } from '../resize';
 import { PageCanvas, PdfSourceCache, extractTextRuns, type TextRun } from './PageCanvas';
 
@@ -50,7 +54,9 @@ interface Props {
   bytes: Uint8Array;
   zoom: number;
   onChange: () => void;
-  onError: (message: string) => void;
+  onError: (message: string, kind?: 'error' | 'info') => void;
+  /** Pinch / Ctrl+wheel zoom requests. */
+  onZoom?: (zoom: number) => void;
   onPageCount?: (n: number) => void;
   /** Turns any picked file into PDF bytes (handles passwords and conversion); null if cancelled. */
   loadAsPdf: (file: OpenedFile) => Promise<Uint8Array | null>;
@@ -90,6 +96,39 @@ function clamp(v: number, lo: number, hi: number) {
 
 function hasBox(o: PdfObject): o is Extract<PdfObject, { width: number }> {
   return 'width' in o;
+}
+
+/** A search hit on a page: in an original text run, or in a text object the user added/edited. */
+interface PdfHit {
+  key: string;
+  pageId: string;
+  pageIndex: number;
+  kind: 'run' | 'obj';
+  /** run index in the page's text-run list, or the object id */
+  ref: number | string;
+  match: TextMatch;
+  /** view-space rectangle on the page (points) */
+  rect: { x: number; y: number; width: number; height: number };
+}
+
+const RUN_FAMILY_CSS: Record<TextRun['family'], string> = {
+  'sans-serif': PDF_FONTS.Helvetica.css,
+  serif: PDF_FONTS.Times.css,
+  monospace: PDF_FONTS.Courier.css,
+};
+
+let runMeasureCtx: CanvasRenderingContext2D | null = null;
+/** x-offset and width of text[start..end) inside a run, scaled to the run's real width. */
+function runSlice(run: TextRun, start: number, end: number): { x: number; width: number } {
+  runMeasureCtx ??= document.createElement('canvas').getContext('2d');
+  const ctx = runMeasureCtx;
+  if (!ctx || !run.text.length) return { x: run.x, width: run.width };
+  ctx.font = `${run.fontSize}px ${RUN_FAMILY_CSS[run.family]}`;
+  const full = ctx.measureText(run.text).width || 1;
+  const k = run.width / full;
+  const before = ctx.measureText(run.text.slice(0, start)).width * k;
+  const w = ctx.measureText(run.text.slice(start, end)).width * k;
+  return { x: run.x + before, width: Math.max(2, w) };
 }
 
 let measureCtx: CanvasRenderingContext2D | null = null;
@@ -208,7 +247,7 @@ type Gesture =
   | { kind: 'resize'; pageId: string; objId: string; start: [number, number]; orig: PdfObject; box: Box; handle: Handle }
   | { kind: 'draw'; pageId: string; objId: string; start: [number, number] };
 
-export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({ bytes, zoom, onChange, onError, onPageCount, loadAsPdf }, ref) {
+export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({ bytes, zoom, onChange, onError, onPageCount, loadAsPdf , onZoom }, ref) {
   const cache = useMemo(() => new PdfSourceCache(), []);
   const [sources, setSources] = useState<PdfSource[]>(() => [{ id: 'src0', bytes }]);
   const [pages, setPagesRaw] = useState<PdfPageModel[] | null>(null);
@@ -221,6 +260,10 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [current, setCurrent] = useState(0);
   const [runs, setRuns] = useState<Record<string, TextRun[]>>({});
+  const addRuns = useCallback((batch: Record<string, TextRun[]>) => {
+    Object.assign(runsRef.current, batch);
+    setRuns((prev) => ({ ...prev, ...batch }));
+  }, []);
   const [linkPrompt, setLinkPrompt] = useState<{ pageId: string; objId: string; initial: string } | null>(null);
   const [dragThumb, setDragThumb] = useState<number | null>(null);
   // the page list takes a third of a phone screen, so it starts hidden there
@@ -229,7 +272,16 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
   const gesture = useRef<Gesture | null>(null);
   /** Last press on an object, for double-click / double-tap detection (see startMove). */
   const lastPress = useRef<{ id: string; t: number } | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const [pagesEl, setPagesEl] = useState<HTMLDivElement | null>(null);
+  // ── find & replace state ───────────────────────────────────────────────
+  const [find, setFind] = useState<{ replace: boolean; token: number } | null>(null);
+  const [query, setQuery] = useState('');
+  const [searchOpts, setSearchOpts] = useState<SearchOptions>(DEFAULT_SEARCH);
+  const [hitKey, setHitKey] = useState<string | null>(null);
+  const [indexProgress, setIndexProgress] = useState<{ done: number; total: number } | null>(null);
+  const runsRef = useRef<Record<string, TextRun[]>>({});
   const pageRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const scale = zoom * PT_TO_PX;
 
@@ -244,7 +296,7 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
     let alive = true;
     buildPages(cache, sources[0])
       .then((p) => alive && setPagesRaw(p))
-      .catch((err) => onError(err instanceof Error ? err.message : 'Could not read this PDF.'));
+      .catch((err) => alive && onError(err instanceof Error ? err.message : 'Could not read this PDF.'));
     return () => {
       alive = false;
       void cache.dispose();
@@ -344,7 +396,7 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
         try {
           const r = await extractTextRuns(await cache.page(src, p.sourcePage));
           if (!alive) return;
-          setRuns((prev) => ({ ...prev, [`${p.sourceId}:${p.sourcePage}`]: r }));
+          addRuns({ [`${p.sourceId}:${p.sourcePage}`]: r });
         } catch {
           /* page without extractable text */
         }
@@ -679,6 +731,27 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
     }
   };
 
+  /** A text object that covers an original text run and retypes it (optionally with new text). */
+  const buildRunReplacement = (page: PdfPageModel, run: TextRun, text: string = run.text): PdfTextObject => {
+    const { bg, fg } = sampleColors(canvases.current[page.id], run, page.width);
+    const family: PdfFontFamily = run.family === 'monospace' ? 'Courier' : run.family === 'serif' ? 'Times' : 'Helvetica';
+    const fontSize = Math.max(4, run.fontSize);
+    const pad = 0.75;
+    return {
+      id: newId(),
+      type: 'text',
+      x: run.x,
+      y: run.baseline - PDF_FONTS[family].baseline * fontSize,
+      text,
+      fontSize,
+      fontFamily: family,
+      bold: false,
+      italic: false,
+      color: fg,
+      cover: { x: run.x - pad, y: run.y - pad, width: run.width + pad * 2, height: run.height + pad * 2, color: bg },
+    };
+  };
+
   const replaceRun = (e: { stopPropagation(): void; preventDefault(): void }, page: PdfPageModel, run: TextRun) => {
     e.stopPropagation();
     e.preventDefault();
@@ -736,6 +809,221 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
     });
   };
 
+
+  // ── find & replace ────────────────────────────────────────────────────────
+  const openFind = useCallback((replace: boolean) => {
+    const sel = window.getSelection()?.toString() ?? '';
+    if (sel && sel.length < 200 && !sel.includes('\n')) setQuery(sel);
+    setFind((f) => ({ replace: replace || !!f?.replace, token: (f?.token ?? 0) + 1 }));
+  }, []);
+
+  // Index the text of every page in the background (current page first), so search covers the
+  // whole document without blocking the UI. Results stream in as pages are read.
+  useEffect(() => {
+    if (!find || !query || !pages) return;
+    let alive = true;
+    (async () => {
+      const order = pages.map((_, i) => (current + i) % pages.length);
+      const todo = order.map((i) => pages[i]).filter((pg) => pg.sourceId && !runsRef.current[`${pg.sourceId}:${pg.sourcePage}`]);
+      if (!todo.length) {
+        setIndexProgress(null);
+        return;
+      }
+      const total = pages.length;
+      let done = total - todo.length;
+      let batch: Record<string, TextRun[]> = {};
+      let last = performance.now();
+      setIndexProgress({ done, total });
+      for (const pg of todo) {
+        if (!alive) return;
+        const src = sourcesRef.current.find((x) => x.id === pg.sourceId);
+        const key = `${pg.sourceId}:${pg.sourcePage}`;
+        if (!src || runsRef.current[key] || batch[key]) {
+          done++;
+          continue;
+        }
+        try {
+          batch[key] = await extractTextRuns(await cache.page(src, pg.sourcePage));
+        } catch {
+          batch[key] = [];
+        }
+        done++;
+        if (performance.now() - last > 250) {
+          addRuns(batch);
+          batch = {};
+          last = performance.now();
+          setIndexProgress({ done, total });
+        }
+      }
+      if (!alive) return;
+      addRuns(batch);
+      setIndexProgress(null);
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [find, query, pages?.length, cache, addRuns]);
+
+  const hits = useMemo<PdfHit[]>(() => {
+    if (!find || !query || !pages) return [];
+    const out: PdfHit[] = [];
+    pages.forEach((pg, pageIndex) => {
+      const local: PdfHit[] = [];
+      const covered = new Set(pg.objects.filter((o): o is PdfTextObject => o.type === 'text' && !!o.cover).map((o) => `${Math.round(o.cover!.x)}:${Math.round(o.cover!.y)}`));
+      const pageRunList = pg.sourceId ? runs[`${pg.sourceId}:${pg.sourcePage}`] ?? [] : [];
+      pageRunList.forEach((run, ri) => {
+        if (covered.has(`${Math.round(run.x - 0.75)}:${Math.round(run.y - 0.75)}`)) return;
+        for (const m of findMatches(run.text, query, searchOpts)) {
+          const sl = runSlice(run, m.start, m.end);
+          local.push({ key: `${pg.id}:r${ri}:${m.start}`, pageId: pg.id, pageIndex, kind: 'run', ref: ri, match: m, rect: { x: sl.x, y: run.y, width: sl.width, height: run.height } });
+        }
+      });
+      for (const o of pg.objects) {
+        if (o.type !== 'text') continue;
+        for (const m of findMatches(o.text, query, searchOpts)) {
+          const before = o.text.slice(0, m.start);
+          const line = before.split('\n').length - 1;
+          const lineStart = before.lastIndexOf('\n') + 1;
+          const lineText = o.text.split('\n')[line];
+          const x0 = o.x + textWidth(lineText.slice(0, m.start - lineStart), o);
+          const w = textWidth(o.text.slice(m.start, m.end), o);
+          local.push({ key: `${pg.id}:o${o.id}:${m.start}`, pageId: pg.id, pageIndex, kind: 'obj', ref: o.id, match: m, rect: { x: x0, y: o.y + line * o.fontSize * PDF_LINE_HEIGHT, width: Math.max(2, w), height: o.fontSize * PDF_LINE_HEIGHT } });
+        }
+      }
+      // reading order: top to bottom, then left to right
+      local.sort((a, b) => (Math.abs(a.rect.y - b.rect.y) > 2 ? a.rect.y - b.rect.y : a.rect.x - b.rect.x));
+      out.push(...local);
+    });
+    return out;
+  }, [find, query, searchOpts, pages, runs]);
+
+  const hitsByPage = useMemo(() => {
+    const m = new Map<string, PdfHit[]>();
+    for (const h of hits) {
+      const list = m.get(h.pageId);
+      if (list) list.push(h);
+      else m.set(h.pageId, [h]);
+    }
+    return m;
+  }, [hits]);
+
+  // the current hit is tracked by key; if it disappears (replaced), the next one in reading order takes over
+  const lastHitPos = useRef<{ pageIndex: number; y: number; x: number; h: number } | null>(null);
+  let currentIndex = hitKey ? hits.findIndex((h) => h.key === hitKey) : -1;
+  if (currentIndex < 0 && hits.length) {
+    const pos = lastHitPos.current;
+    // "same line" is judged by text height: a retyped run sits a point or two off the original
+    const sameLine = (y: number) => !!pos && Math.abs(y - pos.y) < Math.max(2, pos.h / 2);
+    currentIndex = pos
+      ? hits.findIndex((h) => h.pageIndex > pos.pageIndex || (h.pageIndex === pos.pageIndex && (sameLine(h.rect.y) ? h.rect.x >= pos.x : h.rect.y > pos.y)))
+      : hits.findIndex((h) => h.pageIndex >= current);
+    if (currentIndex < 0) currentIndex = 0;
+  }
+  const currentHit = currentIndex >= 0 ? hits[currentIndex] : null;
+
+  // new query: forget the old position so we start from the page in view
+  useEffect(() => {
+    lastHitPos.current = null;
+    setHitKey(null);
+  }, [query, searchOpts]);
+
+  // scrolling waits for React to draw the new current highlight (effect below)
+  const pendingScroll = useRef<string | null>(null);
+  const scrollToHit = useCallback((key: string) => {
+    pendingScroll.current = key;
+  }, []);
+
+  const goHit = (delta: number) => {
+    if (!hits.length) return;
+    const i = (((currentIndex < 0 ? 0 : currentIndex + delta) % hits.length) + hits.length) % hits.length;
+    const h = hits[i];
+    lastHitPos.current = { pageIndex: h.pageIndex, y: h.rect.y, x: h.rect.x, h: h.rect.height };
+    setHitKey(h.key);
+    setCurrent(h.pageIndex);
+    scrollToHit(h.key);
+  };
+
+  // scroll to the first result while typing, and to each hit navigated to
+  useEffect(() => {
+    if (!find || !currentHit) return;
+    if (!hitKey || pendingScroll.current) {
+      pendingScroll.current = null;
+      scrollRef.current?.querySelector<HTMLElement>('.search-hit-current')?.scrollIntoView({ block: 'center', inline: 'center' });
+    }
+  }, [find, currentHit?.key, hitKey]);
+
+  /** Applies replacements for a set of hits to the page list (one undo step). */
+  const applyReplacements = (list: PdfHit[], replacement: string) => {
+    const byPage = new Map<string, PdfHit[]>();
+    for (const h of list) byPage.set(h.pageId, [...(byPage.get(h.pageId) ?? []), h]);
+    commit((all) =>
+      all.map((pg) => {
+        const ph = byPage.get(pg.id);
+        if (!ph) return pg;
+        const runList = pg.sourceId ? runsRef.current[`${pg.sourceId}:${pg.sourcePage}`] ?? [] : [];
+        const added: PdfObject[] = [];
+        const runGroups = new Map<number, TextMatch[]>();
+        const objGroups = new Map<string, TextMatch[]>();
+        for (const h of ph) {
+          if (h.kind === 'run') runGroups.set(h.ref as number, [...(runGroups.get(h.ref as number) ?? []), h.match]);
+          else objGroups.set(h.ref as string, [...(objGroups.get(h.ref as string) ?? []), h.match]);
+        }
+        for (const [ri, ms] of runGroups) {
+          const run = runList[ri];
+          if (run) added.push(buildRunReplacement(pg, run, replaceMatches(run.text, ms, replacement)));
+        }
+        const objects = pg.objects.map((o) => {
+          const ms = objGroups.get(o.id);
+          return ms && o.type === 'text' ? { ...o, text: replaceMatches(o.text, ms, replacement) } : o;
+        });
+        return { ...pg, objects: [...objects, ...added] };
+      }),
+    );
+  };
+
+  const replaceCurrentHit = (replacement: string) => {
+    const h = currentHit;
+    if (!h) return;
+    // continue from just after the replaced text; the next match is picked from the updated
+    // list (it may now live in the retyped text object, under a new key)
+    const w = replacement ? h.rect.width * (replacement.length / Math.max(1, h.match.end - h.match.start)) : 0;
+    lastHitPos.current = { pageIndex: h.pageIndex, y: h.rect.y, x: h.rect.x + w + 0.5, h: h.rect.height };
+    setHitKey(null);
+    applyReplacements([h], replacement);
+    scrollToHit('next');
+  };
+
+  const replaceAllHits = (replacement: string) => {
+    if (!hits.length) return;
+    const n = hits.length;
+    applyReplacements(hits, replacement);
+    setHitKey(null);
+    onError(`Replaced ${n} ${n === 1 ? 'match' : 'matches'}. Undo (Ctrl+Z) puts them all back.`, 'info');
+  };
+
+  const closeFind = () => {
+    setFind(null);
+    setHitKey(null);
+  };
+
+  // Ctrl/⌘+F find, Ctrl/⌘+H replace
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === 'f' || k === 'h') {
+        e.preventDefault();
+        openFind(k === 'h');
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [openFind]);
+
+  // pinch / Ctrl+wheel zoom of the pages only (never the toolbars)
+  usePinchZoom(scrollEl, pagesEl, zoom, onZoom, { min: 0.1, max: 5 });
+
   if (!pages) return <div className="loading">Loading PDF…</div>;
 
   const kind = selectedObj?.type ?? (tool === 'text' || tool === 'edit' ? 'text' : tool);
@@ -761,6 +1049,7 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
         <IconButton label="Highlight area" active={tool === 'highlight'} onClick={() => setTool('highlight')}><Highlighter size={16} /></IconButton>
         <IconButton label="White-out (cover content)" active={tool === 'whiteout'} onClick={() => setTool('whiteout')}><Eraser size={16} /></IconButton>
         <Divider />
+        <IconButton label="Find & replace (Ctrl+F)" active={!!find} onClick={() => (find ? closeFind() : openFind(false))}><Search size={16} /></IconButton>
         <IconButton label={showThumbs ? 'Hide page list' : 'Show page list'} active={showThumbs} onClick={() => setShowThumbs((v) => !v)}>
           {showThumbs ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
         </IconButton>
@@ -871,6 +1160,26 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
         )}
       </div>
 
+      {find && (
+        <FindBar
+          replaceOpen={find.replace}
+          onToggleReplace={() => setFind((f) => f && { ...f, replace: !f.replace })}
+          query={query}
+          onQuery={setQuery}
+          options={searchOpts}
+          onOptions={setSearchOpts}
+          total={hits.length}
+          current={currentIndex}
+          focusToken={find.token}
+          progress={indexProgress ? `Searching… ${indexProgress.done} / ${indexProgress.total} pages` : null}
+          note="Matches split across lines or text pieces can't be found. Replaced text is retyped in a standard font."
+          onNext={() => goHit(1)}
+          onPrev={() => goHit(-1)}
+          onReplace={replaceCurrentHit}
+          onReplaceAll={replaceAllHits}
+          onClose={closeFind}
+        />
+      )}
       <div className="pdf-body">
         {showThumbs && <aside className="thumbs" aria-label="Pages">
           {pages.map((p, i) => {
@@ -921,7 +1230,14 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
           })}
         </aside>}
 
-        <div className={cx('workspace', 'pdf-workspace', `tool-${tool}`)} ref={scrollRef}>
+        <div
+          className={cx('workspace', 'pdf-workspace', 'zoom-scroll', `tool-${tool}`)}
+          ref={(el) => {
+            scrollRef.current = el;
+            setScrollEl(el);
+          }}
+        >
+          <div className="pdf-pages" ref={setPagesEl}>
           {pages.map((page, index) => {
             const src = sources.find((s) => s.id === page.sourceId) ?? null;
             const rotated = page.rotation % 180 !== 0;
@@ -988,10 +1304,18 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
                         onClick={(e) => replaceRun(e, page, r)}
                       />
                     ))}
+                  {hitsByPage.get(page.id)?.map((h) => (
+                    <div
+                      key={h.key}
+                      className={cx('search-hit', h.key === currentHit?.key && 'search-hit-current')}
+                      style={{ left: h.rect.x * scale - 1, top: h.rect.y * scale - 1, width: h.rect.width * scale + 2, height: h.rect.height * scale + 2 }}
+                    />
+                  ))}
                 </div>
               </div>
             );
           })}
+          </div>
         </div>
       </div>
 

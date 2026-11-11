@@ -67,7 +67,15 @@ textarea {
   display: flex;
   flex-direction: column;
   height: 100%;
+  /* the dynamic viewport height excludes mobile browser chrome, so the toolbars stay on screen */
+  height: 100dvh;
   overflow: hidden;
+}
+
+/* never let the page itself scroll or bounce: only the document area scrolls */
+html,
+body {
+  overscroll-behavior: none;
 }
 
 /* ── top bar ─────────────────────────────────────────────────────────── */
@@ -649,12 +657,20 @@ textarea {
 
 .pdf-workspace {
   flex: 1;
+  display: block;
+}
+
+/* The page column: as wide as the widest page but never narrower than the view, so pages are
+   centred when they fit and start at the left edge (fully scrollable) when they don't. It is
+   also what pinch-zoom transforms while a gesture is in progress. */
+.pdf-pages {
   display: flex;
   flex-direction: column;
-  /* start + auto margins (not align-items: center): a centred item wider than the
-     viewport overflows to the left, where it can never be scrolled to */
-  align-items: flex-start;
+  align-items: center;
   gap: 20px;
+  width: max-content;
+  min-width: 100%;
+  transform-origin: 0 0;
 }
 
 .pdf-page {
@@ -672,7 +688,7 @@ textarea {
   box-shadow: var(--shadow);
   /* one finger scrolls the page (and two pinch-zoom) while selecting or editing text;
      drawing tools take the touch for themselves (rule below) */
-  touch-action: pan-x pan-y pinch-zoom;
+  touch-action: pan-x pan-y;
   user-select: none;
   -webkit-user-select: none;
   -webkit-touch-callout: none;

@@ -319,8 +319,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "YOUR_GITHUB_USER",
-        "repo": "file-editor",
+        "owner": "brett96",
+        "repo": "File-Editor",
         "releaseType": "release"
       }
     ]

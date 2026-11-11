@@ -116,6 +116,47 @@ cd release && sha256sum *.exe *.dmg > SHA256SUMS
 
 The app icon is `build/icon.png` (1024×1024); electron-builder generates the `.ico`/`.icns` from it.
 
+## Desktop updates
+
+Installed copies update themselves from this repository's **GitHub Releases**
+(`build.publish` in `package.json` → `brett96/File-Editor`).
+
+The app downloads updates without signing in, so the releases must be public. GitHub gives a
+private repository private releases, so either make this repository public or point
+`build.publish` at a separate public repository used only for releases. In the second case,
+give the workflow a personal access token secret with write access to that repository and use
+it as `GH_TOKEN`; the built-in `GITHUB_TOKEN` can't publish to another repository.
+
+**Shipping an update**
+
+1. Bump `"version"` in `package.json` (e.g. `0.1.0` → `0.2.0`) and commit.
+2. Tag and push: `git tag v0.2.0` then `git push origin v0.2.0`.
+3. `.github/workflows/release.yml` runs the tests, builds the Windows and macOS installers,
+   signs them (if the secrets below are set) and publishes a GitHub Release containing the
+   installers plus `latest.yml` / `latest-mac.yml` — the files the app reads to learn about
+   new versions.
+
+**What happens on users' machines** (`electron/main.ts` → `startAutoUpdates`)
+
+- At launch and every 4 hours the app asks GitHub for `latest.yml`. If its version is newer,
+  the update downloads in the background (Windows: a differential download using the
+  `.blockmap`, so usually only the changed parts).
+- The download is checked against the SHA-512 in `latest.yml`; on Windows the new installer's
+  code signature must also match the publisher of the installed app, otherwise it is refused.
+- When it is ready, a banner offers **Restart now** (asks first if there are unsaved changes).
+  **Later** installs it silently the next time the app is closed.
+
+**Requirements**
+
+- The repository (or at least its releases) must be **public**; a private repo would need a
+  token embedded in the app, which is not safe to ship.
+- **macOS only installs updates for signed and notarized apps.** Without the Apple secrets the
+  Mac build is published but cannot auto-update.
+- Unsigned Windows builds still update, but SmartScreen warns on the first install.
+- Repository secrets for signing: `WIN_CSC_LINK` (base64 `.pfx`), `WIN_CSC_KEY_PASSWORD`,
+  `MAC_CSC_LINK` (base64 `.p12`), `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`,
+  `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`.
+
 ## Format support and limitations
 
 - **DOCX** is the highest-fidelity editable format. Headers, footers, footnotes, comments and

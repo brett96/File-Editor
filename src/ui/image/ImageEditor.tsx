@@ -45,6 +45,7 @@ import { newId } from '../../core/pdf/types';
 import { getHost } from '../../platform/host';
 import { ColorPicker, Divider, IconButton, Select, cx } from '../components';
 import { IMAGE_EXTENSIONS, loadImageFile } from '../image-utils';
+import { usePinchZoom } from '../usePinchZoom';
 import { ALL_HANDLES, CORNER_HANDLES, HANDLE_CURSOR, HANDLE_POS, mapPoint, resizeBox, type Box, type Handle } from '../resize';
 
 export interface ImageEditorHandle {
@@ -338,8 +339,10 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
   const gesture = useRef<Gesture | null>(null);
   /** Last press on an object, for double-click / double-tap detection (see startObj). */
   const lastPress = useRef<{ id: string; t: number } | null>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
-  const viewRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const viewRef = useRef<HTMLDivElement | null>(null);
+  const [viewEl, setViewEl] = useState<HTMLDivElement | null>(null);
+  const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pixelsRef = useRef(pixels);
   pixelsRef.current = pixels;
@@ -349,6 +352,8 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
   const W = pixels.width;
   const H = pixels.height;
   const scale = zoomMode === 'fit' ? fitScale : zoomMode;
+  // pinch / Ctrl+wheel zoom of the picture only (never the toolbars)
+  usePinchZoom(viewEl, stageEl, scale, (z) => setZoomMode(z), { min: 0.05, max: 8 });
 
   useImperativeHandle(ref, () => ({ getPixels: () => bake(pixelsRef.current, objectsRef.current) }), []);
 
@@ -846,10 +851,19 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
       </div>
 
       <div className="image-body">
-        <div className={cx('workspace image-view', `tool-${tool}`)} ref={viewRef}>
+        <div
+          className={cx('workspace image-view zoom-scroll', `tool-${tool}`)}
+          ref={(el) => {
+            viewRef.current = el;
+            setViewEl(el);
+          }}
+        >
           <div
             className="img-stage"
-            ref={stageRef}
+            ref={(el) => {
+              stageRef.current = el;
+              setStageEl(el);
+            }}
             style={{ width: W * s, height: H * s }}
             onPointerDown={onStageDown}
             onPointerMove={onStageMove}

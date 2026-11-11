@@ -12,6 +12,7 @@ import {
   Save,
   ShieldCheck,
   Upload,
+  RefreshCw,
   Wand2,
   ZoomIn,
   ZoomOut,
@@ -20,7 +21,7 @@ import { baseName, exportFlow, FORMATS, OPEN_EXTENSIONS, openDocument, type Open
 import { buildPdf } from './core/pdf/apply-edits';
 import type { PdfProtection } from './core/pdf/types';
 import { PasswordError, UnsupportedError, type DocFormat, type FlowFormat, type RichDocument } from './core/types';
-import { fileBytes, getHost, readDroppedFile, type OpenedFile } from './platform/host';
+import { fileBytes, getHost, readDroppedFile, type OpenedFile, type UpdateStatus } from './platform/host';
 import { IconButton, Divider, cx } from './ui/components';
 import {
   EMPTY_PROTECTION,
@@ -128,6 +129,8 @@ export default function App() {
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
   const [frameExport, setFrameExport] = useState<{ pixels: Pixels; name: string } | null>(null);
   const [imageStatus, setImageStatus] = useState<{ width: number; height: number } | null>(null);
   const richRef = useRef<RichEditorHandle>(null);
@@ -164,6 +167,15 @@ export default function App() {
   }, []);
 
   const markDirty = useCallback(() => setDirty(true), []);
+
+  // desktop app: a newer version downloads in the background; offer to restart into it
+  useEffect(() => {
+    const off = window.desktop?.onUpdateStatus?.((st) => {
+      setUpdate(st);
+      if (st.state === 'available') toast(`Downloading version ${st.version ?? 'update'} in the background…`, 'info');
+    });
+    return () => off?.();
+  }, [toast]);
 
   // ── window title / dirty tracking ────────────────────────────────────────
   useEffect(() => {
@@ -737,10 +749,10 @@ export default function App() {
       <main className="main">
         {!doc && <StartScreen onNew={newDocument} onOpen={pickAndOpen} />}
         {doc?.kind === 'flow' && (
-          <RichEditor key={doc.key} ref={richRef} initial={doc.initial} zoom={zoom} onChange={markDirty} onStats={setStats} onError={toast} />
+          <RichEditor key={doc.key} ref={richRef} initial={doc.initial} zoom={zoom} onZoom={setZoom} onChange={markDirty} onStats={setStats} onError={toast} />
         )}
         {doc?.kind === 'pdf' && (
-          <PdfEditor key={doc.key} ref={pdfRef} bytes={doc.bytes} zoom={zoom} onChange={markDirty} onError={toast} onPageCount={setPageCount} loadAsPdf={loadAsPdf} />
+          <PdfEditor key={doc.key} ref={pdfRef} bytes={doc.bytes} zoom={zoom} onZoom={setZoom} onChange={markDirty} onError={toast} onPageCount={setPageCount} loadAsPdf={loadAsPdf} />
         )}
         {doc?.kind === 'image' && (
           <ImageEditor key={doc.key} ref={imageRef} initial={doc.decoded} onChange={markDirty} onError={toast} onStatus={setImageStatus} />
@@ -773,6 +785,25 @@ export default function App() {
       {busy && (
         <div className="busy" role="status">
           <span className="spinner" /> {busy}
+        </div>
+      )}
+      {update?.state === 'ready' && !updateDismissed && (
+        <div className="update-banner" role="status">
+          <RefreshCw size={16} />
+          <span>Version {update.version} is ready to install.</span>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={() => {
+              if (dirtyRef.current && !window.confirm('Restart now? Your unsaved changes will be lost.')) return;
+              window.desktop?.installUpdate?.();
+            }}
+          >
+            Restart now
+          </button>
+          <button type="button" className="btn btn-text" onClick={() => setUpdateDismissed(true)} title="It will install the next time you close the app">
+            Later
+          </button>
         </div>
       )}
       <div className="toasts" aria-live="polite">
