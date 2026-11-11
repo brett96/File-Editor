@@ -85,6 +85,8 @@ const BLANK: RichDocument = { html: '<p></p>', title: 'Untitled' };
 
 function errorText(err: unknown): string {
   if (err instanceof Error) return err.message;
+  // workers (ffmpeg.wasm) reject with plain strings
+  if (typeof err === 'string' && err.trim()) return err;
   return 'Something went wrong.';
 }
 
