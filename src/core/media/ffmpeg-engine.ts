@@ -19,7 +19,19 @@ async function getFFmpeg(): Promise<FFmpeg> {
       const { FFmpeg } = await import('@ffmpeg/ffmpeg');
       const ff = new FFmpeg();
       const base = assetBase();
-      await ff.load({ coreURL: base + 'ffmpeg-core.js', wasmURL: base + 'ffmpeg-core.wasm' });
+      try {
+        await ff.load({ coreURL: base + 'ffmpeg-core.js', wasmURL: base + 'ffmpeg-core.wasm' });
+      } catch (err) {
+        ff.terminate();
+        // The worker rejects with a bare string (e.g. a CSP "CompileError"); say what failed.
+        const detail = err instanceof Error ? err.message : String(err ?? '');
+        const blocked = /Content.Security|unsafe-eval|CompileError/i.test(detail);
+        throw new Error(
+          blocked
+            ? 'The video converter was blocked by this page’s security policy (WebAssembly is not allowed here).'
+            : `The video converter could not be loaded${detail ? ` (${detail})` : ''}. Check your connection and try again.`,
+        );
+      }
       return ff;
     })();
     instance.catch(() => {
