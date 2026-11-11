@@ -23,7 +23,15 @@ const APP_HOST = 'editor';
 const APP_ORIGIN = `${APP_SCHEME}://${APP_HOST}`;
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 const MAX_FILE_BYTES = 250 * 1024 * 1024;
-const OPENABLE = ['docx', 'docm', 'dotx', 'doc', 'dot', 'pdf', 'odt', 'rtf', 'md', 'markdown', 'html', 'htm', 'txt'];
+/** Video can be much larger than a document. */
+const MAX_MEDIA_BYTES = 4 * 1024 * 1024 * 1024;
+const DOCUMENTS = ['docx', 'docm', 'dotx', 'doc', 'dot', 'pdf', 'odt', 'rtf', 'md', 'markdown', 'html', 'htm', 'txt'];
+const IMAGES = ['png', 'jpg', 'jpeg', 'jfif', 'gif', 'webp', 'avif', 'heic', 'heif', 'jxl', 'bmp', 'tif', 'tiff', 'ico', 'svg'];
+const MEDIA = [
+  'mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', 'wmv', 'asf', 'flv', 'mpg', 'mpeg', 'vob', '3gp', '3g2', 'ogv', 'ts', 'mts', 'm2ts',
+  'mp3', 'm4a', 'wav', 'flac', 'ogg', 'oga', 'opus', 'aac', 'wma', 'aiff', 'aif', 'amr',
+];
+const OPENABLE = [...DOCUMENTS, ...IMAGES, ...MEDIA];
 
 const CSP = [
   "default-src 'self'",
@@ -33,6 +41,7 @@ const CSP = [
   "font-src 'self' data:",
   "worker-src 'self' blob:",
   "connect-src 'self' blob: data:",
+  "media-src 'self' blob: data:",
   "frame-src 'self' blob:",
   "object-src 'none'",
   "base-uri 'self'",
@@ -61,7 +70,9 @@ function grant(path: string): string {
 async function readGranted(path: string): Promise<{ name: string; bytes: Uint8Array; token: string }> {
   const info = await stat(path);
   if (!info.isFile()) throw new Error('Not a file.');
-  if (info.size > MAX_FILE_BYTES) throw new Error('This file is too large to open (limit 250 MB).');
+  const isMedia = MEDIA.includes(extname(path).slice(1).toLowerCase());
+  const limit = isMedia ? MAX_MEDIA_BYTES : MAX_FILE_BYTES;
+  if (info.size > limit) throw new Error(`This file is too large to open (limit ${isMedia ? '4 GB' : '250 MB'}).`);
   const bytes = new Uint8Array(await readFile(path));
   return { name: basename(path), bytes, token: grant(path) };
 }
@@ -106,6 +117,19 @@ app.on('open-file', (event, path) => {
 });
 
 // ── app:// protocol ────────────────────────────────────────────────────────
+const MIME_TYPES: Record<string, string> = {
+  '.html': 'text/html; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.wasm': 'application/wasm',
+  '.json': 'application/json',
+  '.svg': 'image/svg+xml',
+  '.bcmap': 'application/octet-stream',
+  '.pfb': 'application/octet-stream',
+  '.ttf': 'font/ttf',
+};
+
 const APP_ROOT = join(__dirname, '..', 'dist');
 const APP_ROOT_URL = pathToFileURL(APP_ROOT + sep).href;
 
@@ -124,6 +148,9 @@ function registerAppProtocol() {
     const res = await net.fetch(pathToFileURL(target).toString());
     const headers = new Headers(res.headers);
     if (target.endsWith('.html')) headers.set('Content-Security-Policy', CSP);
+    // WebAssembly streaming compilation and module workers need exact MIME types
+    const mime = MIME_TYPES[extname(target).toLowerCase()];
+    if (mime) headers.set('Content-Type', mime);
     headers.set('X-Content-Type-Options', 'nosniff');
     return new Response(res.body, { status: res.status, headers });
   });
@@ -150,7 +177,7 @@ function createWindow() {
     height: 860,
     minWidth: 720,
     minHeight: 480,
-    title: 'Document Editor',
+    title: 'File Editor',
     backgroundColor: '#eef0f4',
     show: false,
     webPreferences: {
@@ -248,12 +275,12 @@ function buildMenu() {
       role: 'help',
       submenu: [
         {
-          label: 'About Document Editor',
+          label: 'About File Editor',
           click: () =>
             void dialog.showMessageBox({
               type: 'info',
               title: 'About',
-              message: `Document Editor ${app.getVersion()}`,
+              message: `File Editor ${app.getVersion()}`,
               detail: 'Documents are processed locally on this computer and are never uploaded.',
             }),
         },

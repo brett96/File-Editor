@@ -6,7 +6,8 @@
 
 export interface OpenedFile {
   name: string;
-  bytes: Uint8Array;
+  /** The file's content. A File on the web, so large media is read lazily rather than up front. */
+  blob: Blob;
   /** Opaque token that lets the host write back to the same file. */
   handle?: unknown;
 }
@@ -113,7 +114,7 @@ function createWebHost(): FileHost {
           return Promise.all(
             handles.map(async (handle) => {
               const file = await handle.getFile();
-              return { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()), handle };
+              return { name: file.name, blob: file, handle };
             }),
           );
         } catch (err) {
@@ -122,7 +123,7 @@ function createWebHost(): FileHost {
         }
       }
       const files = await pickWithInput(extensions, multiple);
-      return Promise.all(files.map(async (f) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) })));
+      return files.map((f) => ({ name: f.name, blob: f }));
     },
     async save(req) {
       const write = async (handle: FileSystemFileHandle) => {
@@ -165,7 +166,7 @@ function createDesktopHost(bridge: DesktopBridge): FileHost {
     canSaveInPlace: true,
     async openFiles({ extensions, multiple = false, description = 'Documents' }) {
       const files = await bridge.openFiles({ extensions, multiple, description });
-      return files.map((f) => ({ name: f.name, bytes: new Uint8Array(f.bytes), handle: f.token }));
+      return files.map((f) => ({ name: f.name, blob: new Blob([f.bytes as BlobPart]), handle: f.token }));
     },
     async save(req) {
       const res = typeof req.handle === 'string'
@@ -174,7 +175,7 @@ function createDesktopHost(bridge: DesktopBridge): FileHost {
       return res ? { name: res.name, handle: res.token } : null;
     },
     onOpenRequest(callback) {
-      return bridge.onOpenFile((f) => callback({ name: f.name, bytes: new Uint8Array(f.bytes), handle: f.token }));
+      return bridge.onOpenFile((f) => callback({ name: f.name, blob: new Blob([f.bytes as BlobPart]), handle: f.token }));
     },
     onMenuCommand: (callback) => bridge.onMenuCommand(callback),
     setDirty: (d) => bridge.setDirty(d),
@@ -191,5 +192,9 @@ export function getHost(): FileHost {
 
 /** Reads a File (drag-and-drop / paste) into an OpenedFile. */
 export async function readDroppedFile(file: File): Promise<OpenedFile> {
-  return { name: file.name, bytes: new Uint8Array(await file.arrayBuffer()) };
+  return { name: file.name, blob: file };
+}
+
+export async function fileBytes(file: OpenedFile): Promise<Uint8Array> {
+  return new Uint8Array(await file.blob.arrayBuffer());
 }

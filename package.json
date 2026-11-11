@@ -1,10 +1,10 @@
 {
-  "name": "document-editor",
-  "productName": "Document Editor",
+  "name": "file-editor",
+  "productName": "File Editor",
   "version": "0.1.0",
   "private": true,
   "description": "Create, edit, convert and password-protect documents (DOCX, PDF, ODT, RTF, Markdown, HTML, TXT) on the web or desktop.",
-  "author": "Document Editor",
+  "author": "File Editor",
   "type": "module",
   "main": "dist-electron/main.cjs",
   "scripts": {
@@ -22,13 +22,21 @@
     "dist:win": "npm run electron:build && electron-builder --win --publish never",
     "dist:mac": "npm run electron:build && electron-builder --mac --publish never",
     "release": "npm run electron:build && electron-builder --publish always",
-    "postinstall": "node scripts/copy-pdfjs-assets.mjs"
+    "postinstall": "node scripts/copy-runtime-assets.mjs"
   },
   "dependencies": {
     "electron-updater": "^6.8.11"
   },
   "devDependencies": {
     "@cantoo/pdf-lib": "^2.11.1",
+    "@ffmpeg/core": "^0.12.10",
+    "@ffmpeg/ffmpeg": "^0.12.15",
+    "@ffmpeg/util": "^0.12.2",
+    "@jsquash/avif": "^2.1.1",
+    "@jsquash/jxl": "^1.3.0",
+    "@mediabunny/aac-encoder": "^1.65.2",
+    "@mediabunny/flac-encoder": "^1.65.2",
+    "@mediabunny/mp3-encoder": "^1.65.2",
     "@noble/ciphers": "^2.4.0",
     "@noble/hashes": "^2.4.0",
     "@tiptap/extension-highlight": "^3.33.1",
@@ -55,11 +63,14 @@
     "electron": "^45.3.0",
     "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2",
+    "gifenc": "^1.0.3",
+    "heic-to": "^1.6.7",
     "html-to-pdfmake": "^2.5.36",
     "jsdom": "^29.1.1",
     "jszip": "^3.10.2",
     "lucide-react": "^1.71.0",
     "marked": "^18.2.0",
+    "mediabunny": "^1.65.2",
     "officecrypto-tool": "^0.0.19",
     "pdfjs-dist": "^6.5.438",
     "pdfmake": "^0.3.14",
@@ -68,13 +79,14 @@
     "turndown": "^7.2.5",
     "turndown-plugin-gfm": "^1.0.2",
     "typescript": "^7.0.2",
+    "utif2": "^4.1.0",
     "vite": "^8.3.7",
     "vitest": "^5.1.0",
     "wait-on": "^9.5.1"
   },
   "build": {
-    "appId": "com.documenteditor.app",
-    "productName": "Document Editor",
+    "appId": "com.fileeditor.app",
+    "productName": "File Editor",
     "copyright": "Copyright © 2026",
     "directories": {
       "output": "release",
@@ -164,6 +176,84 @@
         "description": "Plain text",
         "role": "Editor",
         "mimeType": "text/plain"
+      },
+      {
+        "ext": [
+          "jpg",
+          "jpeg",
+          "jfif"
+        ],
+        "name": "JPEG Image",
+        "description": "JPEG image",
+        "role": "Editor",
+        "mimeType": "image/jpeg"
+      },
+      {
+        "ext": "png",
+        "name": "PNG Image",
+        "description": "PNG image",
+        "role": "Editor",
+        "mimeType": "image/png"
+      },
+      {
+        "ext": [
+          "webp",
+          "avif",
+          "heic",
+          "heif",
+          "jxl"
+        ],
+        "name": "Modern Image",
+        "description": "WebP / AVIF / HEIC image",
+        "role": "Editor"
+      },
+      {
+        "ext": [
+          "gif",
+          "bmp",
+          "tif",
+          "tiff",
+          "ico"
+        ],
+        "name": "Image",
+        "description": "Image",
+        "role": "Editor"
+      },
+      {
+        "ext": [
+          "mp4",
+          "m4v",
+          "mov",
+          "webm",
+          "mkv",
+          "avi",
+          "wmv",
+          "flv",
+          "mpg",
+          "mpeg",
+          "3gp",
+          "ts",
+          "mts"
+        ],
+        "name": "Video",
+        "description": "Video",
+        "role": "Editor"
+      },
+      {
+        "ext": [
+          "mp3",
+          "m4a",
+          "wav",
+          "flac",
+          "ogg",
+          "opus",
+          "aac",
+          "wma",
+          "aiff"
+        ],
+        "name": "Audio",
+        "description": "Audio",
+        "role": "Editor"
       }
     ],
     "win": {
@@ -176,7 +266,7 @@
           ]
         }
       ],
-      "artifactName": "Document-Editor-Setup-${version}-${arch}.${ext}",
+      "artifactName": "File-Editor-Setup-${version}-${arch}.${ext}",
       "verifyUpdateCodeSignature": true,
       "signtoolOptions": {
         "signingHashAlgorithms": [
@@ -215,7 +305,7 @@
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "notarize": true,
-      "artifactName": "Document-Editor-${version}-${arch}.${ext}"
+      "artifactName": "File-Editor-${version}-${arch}.${ext}"
     },
     "dmg": {
       "sign": false
@@ -230,9 +320,12 @@
       {
         "provider": "github",
         "owner": "YOUR_GITHUB_USER",
-        "repo": "document-editor",
+        "repo": "file-editor",
         "releaseType": "release"
       }
     ]
+  },
+  "overrides": {
+    "wasm-feature-detect": "1.8.0"
   }
 }

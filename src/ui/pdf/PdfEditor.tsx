@@ -34,7 +34,7 @@ import {
 } from '../../core/pdf/types';
 import { getHost, type OpenedFile } from '../../platform/host';
 import { ColorPicker, Divider, IconButton, MenuItem, Popover, PromptModal, Select, cx } from '../components';
-import { IMAGE_EXTENSIONS, imageMime, loadImageFile } from '../image-utils';
+import { IMAGE_EXTENSIONS, loadImageFile } from '../image-utils';
 import { PageCanvas, PdfSourceCache, extractTextRuns, type TextRun } from './PageCanvas';
 
 export interface PdfEditorHandle {
@@ -351,7 +351,7 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const target = e.target as HTMLElement;
-      if (target.closest('input, textarea, select, [contenteditable="true"], .modal')) return;
+      if (target instanceof Element && target.closest('input, textarea, select, [contenteditable="true"], .modal')) return;
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault();
@@ -443,7 +443,7 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
     try {
       const [file] = await getHost().openFiles({ extensions: IMAGE_EXTENSIONS, description: 'Images' });
       if (!file) return;
-      const img = await loadImageFile(new Blob([file.bytes as BlobPart], { type: imageMime(file.name) }));
+      const img = await loadImageFile(file.blob, file.name);
       const page = list[current] ?? list[0];
       const maxW = page.width * 0.5;
       const maxH = page.height * 0.5;

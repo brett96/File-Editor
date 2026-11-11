@@ -848,8 +848,8 @@ export const exportDocx: Exporter = async (doc) => {
 
   const file = new Document({
     title: doc.title || undefined,
-    creator: 'Document Editor',
-    lastModifiedBy: 'Document Editor',
+    creator: 'File Editor',
+    lastModifiedBy: 'File Editor',
     styles: {
       default: {
         document: {

@@ -397,7 +397,7 @@ export async function buildPdf(session: PdfSession, options: PdfSaveOptions = {}
   }
 
   if (options.title) out.setTitle(options.title);
-  out.setProducer('Document Editor');
+  out.setProducer('File Editor');
   out.setModificationDate(new Date());
   if (options.protection) applyProtection(out, options.protection);
   return out.save();

@@ -166,7 +166,7 @@ export async function renderFlowPdf(doc: RichDocument): Promise<Uint8Array> {
     pageOrientation: setup.orientation,
     pageMargins: [m.left, m.top, m.right, m.bottom],
     defaultStyle: { font: 'Roboto', fontSize: 11, lineHeight: 1.3, color: '#1b1b1f' },
-    info: { title: doc.title || 'Document', producer: 'Document Editor', creator: 'Document Editor' },
+    info: { title: doc.title || 'Document', producer: 'File Editor', creator: 'File Editor' },
   };
   const buffer = await pdfMake.createPdf(definition).getBuffer();
   return buffer instanceof Uint8Array ? new Uint8Array(buffer) : new Uint8Array(buffer as ArrayBuffer);

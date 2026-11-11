@@ -818,7 +818,7 @@ function metaXml(title: string | undefined): string {
   return (
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<office:document-meta xmlns:office="${NS.office}" xmlns:meta="${NS.meta}" xmlns:dc="${NS.dc}" office:version="1.2">` +
-    `<office:meta><meta:generator>Document Editor</meta:generator>` +
+    `<office:meta><meta:generator>File Editor</meta:generator>` +
     (title ? `<dc:title>${escapeXml(title)}</dc:title>` : '') +
     `<meta:creation-date>${now}</meta:creation-date><dc:date>${now}</dc:date></office:meta></office:document-meta>`
   );

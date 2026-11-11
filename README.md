@@ -1,6 +1,6 @@
-# Document Editor
+# File Editor
 
-Create, edit, convert and password-protect documents, in the browser or as an installed desktop
+Create, edit, convert and password-protect documents, photos, video and audio, in the browser or as an installed desktop
 app for Windows and macOS. Everything runs on the user's device: no file is ever uploaded, and
 there is no server to run.
 
@@ -9,7 +9,9 @@ there is no server to run.
 | **Open & edit** | Word (.docx, .doc), PDF, OpenDocument (.odt), Rich Text (.rtf), Markdown, HTML, plain text |
 | **Word-style editing** | Headings, fonts, sizes, colours, highlight, alignment, lists, tables (merge/split), images, links, page breaks, page size/orientation/margins |
 | **PDF editing** | Edit existing text, add text, images, links, shapes, lines, freehand drawing/signature, highlights, white-out; insert blank pages or pages from another document at any position; delete, duplicate, reorder (drag) and rotate pages |
-| **Convert** | Save any open document in any supported format (including PDF to DOCX and DOCX to PDF) |
+| **Photos** | Open JPEG, PNG, WebP, AVIF, HEIC/HEIF (iPhone), JPEG XL, GIF, TIFF, BMP, ICO and SVG. Crop (with aspect presets), rotate, flip, straighten, resize; exposure, contrast, highlights/shadows, saturation, warmth, hue, vignette, sharpen, blur; one-click filters; text, arrows, shapes, freehand drawing, stickers; redact faces, plates or text (pixelate / blur / black box) |
+| **Video & audio** | Open MP4, MOV, WebM, MKV, TS, MP3, M4A, WAV, FLAC, OGG/Opus, AAC, plus legacy AVI, WMV, FLV, MPEG, 3GP, OGV, WMA, AIFF, AMR. Trim, crop, rotate, flip, resize, change frame rate; colour look and filters; text overlays with timing; fade in/out; volume or mute; save a frame as a picture or edit it in the photo editor |
+| **Convert** | Documents ↔ documents (incl. PDF ↔ DOCX); photos ↔ any photo format or PDF; video ↔ MP4 (H.264/HEVC/AV1/VP9), WebM, MOV, MKV, TS, animated GIF, AVI, WMV, FLV, MPEG, 3GP, OGV; video or audio → MP3, M4A, WAV, FLAC, OGG, Opus, AAC |
 | **Passwords** | Open Word and PDF files protected by Word, Acrobat or other tools (with the password); save password-protected DOCX (Office AES-256) and PDF (AES-256, with optional permission restrictions) |
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
@@ -35,6 +37,10 @@ The app opens at http://localhost:5173. Other scripts:
 | `npm run build:web` | Builds the static web app into `dist/` |
 | `npm run electron:dev` | Runs the desktop app against the dev server |
 | `npm run dist:win` / `npm run dist:mac` | Builds the signed installers into `release/` |
+
+`npm install` runs `scripts/copy-runtime-assets.mjs`, which copies the pdf.js assets and the
+ffmpeg.wasm core into `public/` so they are served by the app itself and never fetched from a
+CDN.
 
 ## Adding it to the portfolio site (Next.js on Vercel)
 
@@ -126,3 +132,32 @@ The app icon is `build/icon.png` (1024×1024); electron-builder generates the `.
 - **Passwords:** "unlocking" always means decrypting with the correct password. There is no
   password removal or recovery for files whose password you don't know.
 - Spreadsheets and presentations (.xlsx, .pptx) are not supported.
+- **Photos:** HEIC can be opened but not written (there is no royalty-free HEIC encoder); save
+  as JPEG, WebP or AVIF instead. Animated GIF/WebP/APNG open as their first frame in the photo
+  editor. Multi-page TIFFs open their largest page. Camera RAW files (CR2, NEF, ARW, DNG) are not
+  supported yet. Saved copies never carry camera metadata such as GPS location.
+- **Video:** editing and conversion use the browser's own hardware encoders (WebCodecs), so the
+  codec list in Save as depends on the browser — Chrome, Edge and the desktop app offer H.264,
+  HEVC (where the OS has it), VP9, AV1 and AAC; Firefox and Safari offer fewer. Legacy formats
+  (AVI, WMV, FLV, MPEG, 3GP, OGV) go through ffmpeg.wasm, which is slower and limited to files
+  of about 1.5 GB in the browser. Colour changes and text overlays re-encode every frame;
+  trims and container changes without visual edits are copied without re-encoding where
+  possible. There is no multi-clip timeline, speed change or audio mixing yet.
+
+### Third-party codecs and licences
+
+| Component | Used for | Licence |
+|---|---|---|
+| Mediabunny (+ MP3/AAC/FLAC encoder add-ons) | Video/audio demux, edit, encode via WebCodecs | MPL-2.0 |
+| ffmpeg.wasm core | Legacy video/audio formats only, loaded on first use | **GPL-2.0-or-later** (includes x264) |
+| @jsquash/avif, @jsquash/jxl | AVIF and JPEG XL encode/decode | Apache-2.0 |
+| heic-to (libheif) | HEIC/HEIF decode | LGPL-3.0 (loaded as a separate module) |
+| utif2, gifenc | TIFF and GIF | MIT |
+
+Distributing the desktop installer or a public site that serves `ffmpeg-core.wasm` means
+distributing GPL software: publish this repository's source (or the ffmpeg core's corresponding
+source) alongside it. The build ships `ffmpeg/NOTICE.txt` next to the core (generated by
+`scripts/copy-runtime-assets.mjs`) naming the licence and the source location; once the
+repository is public, put its URL in that notice. If that is not acceptable, delete `public/ffmpeg/` and the
+`copy-runtime-assets` step — the app keeps working, and only the legacy formats above become
+unavailable (the Save as dialog reports it).

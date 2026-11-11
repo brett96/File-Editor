@@ -30,7 +30,7 @@ import {
 import { DEFAULT_PAGE_SETUP, pageDimensions, type PageSetup, type RichDocument } from '../../core/types';
 import { getHost } from '../../platform/host';
 import { ColorPicker, Divider, Field, IconButton, MenuItem, Modal, Popover, PromptModal, Select } from '../components';
-import { IMAGE_EXTENSIONS, imageMime, loadImageFile } from '../image-utils';
+import { IMAGE_EXTENSIONS, loadImageFile } from '../image-utils';
 import { createExtensions } from './extensions';
 
 export interface RichEditorHandle {
@@ -121,7 +121,7 @@ function Toolbar({ editor, onPageSetup, onError }: { editor: Editor; onPageSetup
     try {
       const [file] = await getHost().openFiles({ extensions: IMAGE_EXTENSIONS, description: 'Images' });
       if (!file) return;
-      const img = await loadImageFile(new Blob([file.bytes as BlobPart], { type: imageMime(file.name) }), 2000);
+      const img = await loadImageFile(file.blob, file.name, 2000);
       // fit within the text column (≈ 6.5in at 96dpi)
       const k = Math.min(1, 620 / img.width);
       chain().setImage({ src: img.dataUrl, alt: file.name.replace(/\.[^.]+$/, ''), width: Math.round(img.width * k), height: Math.round(img.height * k) }).run();
@@ -309,7 +309,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
         const file = Array.from(event.clipboardData?.files ?? []).find((f) => f.type.startsWith('image/'));
         if (!file) return false;
         event.preventDefault();
-        void loadImageFile(file, 2000).then((img) => {
+        void loadImageFile(file, file.name, 2000).then((img) => {
           const k = Math.min(1, 620 / img.width);
           const node = view.state.schema.nodes.image.create({ src: img.dataUrl, width: Math.round(img.width * k), height: Math.round(img.height * k) });
           view.dispatch(view.state.tr.replaceSelectionWith(node));
@@ -331,7 +331,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
         void (async () => {
           for (const file of images.reverse()) {
             try {
-              const img = await loadImageFile(file, 2000);
+              const img = await loadImageFile(file, file.name, 2000);
               const k = Math.min(1, 620 / img.width);
               const node = view.state.schema.nodes.image.create({ src: img.dataUrl, alt: file.name.replace(/\.[^.]+$/, ''), width: Math.round(img.width * k), height: Math.round(img.height * k) });
               view.dispatch(view.state.tr.insert(Math.min(pos, view.state.doc.content.size), node));

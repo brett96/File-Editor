@@ -18,6 +18,7 @@ export const CSP = [
   "font-src 'self' data:",
   "worker-src 'self' blob:",
   "connect-src 'self' blob: data:",
+  "media-src 'self' blob: data:",
   "frame-src 'self' blob:",
   "object-src 'none'",
   "base-uri 'self'",
@@ -43,6 +44,9 @@ export default defineConfig({
     chunkSizeWarningLimit: 2500,
   },
   server: { port: 5173, strictPort: true },
+  // these load their own WASM / workers relative to import.meta.url; pre-bundling breaks that
+  optimizeDeps: { exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util', '@jsquash/avif', '@jsquash/jxl', 'heic-to'] },
+  worker: { format: 'es' },
   test: {
     environment: 'node',
     include: ['tests/**/*.test.ts'],

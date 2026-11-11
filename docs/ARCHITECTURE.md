@@ -83,12 +83,34 @@ redaction tool.
 "Unlocking" always means decrypting with the password the user supplies. There is no password
 recovery/cracking.
 
+### Photos, video and audio
+
+Two more document kinds sit beside flow and fixed documents:
+
+| Kind | Model | Editor | Engine |
+|---|---|---|---|
+| **Image** | RGBA pixels + vector overlays (text, shapes, ink, stickers) | `ui/image/ImageEditor` | `core/media/image-ops` (pure pixel ops, unit-tested), `image-codecs` (decode every format to pixels, encode via canvas / WASM), `image-encoders` (BMP, ICO, TIFF, GIF) |
+| **Media** | Source blob + a declarative `VideoEdits` (trim, rotate/flip, crop, look, overlays, fades, volume) | `ui/video/VideoEditor` | `core/media/video-engine` (Mediabunny on WebCodecs, one conversion pass), `ffmpeg-engine` (legacy containers) |
+
+Image edits are destructive steps on pixels with a bounded undo history (≤ 600 MB of
+snapshots); overlays stay vectors until a geometric operation or a save flattens them.
+Video edits are never applied to the file while editing: the preview renders each frame
+through the same `renderFrameEffects` function the exporter uses, so what is shown is what is
+written. Untouched streams are copied rather than re-encoded.
+
+Format detection is by content (`media-formats.sniffMedia`), not by extension. Files the
+browser cannot decode (AVI, WMV, FLV, MPEG-PS, 3GP…) are converted once to MP4/FLAC with
+ffmpeg.wasm on open, edited normally, and can be written back to the legacy format on save.
+Every image save re-encodes from pixels, so EXIF/GPS metadata is never copied.
+
 ## Technology choices
 
 | Concern | Choice | Reason |
 |---|---|---|
 | UI | React 19 + Vite | Same component tree for web and desktop; static output. |
 | Rich text | TipTap 3 (ProseMirror) | Schema-driven, tables/images/marks, MIT. |
+| Video/audio | Mediabunny + WebCodecs | Hardware-accelerated, streams from disk (no full read), MPL-2.0; ffmpeg.wasm only as a lazy fallback for legacy formats (GPL, 31 MB). |
+| Photo codecs | Canvas, @jsquash (AVIF/JXL), heic-to, utif2, gifenc | Every common format without a server; WASM loaded only when that format is used. |
 | PDF render | pdf.js | Reference renderer, handles encrypted files, runs in a worker. |
 | PDF write | `@cantoo/pdf-lib` | Maintained pdf-lib fork with encryption + decryption. |
 | Flow → PDF | pdfmake | Real vector/text PDFs client-side (not screenshots). |

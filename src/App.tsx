@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   FileDown,
   FilePlus,
+  Film,
+  Image as ImageIcon,
   FileText,
   FolderOpen,
   Lock,
@@ -18,7 +20,7 @@ import { baseName, exportFlow, FORMATS, OPEN_EXTENSIONS, openDocument, type Open
 import { buildPdf } from './core/pdf/apply-edits';
 import type { PdfProtection } from './core/pdf/types';
 import { PasswordError, UnsupportedError, type DocFormat, type FlowFormat, type RichDocument } from './core/types';
-import { getHost, readDroppedFile, type OpenedFile } from './platform/host';
+import { fileBytes, getHost, readDroppedFile, type OpenedFile } from './platform/host';
 import { IconButton, Divider, cx } from './ui/components';
 import {
   EMPTY_PROTECTION,
@@ -32,10 +34,36 @@ import {
 } from './ui/dialogs';
 import { RichEditor, type RichEditorHandle } from './ui/rich/RichEditor';
 import { PdfEditor, type PdfEditorHandle } from './ui/pdf/PdfEditor';
+import { ImageEditor, type ImageEditorHandle } from './ui/image/ImageEditor';
+import { VideoEditor, formatTime, rotatedSize, type VideoEditorHandle } from './ui/video/VideoEditor';
+import { ImageExportModal, MediaExportModal, ProgressModal, type ImageExportChoice, type MediaExportChoice } from './ui/media-dialogs';
+import { CONTAINERS, IMAGE_FORMATS, MEDIA_EXTENSIONS_ALL, IMAGE_EXTENSIONS_ALL, sniffMedia, type ContainerFormat, type ImageFormat } from './core/media/media-formats';
+import type { DecodedImage } from './core/media/image-codecs';
+import type { MediaInfo } from './core/media/video-engine';
+import type { Pixels } from './core/media/image-ops';
+
+const ALL_OPEN_EXTENSIONS = [...new Set([...OPEN_EXTENSIONS, ...IMAGE_EXTENSIONS_ALL, ...MEDIA_EXTENSIONS_ALL])];
 
 type OpenDoc =
   | { kind: 'flow'; key: number; name: string; format: FlowFormat; initial: RichDocument; handle?: unknown; protection: ProtectionDraft }
-  | { kind: 'pdf'; key: number; name: string; bytes: Uint8Array; handle?: unknown; protection: ProtectionDraft };
+  | { kind: 'pdf'; key: number; name: string; bytes: Uint8Array; handle?: unknown; protection: ProtectionDraft }
+  | { kind: 'image'; key: number; name: string; decoded: DecodedImage; format: ImageFormat; handle?: unknown; protection: ProtectionDraft }
+  | { kind: 'media'; key: number; name: string; blob: Blob; info: MediaInfo; container: ContainerFormat; handle?: unknown; protection: ProtectionDraft };
+
+interface Progress {
+  title: string;
+  phase: string;
+  progress: number;
+  cancel?: () => void;
+}
+
+/** Best output container for a media file we opened (by its extension). */
+function containerFor(name: string, hasVideo: boolean): ContainerFormat {
+  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  const hit = (Object.keys(CONTAINERS) as ContainerFormat[]).find((c) => c !== 'gif' && CONTAINERS[c].extensions.includes(ext));
+  if (hit && (CONTAINERS[hit].kind === 'video') === hasVideo) return hit;
+  return hasVideo ? 'mp4' : 'mp3';
+}
 
 interface PasswordAsk {
   fileName: string;
@@ -73,8 +101,13 @@ export default function App() {
   const [stats, setStats] = useState<{ words: number; characters: number } | null>(null);
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [progress, setProgress] = useState<Progress | null>(null);
+  const [frameExport, setFrameExport] = useState<{ pixels: Pixels; name: string } | null>(null);
+  const [imageStatus, setImageStatus] = useState<{ width: number; height: number } | null>(null);
   const richRef = useRef<RichEditorHandle>(null);
   const pdfRef = useRef<PdfEditorHandle>(null);
+  const imageRef = useRef<ImageEditorHandle>(null);
+  const videoRef = useRef<VideoEditorHandle>(null);
   const docRef = useRef(doc);
   docRef.current = doc;
   const dirtyRef = useRef(dirty);
@@ -90,7 +123,7 @@ export default function App() {
 
   // ── window title / dirty tracking ────────────────────────────────────────
   useEffect(() => {
-    const title = doc ? `${dirty ? '• ' : ''}${doc.name} — Document Editor` : 'Document Editor';
+    const title = doc ? `${dirty ? '• ' : ''}${doc.name} — File Editor` : 'File Editor';
     host.setTitle?.(title);
     host.setDirty?.(dirty);
   }, [doc, dirty, host]);
@@ -120,7 +153,7 @@ export default function App() {
     for (;;) {
       try {
         setBusy(`Opening ${file.name}…`);
-        const result = await openDocument(file.name, file.bytes, password);
+        const result = await openDocument(file.name, await fileBytes(file), password);
         return { result, password };
       } catch (err) {
         if (!(err instanceof PasswordError)) throw err;
@@ -136,8 +169,74 @@ export default function App() {
     }
   };
 
+  /** Opens photos, video and audio. Returns false when the file is not media. */
+  const openMedia = async (file: OpenedFile): Promise<boolean> => {
+    const head = new Uint8Array(await file.blob.slice(0, 4096).arrayBuffer());
+    const kind = sniffMedia(file.name, head);
+    if (!kind) return false;
+    if (kind.kind === 'image') {
+      setBusy(`Opening ${file.name}…`);
+      try {
+        const { decodeImage } = await import('./core/media/image-codecs');
+        const decoded = await decodeImage(file.blob, file.name);
+        const writable = IMAGE_FORMATS[decoded.format].canWrite;
+        setDoc({ kind: 'image', key: docKey++, name: file.name, decoded, format: decoded.format, handle: writable ? file.handle : undefined, protection: EMPTY_PROTECTION });
+        setImageStatus(null);
+        setDirty(false);
+      } finally {
+        setBusy(null);
+      }
+      return true;
+    }
+    const { probeMedia } = await import('./core/media/video-engine');
+    let blob: Blob = file.blob;
+    let name = file.name;
+    let handle = file.handle;
+    let info: MediaInfo | null = null;
+    if (!kind.ffmpegOnly) {
+      setBusy(`Opening ${file.name}…`);
+      try {
+        info = await probeMedia(blob);
+        if (!info.decodable) info = null;
+      } catch {
+        info = null;
+      } finally {
+        setBusy(null);
+      }
+    }
+    if (!info) {
+      // a container or codec the browser can't read: convert it once with ffmpeg
+      const { normalizeForEditing, FfmpegCancelled } = await import('./core/media/ffmpeg-engine');
+      const ctrl = new AbortController();
+      setProgress({ title: `Preparing ${file.name}`, phase: 'Loading the converter', progress: 0, cancel: () => ctrl.abort() });
+      try {
+        const out = await normalizeForEditing(blob, kind.ext, kind.kind, (p) => setProgress((cur) => cur && { ...cur, phase: 'Converting for editing', progress: p }), ctrl.signal);
+        blob = out.blob;
+        name = `${baseName(file.name)}.${out.ext}`;
+        handle = undefined;
+        info = await probeMedia(blob);
+        toast(`Converted to ${out.ext.toUpperCase()} for editing. Use Save as to choose the final format (including .${kind.ext}).`, 'info');
+      } catch (err) {
+        if (err instanceof FfmpegCancelled) return true;
+        throw err;
+      } finally {
+        setProgress(null);
+      }
+    }
+    if (!info.hasVideo && !info.hasAudio) throw new Error('This file contains no playable video or sound (it may be empty or damaged).');
+    setDoc({ kind: 'media', key: docKey++, name, blob, info, container: containerFor(file.name, info.hasVideo), handle, protection: EMPTY_PROTECTION });
+    setDirty(false);
+    return true;
+  };
+
   const openFile = async (file: OpenedFile) => {
     if (!confirmDiscard()) return;
+    try {
+      if (await openMedia(file)) return;
+    } catch (err) {
+      toast(`Could not open ${file.name}: ${errorText(err)}`);
+      return;
+    }
     try {
       const opened = await openWithPrompt(file);
       if (!opened) return;
@@ -174,7 +273,7 @@ export default function App() {
 
   const pickAndOpen = async () => {
     try {
-      const [file] = await host.openFiles({ extensions: OPEN_EXTENSIONS, description: 'Documents' });
+      const [file] = await host.openFiles({ extensions: ALL_OPEN_EXTENSIONS, description: 'Documents, images, video & audio' });
       if (file) await openFile(file);
     } catch (err) {
       toast(errorText(err));
@@ -218,6 +317,7 @@ export default function App() {
 
   const render = async (format: DocFormat, protection: ProtectionDraft): Promise<Uint8Array> => {
     const d = docRef.current!;
+    if (d.kind === 'image' || d.kind === 'media') throw new Error('Use the image or video save dialog.');
     const pdfProt = protectionToPdf(protection);
     const pw = protection.enabled ? protection.password : undefined;
     if (d.kind === 'flow') {
@@ -263,9 +363,82 @@ export default function App() {
     }
   };
 
+  // ── images ───────────────────────────────────────────────────────────────
+  const encodeChoice = async (px: Pixels, c: ImageExportChoice, title: string): Promise<{ bytes: Uint8Array; mime: string; ext: string; label: string }> => {
+    const codecs = await import('./core/media/image-codecs');
+    const src = c.scale !== 1 ? codecs.resizePixels(px, px.width * c.scale, px.height * c.scale) : px;
+    if (c.format === 'pdf') return { bytes: await codecs.imageToPdf(src, title, c.quality), mime: 'application/pdf', ext: 'pdf', label: 'PDF' };
+    const info = IMAGE_FORMATS[c.format];
+    return { bytes: await codecs.encodeImage(src, c.format, { quality: c.quality, lossless: c.lossless, background: c.background }), mime: info.mime, ext: info.ext, label: info.label };
+  };
+
+  const saveImage = async (c: ImageExportChoice, handle: unknown | undefined, adopt: boolean, pixels?: Pixels) => {
+    const d = docRef.current;
+    const px = pixels ?? imageRef.current?.getPixels();
+    if (!px) return;
+    setBusy('Saving…');
+    try {
+      const out = await encodeChoice(px, c, baseName(c.fileName));
+      const res = await host.save({ suggestedName: c.fileName, bytes: out.bytes, mime: out.mime, ext: out.ext, description: out.label, handle });
+      if (!res) return;
+      if (adopt && d?.kind === 'image' && c.format !== 'pdf') {
+        setDoc((cur) => (cur && cur.kind === 'image' ? { ...cur, name: res.name, format: c.format as ImageFormat, handle: res.handle } : cur));
+        setDirty(false);
+      }
+      toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${res.name} (${(out.bytes.length / 1024).toFixed(0)} KB)`, 'info');
+    } catch (err) {
+      toast(`Could not save: ${errorText(err)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // ── video / audio ────────────────────────────────────────────────────────
+  const saveMedia = async (c: MediaExportChoice) => {
+    const d = docRef.current;
+    if (d?.kind !== 'media' || !videoRef.current) return;
+    const edits = videoRef.current.getEdits();
+    const ctrl = new AbortController();
+    const info = CONTAINERS[c.container];
+    setProgress({ title: `Saving ${c.fileName}`, phase: 'Starting', progress: 0, cancel: () => ctrl.abort() });
+    try {
+      const { exportMedia, ExportCancelled } = await import('./core/media/video-engine');
+      let bytes: Uint8Array;
+      try {
+        bytes = await exportMedia(d.blob, edits, d.info, c, (p) => setProgress((cur) => cur && { ...cur, phase: p.phase, progress: p.progress }), ctrl.signal);
+      } catch (err) {
+        if (err instanceof ExportCancelled || ctrl.signal.aborted) {
+          toast('Export cancelled.', 'info');
+          return;
+        }
+        throw err;
+      }
+      setProgress(null);
+      const res = await host.save({ suggestedName: c.fileName, bytes, mime: info.mime, ext: info.ext, description: info.label });
+      if (!res) return;
+      setDirty(false);
+      toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${res.name} (${(bytes.length / 1024 / 1024).toFixed(1)} MB)`, 'info');
+    } catch (err) {
+      toast(`Could not save: ${errorText(err)}`);
+    } finally {
+      setProgress(null);
+    }
+  };
+
   const save = async () => {
     const d = docRef.current;
     if (!d) return;
+    if (d.kind === 'media') {
+      setExportOpen('save-as');
+      return;
+    }
+    if (d.kind === 'image') {
+      const f = d.format;
+      if (IMAGE_FORMATS[f].canWrite && (host.canSaveInPlace ? !!d.handle : host.kind === 'web')) {
+        await saveImage({ format: f as ImageExportChoice['format'], fileName: d.name, quality: 92, lossless: false, background: '#ffffff', scale: 1 }, d.handle, true);
+      } else setExportOpen('save-as');
+      return;
+    }
     const format: DocFormat = d.kind === 'pdf' ? 'pdf' : d.format;
     if (d.handle && host.canSaveInPlace) {
       await writeOut({ format, fileName: d.name, protection: d.protection }, d.handle, true);
@@ -283,7 +456,14 @@ export default function App() {
     setBusy('Preparing to print…');
     try {
       let url: string;
-      if (d.kind === 'flow') {
+      if (d.kind === 'media') throw new Error('Video and audio cannot be printed. Save a frame as an image to print it.');
+      if (d.kind === 'image') {
+        const px = imageRef.current!.getPixels();
+        const { pixelsToCanvas } = await import('./core/media/image-codecs');
+        const dataUrl = pixelsToCanvas(px).toDataURL('image/png');
+        const html = `<!doctype html><html><head><title>${baseName(d.name)}</title><style>@page{margin:12mm}html,body{margin:0;height:100%}body{display:flex;align-items:center;justify-content:center}img{max-width:100%;max-height:100vh;object-fit:contain}</style></head><body><img src="${dataUrl}"></body></html>`;
+        url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      } else if (d.kind === 'flow') {
         const html = await exportFlow(currentFlow()!, 'html');
         url = URL.createObjectURL(new Blob([html as BlobPart], { type: 'text/html' }));
       } else {
@@ -330,6 +510,14 @@ export default function App() {
     } finally {
       setBusy(null);
     }
+  };
+
+  const frameName = (t: number) => `${baseName(docRef.current?.name ?? 'video')}-frame-${formatTime(t).replace(/[:.]/g, '-')}`;
+  const onSaveFrame = (pixels: Pixels, t: number) => setFrameExport({ pixels, name: frameName(t) });
+  const onEditFrame = (pixels: Pixels, t: number) => {
+    if (dirtyRef.current && !window.confirm('Open this frame in the image editor? Your unsaved video edits will be lost.')) return;
+    setDoc({ kind: 'image', key: docKey++, name: `${frameName(t)}.png`, decoded: { pixels, format: 'png', warnings: [] }, format: 'png', protection: EMPTY_PROTECTION });
+    setDirty(true);
   };
 
   const applySecurity = (v: ProtectionDraft) => {
@@ -419,8 +607,8 @@ export default function App() {
       if ((e.target as HTMLElement)?.closest?.('.ProseMirror')) return;
       const file = e.dataTransfer?.files?.[0];
       if (!file) return;
-      if (file.type.startsWith('image/') && docRef.current) {
-        toast(docRef.current.kind === 'pdf' ? 'Use the Insert image tool to add images to the PDF.' : 'Drop images onto the text to insert them.', 'info');
+      if (file.type.startsWith('image/') && (docRef.current?.kind === 'flow' || docRef.current?.kind === 'pdf')) {
+        toast(docRef.current.kind === 'pdf' ? 'Use the Insert image tool to add images to the PDF, or close the PDF to open the image on its own.' : 'Drop images onto the text to insert them.', 'info');
         return;
       }
       await actions.current.openFile(await readDroppedFile(file));
@@ -437,14 +625,15 @@ export default function App() {
     };
   }, []);
 
-  const format: DocFormat | null = doc ? (doc.kind === 'pdf' ? 'pdf' : doc.format) : null;
+  const format: DocFormat | null = doc ? (doc.kind === 'pdf' ? 'pdf' : doc.kind === 'flow' ? doc.format : null) : null;
+  const isMediaDoc = doc?.kind === 'image' || doc?.kind === 'media';
 
   return (
     <div className={cx('app', `host-${host.kind}`)}>
       <header className="topbar">
-        <div className="brand" aria-label="Document Editor">
+        <div className="brand" aria-label="File Editor">
           <FileText size={18} />
-          <span>Document Editor</span>
+          <span>File Editor</span>
         </div>
         {doc && (
           <div className="doc-name" title={doc.name}>
@@ -460,19 +649,25 @@ export default function App() {
             <>
               <IconButton label={host.canSaveInPlace || host.kind === 'desktop' ? 'Save' : 'Download'} text onClick={save}><Save size={16} /></IconButton>
               <IconButton label="Save as / Convert" text onClick={() => setExportOpen('save-as')}><FileDown size={16} /></IconButton>
-              <IconButton label="Protect" text active={doc.protection.enabled} onClick={() => setSecurityOpen(true)}>
-                {doc.protection.enabled ? <ShieldCheck size={16} /> : <LockOpen size={16} />}
-              </IconButton>
-              <IconButton label="Print" onClick={print}><Printer size={16} /></IconButton>
+              {!isMediaDoc && (
+                <IconButton label="Protect" text active={doc.protection.enabled} onClick={() => setSecurityOpen(true)}>
+                  {doc.protection.enabled ? <ShieldCheck size={16} /> : <LockOpen size={16} />}
+                </IconButton>
+              )}
+              {doc.kind !== 'media' && <IconButton label="Print" onClick={print}><Printer size={16} /></IconButton>}
               {doc.kind === 'pdf' && (
                 <IconButton label="Convert PDF to editable document" onClick={convertPdfToFlow}><Wand2 size={16} /></IconButton>
               )}
-              <Divider />
-              <IconButton label="Zoom out (Ctrl -)" onClick={() => setZoom((z) => [...ZOOMS].reverse().find((v) => v < z - 0.001) ?? z)}><ZoomOut size={16} /></IconButton>
-              <select className="tb-select zoom-select" aria-label="Zoom" value={String(zoom)} onChange={(e) => setZoom(parseFloat(e.target.value))}>
-                {ZOOMS.map((z) => <option key={z} value={String(z)}>{Math.round(z * 100)}%</option>)}
-              </select>
-              <IconButton label="Zoom in (Ctrl +)" onClick={() => setZoom((z) => ZOOMS.find((v) => v > z + 0.001) ?? z)}><ZoomIn size={16} /></IconButton>
+              {!isMediaDoc && (
+                <>
+                  <Divider />
+                  <IconButton label="Zoom out (Ctrl -)" onClick={() => setZoom((z) => [...ZOOMS].reverse().find((v) => v < z - 0.001) ?? z)}><ZoomOut size={16} /></IconButton>
+                  <select className="tb-select zoom-select" aria-label="Zoom" value={String(zoom)} onChange={(e) => setZoom(parseFloat(e.target.value))}>
+                    {ZOOMS.map((z) => <option key={z} value={String(z)}>{Math.round(z * 100)}%</option>)}
+                  </select>
+                  <IconButton label="Zoom in (Ctrl +)" onClick={() => setZoom((z) => ZOOMS.find((v) => v > z + 0.001) ?? z)}><ZoomIn size={16} /></IconButton>
+                </>
+              )}
             </>
           )}
         </nav>
@@ -486,11 +681,19 @@ export default function App() {
         {doc?.kind === 'pdf' && (
           <PdfEditor key={doc.key} ref={pdfRef} bytes={doc.bytes} zoom={zoom} onChange={markDirty} onError={toast} onPageCount={setPageCount} loadAsPdf={loadAsPdf} />
         )}
+        {doc?.kind === 'image' && (
+          <ImageEditor key={doc.key} ref={imageRef} initial={doc.decoded} onChange={markDirty} onError={toast} onStatus={setImageStatus} />
+        )}
+        {doc?.kind === 'media' && (
+          <VideoEditor key={doc.key} ref={videoRef} blob={doc.blob} info={doc.info} onChange={markDirty} onError={toast} onSaveFrame={onSaveFrame} onEditFrame={onEditFrame} />
+        )}
       </main>
 
       {doc && (
         <footer className="statusbar">
-          <span>{format ? FORMATS[format].label : ''}</span>
+          <span>{format ? FORMATS[format].label : doc.kind === 'image' ? `${IMAGE_FORMATS[doc.format].label} image` : doc.kind === 'media' ? (doc.info.hasVideo ? 'Video' : 'Audio') : ''}</span>
+          {doc.kind === 'image' && imageStatus && <span>{imageStatus.width} × {imageStatus.height} px</span>}
+          {doc.kind === 'media' && <span>{formatTime(doc.info.duration, false)}{doc.info.hasVideo ? ` · ${doc.info.width} × ${doc.info.height}` : ''}{doc.info.fps ? ` · ${Math.round(doc.info.fps)} fps` : ''}</span>}
           {doc.kind === 'flow' && stats && <span>{stats.words.toLocaleString()} words · {stats.characters.toLocaleString()} characters</span>}
           {doc.kind === 'pdf' && pageCount !== null && <span>{pageCount} {pageCount === 1 ? 'page' : 'pages'}</span>}
           {doc.protection.enabled && <span className="status-lock"><Lock size={12} /> Password protected</span>}
@@ -528,10 +731,57 @@ export default function App() {
           onSubmit={(pw) => { askPw.resolve(pw); setAskPw(null); }}
         />
       )}
+      {exportOpen && doc?.kind === 'image' && (
+        <ImageExportModal
+          initialFormat={IMAGE_FORMATS[doc.format].canWrite ? (doc.format as ImageExportChoice['format']) : 'jpeg'}
+          initialName={baseName(doc.name)}
+          width={imageStatus?.width ?? doc.decoded.pixels.width}
+          height={imageStatus?.height ?? doc.decoded.pixels.height}
+          onClose={() => setExportOpen(null)}
+          onSubmit={(c) => {
+            setExportOpen(null);
+            void saveImage(c, undefined, true);
+          }}
+        />
+      )}
+      {exportOpen && doc?.kind === 'media' && (() => {
+        const e = videoRef.current?.getEdits();
+        const r = e ? rotatedSize(doc.info, e) : { width: doc.info.width, height: doc.info.height };
+        return (
+          <MediaExportModal
+            info={doc.info}
+            outWidth={Math.round(e?.crop?.width ?? r.width)}
+            outHeight={Math.round(e?.crop?.height ?? r.height)}
+            initialContainer={doc.container}
+            initialName={baseName(doc.name)}
+            onClose={() => setExportOpen(null)}
+            onSubmit={(c) => {
+              setExportOpen(null);
+              void saveMedia(c);
+            }}
+          />
+        );
+      })()}
+      {frameExport && (
+        <ImageExportModal
+          title="Save frame as image"
+          initialFormat="png"
+          initialName={frameExport.name}
+          width={frameExport.pixels.width}
+          height={frameExport.pixels.height}
+          onClose={() => setFrameExport(null)}
+          onSubmit={(c) => {
+            const px = frameExport.pixels;
+            setFrameExport(null);
+            void saveImage(c, undefined, false, px);
+          }}
+        />
+      )}
+      {progress && <ProgressModal title={progress.title} phase={progress.phase} progress={progress.progress} onCancel={progress.cancel} />}
       {exportOpen && doc && format && (
         <ExportModal
           title="Save as / Convert"
-          sourceKind={doc.kind}
+          sourceKind={doc.kind === 'pdf' ? 'pdf' : 'flow'}
           initialFormat={format}
           initialName={baseName(doc.name)}
           initialProtection={doc.protection}
@@ -554,8 +804,8 @@ function StartScreen({ onNew, onOpen }: { onNew: () => void; onOpen: () => void 
   return (
     <div className="start">
       <div className="start-inner">
-        <h1>Document Editor</h1>
-        <p className="start-lead">Create, edit, convert and password-protect documents. Everything runs on your device; no file is uploaded.</p>
+        <h1>File Editor</h1>
+        <p className="start-lead">Create, edit, convert and protect documents, photos, video and audio. Everything runs on your device; no file is uploaded.</p>
         <div className="start-cards">
           <button type="button" className="start-card" onClick={onNew}>
             <FilePlus size={28} />
@@ -565,7 +815,7 @@ function StartScreen({ onNew, onOpen }: { onNew: () => void; onOpen: () => void 
           <button type="button" className="start-card" onClick={onOpen}>
             <FolderOpen size={28} />
             <strong>Open a file</strong>
-            <span>or drag one anywhere onto this window</span>
+            <span>Documents, photos, video or audio — or drag one onto this window</span>
           </button>
         </div>
         <div className="start-formats">
@@ -574,7 +824,9 @@ function StartScreen({ onNew, onOpen }: { onNew: () => void; onOpen: () => void 
             <tbody>
               <tr><th>Edit</th><td>Word (.docx, .doc), PDF, OpenDocument (.odt), Rich Text (.rtf), Markdown, HTML, plain text</td></tr>
               <tr><th>PDF</th><td>Edit existing text, add text, images, links, shapes and drawings; insert, delete, reorder and rotate pages; merge files</td></tr>
-              <tr><th>Convert</th><td>Save any document in any of the formats above</td></tr>
+              <tr><th><ImageIcon size={14} /> Photos</th><td>JPEG, PNG, WebP, AVIF, HEIC (iPhone), JPEG XL, GIF, TIFF, BMP, ICO, SVG — crop, rotate, resize, adjust colour, filters, text, drawing, redact faces or plates</td></tr>
+              <tr><th><Film size={14} /> Video &amp; audio</th><td>MP4, MOV, WebM, MKV, AVI, WMV, FLV, MPEG, 3GP, MP3, M4A, WAV, FLAC, OGG and more — trim, crop, rotate, resize, colour, text, fades, volume, extract sound, GIFs</td></tr>
+              <tr><th>Convert</th><td>Save any file in any format of its kind: documents ↔ documents, photo ↔ photo (or PDF), video ↔ video ↔ audio</td></tr>
               <tr><th>Protect</th><td>Open and save password-protected Word and PDF files</td></tr>
             </tbody>
           </table>
