@@ -336,6 +336,8 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
   const [busy, setBusy] = useState(false);
   const [draftRect, setDraftRect] = useState<Rect | null>(null);
   const gesture = useRef<Gesture | null>(null);
+  /** Last press on an object, for double-click / double-tap detection (see startObj). */
+  const lastPress = useRef<{ id: string; t: number } | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -681,7 +683,15 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
       onChange();
       return;
     }
-    if (g.kind === 'move' || g.kind === 'resize') onChange();
+    if (g.kind === 'move' || g.kind === 'resize') {
+      if (objectsRef.current.find((x) => x.id === g.id) === g.orig) {
+        // a click that didn't move anything: drop the undo step it reserved
+        past.current.pop();
+        bump((n) => n + 1);
+        return;
+      }
+      onChange();
+    }
   };
 
   const startObj = (e: RPointerEvent, o: ImgObject, kind: 'move' | 'resize', handle: Handle = 'se') => {
@@ -690,6 +700,16 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
     e.preventDefault();
     setSelected(o.id);
     if (editing === o.id) return;
+    // Double-click / double-tap a caption to edit it again. Detected here because the pointer
+    // capture below retargets the browser's own dblclick to the stage.
+    const now = performance.now();
+    const again = kind === 'move' && lastPress.current?.id === o.id && now - lastPress.current.t < 450;
+    lastPress.current = kind === 'move' ? { id: o.id, t: now } : null;
+    if (o.type === 'text' && again) {
+      lastPress.current = null;
+      setEditing(o.id);
+      return;
+    }
     setEditing(null);
     stageRef.current?.setPointerCapture(e.pointerId);
     snapshot();

@@ -223,6 +223,8 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
   const [dragThumb, setDragThumb] = useState<number | null>(null);
   const canvases = useRef<Record<string, HTMLCanvasElement>>({});
   const gesture = useRef<Gesture | null>(null);
+  /** Last press on an object, for double-click / double-tap detection (see startMove). */
+  const lastPress = useRef<{ id: string; t: number } | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const scale = zoom * PT_TO_PX;
@@ -600,6 +602,11 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
     gesture.current = null;
     if (!g || g.pageId !== page.id) return;
     const obj = pagesRef.current?.find((p) => p.id === page.id)?.objects.find((o) => o.id === g.objId);
+    if ((g.kind === 'move' || g.kind === 'resize') && obj === g.orig) {
+      // a click that didn't move anything: drop the undo step it reserved
+      past.current.pop();
+      return;
+    }
     if (g.kind === 'draw' && obj) {
       const b = bounds(obj);
       const tiny = obj.type === 'ink' ? obj.points.length < 2 : Math.max(b.width, b.height) < 3;
@@ -624,6 +631,18 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
     if (tool !== 'select' && tool !== 'edit') return;
     setSelected({ pageId: page.id, objId: obj.id });
     if (editingId === obj.id) return;
+    // Re-open text for editing: one click with "Edit existing text", a double-click/tap with
+    // Select. Detected here because the pointer capture below retargets the browser's own
+    // dblclick to the page, so an onDoubleClick on the text never fires.
+    const now = performance.now();
+    const again = lastPress.current?.id === obj.id && now - lastPress.current.t < 450;
+    lastPress.current = { id: obj.id, t: now };
+    if (obj.type === 'text' && (tool === 'edit' || again)) {
+      e.preventDefault();
+      lastPress.current = null;
+      setEditingId(obj.id);
+      return;
+    }
     setEditingId(null);
     e.preventDefault();
     pageRefs.current[page.id]?.querySelector<HTMLElement>('.pdf-page-inner')?.setPointerCapture(e.pointerId);
