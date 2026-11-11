@@ -321,7 +321,7 @@
         "provider": "github",
         "owner": "brett96",
         "repo": "File-Editor",
-        "releaseType": "release"
+        "releaseType": "draft"
       }
     ]
   },

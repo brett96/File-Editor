@@ -129,12 +129,19 @@ it as `GH_TOKEN`; the built-in `GITHUB_TOKEN` can't publish to another repositor
 
 **Shipping an update**
 
-1. Bump `"version"` in `package.json` (e.g. `0.1.0` → `0.2.0`) and commit.
-2. Tag and push: `git tag v0.2.0` then `git push origin v0.2.0`.
-3. `.github/workflows/release.yml` runs the tests, builds the Windows and macOS installers,
-   signs them (if the secrets below are set) and publishes a GitHub Release containing the
-   installers plus `latest.yml` / `latest-mac.yml` — the files the app reads to learn about
-   new versions.
+1. Bump `"version"` in `package.json` (e.g. `0.1.0` → `0.2.0`), commit and push.
+2. Tag that commit and push the tag (a normal push doesn't send tags):
+   `git tag v0.2.0` then `git push origin v0.2.0`.
+3. `.github/workflows/release.yml` creates a draft release, runs the tests, builds the Windows
+   and macOS installers, signs them (if the secrets below are set) and uploads them with
+   `latest.yml` / `latest-mac.yml` — the files the app reads to learn about new versions.
+   The draft is published only when both platforms succeed. If a build fails, fix it and
+   re-run the workflow; it reuses the draft. A version that is already published can't be
+   rebuilt, so bump the version instead.
+
+Without a Mac signing certificate the macOS app is only ad-hoc signed. It runs, but users must
+right-click → Open the first time, and macOS can't auto-update it. Auto-update on macOS needs a
+Developer ID certificate.
 
 **What happens on users' machines** (`electron/main.ts` → `startAutoUpdates`)
 
