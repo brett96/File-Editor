@@ -83,6 +83,11 @@ let docKey = 1;
 
 const BLANK: RichDocument = { html: '<p></p>', title: 'Untitled' };
 
+/** Resolves after the browser has painted pending UI (e.g. a busy indicator). */
+function nextPaint(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+}
+
 function errorText(err: unknown): string {
   if (err instanceof Error) return err.message;
   // workers (ffmpeg.wasm) reject with plain strings
@@ -345,6 +350,9 @@ export default function App() {
     if (!d) return;
     setBusy('Saving…');
     try {
+      // let "Saving…" paint before building/encrypting the file, which can hold the main
+      // thread for seconds on a phone and otherwise looks like the page has frozen
+      await nextPaint();
       const bytes = await render(choice.format, choice.protection);
       const info = FORMATS[choice.format];
       const res = await host.save({ suggestedName: choice.fileName, bytes, mime: info.mime, ext: info.ext, description: info.label, handle });
@@ -386,6 +394,7 @@ export default function App() {
     if (!px) return;
     setBusy('Saving…');
     try {
+      await nextPaint();
       const out = await encodeChoice(px, c, baseName(c.fileName));
       const res = await host.save({ suggestedName: c.fileName, bytes: out.bytes, mime: out.mime, ext: out.ext, description: out.label, handle });
       if (!res) return;

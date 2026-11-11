@@ -791,6 +791,12 @@ textarea {
   .rh::after {
     inset: -14px;
   }
+
+  /* 16px stops mobile Safari zooming the page when a field is focused */
+  .modal .input {
+    font-size: 16px;
+    height: 40px;
+  }
 }
 
 .text-run {
@@ -939,6 +945,9 @@ textarea {
   inset: 0;
   background: rgb(10 14 25 / 45%);
   display: grid;
+  /* minmax(0, 1fr): the column is the screen width, so a modal's preferred width
+     (set inline) can't widen it past a phone screen and max-width: 100% works */
+  grid-template-columns: minmax(0, 1fr);
   place-items: center;
   z-index: 100;
   padding: 16px;
@@ -949,7 +958,10 @@ textarea {
   border-radius: 12px;
   box-shadow: var(--shadow-lg);
   max-width: 100%;
+  min-width: 0;
   max-height: calc(100vh - 32px);
+  /* dvh: the visible height on mobile browsers, whose toolbars cover part of 100vh */
+  max-height: calc(100dvh - 32px);
   display: flex;
   flex-direction: column;
 }
@@ -973,6 +985,7 @@ textarea {
 
 .modal-foot {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 12px 18px 16px;
@@ -1085,6 +1098,7 @@ textarea {
 
 .segmented button {
   flex: 1;
+  min-width: 0;
   border: 0;
   background: transparent;
   padding: 7px 8px;
@@ -1214,5 +1228,35 @@ textarea {
   .grid-2,
   .perm-grid {
     grid-template-columns: 1fr;
+  }
+
+  .modal-backdrop {
+    padding: 8px;
+  }
+
+  .modal {
+    max-height: calc(100vh - 16px);
+    max-height: calc(100dvh - 16px);
+  }
+
+  .modal-head {
+    padding: 14px 14px 4px;
+  }
+
+  .modal-body {
+    padding: 8px 14px 6px;
+  }
+
+  .modal-foot {
+    padding: 10px 14px 14px;
+  }
+
+  .protect-box {
+    padding: 10px;
+  }
+
+  /* the error message takes its own line above the buttons */
+  .modal-foot .dialog-error {
+    flex-basis: 100%;
   }
 }

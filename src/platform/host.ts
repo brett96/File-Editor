@@ -88,15 +88,24 @@ function pickWithInput(extensions: string[], multiple: boolean): Promise<File[]>
   });
 }
 
+let lastDownloadUrl: string | null = null;
+
 function download(bytes: Uint8Array, name: string, mime: string): void {
+  // Mobile browsers (Firefox for Android, Samsung Internet…) read the blob only after the
+  // person confirms the download sheet, which can take longer than any fixed delay. Keep the
+  // URL alive until the next download replaces it, instead of revoking it on a timer.
+  if (lastDownloadUrl) URL.revokeObjectURL(lastDownloadUrl);
   const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
+  lastDownloadUrl = url;
   const a = document.createElement('a');
   a.href = url;
   a.download = name;
+  a.rel = 'noopener';
+  a.style.display = 'none';
   document.body.appendChild(a);
   a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  // removing the anchor in the same task cancels the download in some mobile browsers
+  setTimeout(() => a.remove(), 0);
 }
 
 function createWebHost(): FileHost {
