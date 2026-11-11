@@ -194,6 +194,39 @@ export function cssColorToHex(value: string | null | undefined): string | null {
   return NAMED_COLORS[v] ?? null;
 }
 
+export interface BorderSide {
+  /** CSS border style: solid, dashed, dotted, double — or none. */
+  style: string;
+  widthPx: number;
+  /** "rrggbb" */
+  color: string;
+}
+
+const BORDER_KEYWORD_WIDTHS: Record<string, number> = { thin: 1, medium: 3, thick: 5 };
+
+/**
+ * One side of an element's inline border, however it was written (border-top, border,
+ * border-width/style/color shorthands — browsers rewrite these when they serialise styles).
+ * Null when the element's style says nothing about that side.
+ */
+export function cssBorderSide(el: Element, side: 'top' | 'right' | 'bottom' | 'left'): BorderSide | null {
+  const st = (el as HTMLElement).style;
+  if (!st) return null;
+  const style = st.getPropertyValue(`border-${side}-style`).trim().toLowerCase();
+  if (!style) return null;
+  if (style === 'none' || style === 'hidden') return { style: 'none', widthPx: 0, color: '000000' };
+  const w = st.getPropertyValue(`border-${side}-width`).trim().toLowerCase();
+  const pt = BORDER_KEYWORD_WIDTHS[w] !== undefined ? BORDER_KEYWORD_WIDTHS[w] * 0.75 : cssLengthToPt(w || 'medium');
+  const widthPx = pt === null ? 3 : Math.round((pt / 0.75) * 10) / 10;
+  if (widthPx <= 0) return { style: 'none', widthPx: 0, color: '000000' };
+  return { style, widthPx, color: cssColorToHex(st.getPropertyValue(`border-${side}-color`)) ?? '000000' };
+}
+
+/** A border side as a CSS value: "1px solid #808080" or "none". */
+export function borderSideCss(b: BorderSide): string {
+  return b.style === 'none' ? 'none' : `${b.widthPx}px ${b.style} #${b.color}`;
+}
+
 /** Parses an inline style attribute into a lowercase-keyed map. */
 export function parseStyle(el: Element): Record<string, string> {
   const out: Record<string, string> = {};

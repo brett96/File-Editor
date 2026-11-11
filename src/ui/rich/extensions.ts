@@ -9,6 +9,7 @@ import Subscript from '@tiptap/extension-subscript';
 import Superscript from '@tiptap/extension-superscript';
 import { FindReplace } from './search-extension';
 import { CharacterCount, Placeholder } from '@tiptap/extensions';
+import { CellFormat, FloatingImage, ParagraphFormat } from './format-extensions';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -44,7 +45,7 @@ export const PageBreak = Node.create({
 });
 
 /** The editor schema. It is deliberately the same vocabulary as the HTML contract. */
-export function createExtensions(): Extensions {
+export function createExtensions(placeholder = 'Start typing…'): Extensions {
   return [
     StarterKit.configure({
       heading: { levels: [1, 2, 3, 4, 5, 6] },
@@ -61,17 +62,21 @@ export function createExtensions(): Extensions {
     FontSize,
     Highlight.configure({ multicolor: true }),
     TextAlign.configure({ types: ['heading', 'paragraph'] }),
-    TableKit.configure({ table: { resizable: false, HTMLAttributes: {} } }),
+    // imported layouts use narrow spacer columns; keep them at their real width
+    TableKit.configure({ table: { resizable: false, cellMinWidth: 1, HTMLAttributes: {} } }),
     Image.configure({
       inline: true,
       allowBase64: true,
       resize: { enabled: true, minWidth: 24, minHeight: 24, alwaysPreserveAspectRatio: true },
     }),
+    FloatingImage,
     Subscript,
     Superscript,
+    ParagraphFormat,
+    CellFormat,
     PageBreak,
     FindReplace,
     CharacterCount,
-    Placeholder.configure({ placeholder: 'Start typing…' }),
+    Placeholder.configure({ placeholder }),
   ];
 }

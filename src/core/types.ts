@@ -14,9 +14,25 @@
  *          <a href="…">   <img src="data:…" width height alt>
  *          <span style="color:#rrggbb; font-family:…; font-size:12pt">
  *          <mark data-color="#rrggbb" style="background-color:#rrggbb">
- * Block style: style="text-align:left|center|right|justify" on <p>/<h*>
+ * Block style: style="text-align:left|center|right|justify" on <p>/<h*>, plus optionally
+ *          line-height (unitless or pt), margin-top / margin-bottom (pt), margin-left /
+ *          text-indent (pt) and background-color (paragraph shading)
+ * Tables : <td>/<th colwidth="px[,px…]"> (one width per spanned column) and
+ *          style="background-color; border-top|right|bottom|left: <w>px <style> #rrggbb | none;
+ *          vertical-align:top|middle|bottom; padding: T R B L (px, Word's cell margins)";
+ *          <tr style="height:Npx"> (minimum row height)
+ * Floating images (drawings / ink): <img … data-float-x="px" data-float-y="px"> is positioned
+ *          relative to the top-left of the block that contains it, outside the text flow;
+ *          data-ink="true" marks freehand drawings made in the editor; data-behind="true" puts
+ *          the image behind the text. In headers / footers the position is from the page corner.
  * Images are always embedded as data: URLs — never remote references.
  */
+
+/**
+ * CSS line-height that corresponds to Word's "single" (auto, 240) line spacing for the editor's
+ * fonts. Word's default 1.08 lines (259) is the editor's default of 1.32.
+ */
+export const CSS_LINE_PER_WORD_LINE = 1.22;
 
 export type FlowFormat = 'docx' | 'doc' | 'odt' | 'rtf' | 'md' | 'html' | 'txt';
 export type DocFormat = FlowFormat | 'pdf';
@@ -28,7 +44,13 @@ export interface PageSetup {
   orientation: 'portrait' | 'landscape';
   /** Margins in points (1/72 in). */
   margins: { top: number; right: number; bottom: number; left: number };
+  /** Distance from the page edge to the header / footer, in points (default 0.5 in). */
+  headerDistance?: number;
+  footerDistance?: number;
 }
+
+/** Word's default header / footer distance (708 twips ≈ 0.49 in), in points. */
+export const DEFAULT_HF_DISTANCE = 35.4;
 
 export const DEFAULT_PAGE_SETUP: PageSetup = {
   size: 'letter',
@@ -54,6 +76,12 @@ export interface RichDocument {
   html: string;
   title?: string;
   pageSetup?: PageSetup;
+  /**
+   * Page header / footer content (same HTML contract), repeated on every page. Floating images
+   * in them are positioned from the top-left corner of the page, not of their paragraph.
+   */
+  header?: string;
+  footer?: string;
 }
 
 export type Importer = (bytes: Uint8Array) => Promise<RichDocument>;

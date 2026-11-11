@@ -655,6 +655,22 @@
   .findbar-note {
     padding-left: 0;
   }
+
+  .draw-hint {
+    display: none;
+  }
+
+  /* Done stays in reach while the drawing tools scroll sideways */
+  .draw-toolbar {
+    mask-image: none;
+  }
+
+  .draw-done {
+    position: sticky;
+    right: 0;
+    margin-left: auto;
+    box-shadow: -10px 0 8px color-mix(in srgb, var(--accent) 7%, var(--surface));
+  }
 }
 
 /* iOS Safari zooms the whole page into any focused field smaller than 16px */

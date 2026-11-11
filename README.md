@@ -166,8 +166,22 @@ Developer ID certificate.
 
 ## Format support and limitations
 
-- **DOCX** is the highest-fidelity editable format. Headers, footers, footnotes, comments and
-  tracked-change history are not imported yet.
+- **DOCX** is the highest-fidelity editable format. Layout tables keep their column widths,
+  cell borders, shading and row heights, and paragraphs keep their spacing, line height and
+  indents. Footnotes, comments and tracked-change history are not imported yet.
+- **Headers and footers** (DOCX): the default header and footer are imported, edited (double-click
+  the top or bottom margin, or the Header & footer button) and saved back to DOCX, HTML/print and
+  PDF. Pictures and shape groups placed in them (background bands, logos, panels) keep their place
+  on the page; shape groups are turned into a single picture when the file is opened, so they
+  can be moved but not reshaped. Custom-drawn shapes (freeform icons) are not drawn. The editor
+  shows the page as one continuous sheet, so the header appears once at the top and the footer
+  once at the bottom; printing and PDF repeat them on every page. Different first-page and
+  odd/even headers are not supported (the default one is used). ODT and RTF exports leave
+  headers and footers out.
+- **Drawing (Draw button):** pen, highlighter and eraser. Each group of strokes becomes a floating
+  picture anchored to the paragraph it was drawn over, so it moves with that text; drag it to
+  reposition it. DOCX keeps drawings floating. ODT, RTF and PDF exports place them inline at the
+  start of their paragraph.
 - **Legacy .doc** (Word 97–2003): text, paragraphs, tables and links are imported; most character
   formatting is not. Saving as `.doc` writes Word-compatible RTF content, which Word opens normally.
   Password-protected `.doc` files are not supported yet (re-save them as .docx in Word).

@@ -397,6 +397,7 @@ body {
 }
 
 .page-sheet {
+  position: relative;
   margin: 0 auto;
   background: #fff;
   color: #1b1b1f;
@@ -417,7 +418,8 @@ body {
   outline: none;
   font-family: Calibri, Carlito, 'Segoe UI', Arial, sans-serif;
   font-size: 11pt;
-  line-height: 1.5;
+  /* Word's default 1.08 line spacing (see CSS_LINE_PER_WORD_LINE) */
+  line-height: 1.32;
   min-height: 100%;
   word-wrap: break-word;
 }
@@ -430,12 +432,24 @@ body {
   margin: 0 0 8pt;
 }
 
-.doc-content h1 { font-size: 20pt; margin: 18pt 0 6pt; line-height: 1.2; }
-.doc-content h2 { font-size: 16pt; margin: 14pt 0 5pt; line-height: 1.25; }
-.doc-content h3 { font-size: 13pt; margin: 12pt 0 4pt; }
+/* sizes and spacing match the headings the DOCX export writes */
+.doc-content h1 { font-size: 20pt; margin: 18pt 0 4pt; line-height: 1.2; }
+.doc-content h2 { font-size: 16pt; margin: 14pt 0 4pt; line-height: 1.25; }
+.doc-content h3 { font-size: 14pt; margin: 12pt 0 4pt; }
+.doc-content h4 { font-size: 12pt; margin: 10pt 0 4pt; }
+.doc-content h5 { font-size: 11pt; margin: 10pt 0 4pt; }
+.doc-content h6 { font-size: 10pt; margin: 10pt 0 4pt; }
+
+/* floating images (ink) are positioned from the top-left of their paragraph */
+.doc-content p,
+.doc-content h1,
+.doc-content h2,
+.doc-content h3,
 .doc-content h4,
 .doc-content h5,
-.doc-content h6 { font-size: 11pt; margin: 10pt 0 4pt; }
+.doc-content h6 {
+  position: relative;
+}
 
 .doc-content blockquote {
   margin: 8pt 0 8pt 18pt;
@@ -1295,4 +1309,209 @@ body {
   .modal-foot .dialog-error {
     flex-basis: 100%;
   }
+}
+
+
+/* ── floating images & drawing ───────────────────────────────────────────── */
+.doc-content img.float-img {
+  position: absolute;
+  z-index: 3;
+  max-width: none;
+  cursor: move;
+  user-select: none;
+  -webkit-user-drag: none;
+  touch-action: none;
+}
+
+.doc-content img.float-img.ProseMirror-selectednode {
+  outline: 2px solid #2f5bea;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+.ink-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 6;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.ink-overlay.ink-eraser {
+  cursor: cell;
+}
+
+.draw-toolbar {
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
+  z-index: 4;
+}
+
+.ink-swatch {
+  width: 20px;
+  height: 20px;
+  margin: 0 2px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.draw-hint {
+  flex: 1;
+  min-width: 0;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.draw-done {
+  flex: none;
+  height: 30px;
+}
+
+.menu-check {
+  display: inline-flex;
+  width: 18px;
+  flex: none;
+  color: var(--accent);
+}
+
+/* format painter */
+.is-painting .doc-content {
+  cursor: copy;
+}
+
+/* ── formatting marks (¶) ────────────────────────────────────────────────── */
+.show-marks .doc-content p::after,
+.show-marks .doc-content h1::after,
+.show-marks .doc-content h2::after,
+.show-marks .doc-content h3::after,
+.show-marks .doc-content h4::after,
+.show-marks .doc-content h5::after,
+.show-marks .doc-content h6::after {
+  content: '¶';
+  margin-left: 1px;
+  color: #6f8fd0;
+  font-weight: normal;
+  font-style: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+/* table gridlines, so tables without borders can still be edited */
+.show-marks .doc-content td,
+.show-marks .doc-content th {
+  outline: 1px dashed #9fb3d9;
+  outline-offset: -1px;
+}
+
+
+/* ── headers & footers ───────────────────────────────────────────────────── */
+/* Page-sized layers behind the body. Floating pictures in them are placed from the page
+   corner, so their paragraphs must not be positioned. */
+.page-sheet .body-layer {
+  position: relative;
+  z-index: 1;
+}
+
+.hf-page {
+  position: absolute;
+  left: 0;
+  right: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.hf-header {
+  top: 0;
+}
+
+.hf-footer {
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.hf-page .doc-content {
+  min-height: 0;
+  /* ProseMirror makes its root positioned; here pictures must be placed from the page corner */
+  position: static;
+}
+
+.hf-page .doc-content p,
+.hf-page .doc-content h1,
+.hf-page .doc-content h2,
+.hf-page .doc-content h3,
+.hf-page .doc-content h4,
+.hf-page .doc-content h5,
+.hf-page .doc-content h6 {
+  position: static;
+}
+
+/* "behind text" pictures paint under the text of their own layer (header, footer or body) */
+.doc-content img.float-img[data-behind] {
+  z-index: -1;
+}
+
+/* an empty header / footer shows its placeholder only while it is being edited */
+.page-sheet:not(.hf-editing) .hf-page .doc-content p.is-editor-empty:first-child::before {
+  content: none;
+}
+
+/* editing a header / footer: it comes forward and the body fades, as in Word */
+.hf-editing .body-layer {
+  opacity: 0.45;
+  pointer-events: none;
+}
+
+.hf-editing-header .hf-header .hf-content,
+.hf-editing-footer .hf-footer .hf-content,
+.hf-label {
+  pointer-events: auto;
+}
+
+.hf-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-top: 1px dashed #2f5bea;
+  font: 11px var(--font);
+  color: #2f5bea;
+}
+
+.hf-header .hf-label {
+  margin-top: 2px;
+}
+
+.hf-footer .hf-label {
+  margin-bottom: 2px;
+  border-top: 0;
+  border-bottom: 1px dashed #2f5bea;
+}
+
+.hf-label > span {
+  background: #e8eefc;
+  padding: 1px 6px;
+  border-radius: 0 0 4px 4px;
+  margin-right: auto;
+}
+
+.hf-footer .hf-label > span {
+  border-radius: 4px 4px 0 0;
+}
+
+.hf-label button {
+  border: 1px solid #c3d0f5;
+  background: #fff;
+  color: #2f5bea;
+  border-radius: 4px;
+  padding: 1px 8px;
+  font: inherit;
+  cursor: pointer;
 }

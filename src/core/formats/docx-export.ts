@@ -9,10 +9,15 @@ import {
   BorderStyle,
   Document,
   ExternalHyperlink,
+  Footer,
+  Header,
   HeadingLevel,
+  HeightRule,
+  HorizontalPositionRelativeFrom,
   ImageRun,
   InternalHyperlink,
   LevelFormat,
+  LineRuleType,
   Packer,
   PageBreak,
   PageOrientation,
@@ -21,10 +26,14 @@ import {
   Tab,
   Table,
   TableCell,
+  TableLayoutType,
   TableRow,
   TextRun,
+  TextWrappingType,
   UnderlineType,
+  VerticalAlignTable,
   VerticalMergeType,
+  VerticalPositionRelativeFrom,
   WidthType,
   type ILevelsOptions,
   type IParagraphOptions,
@@ -33,8 +42,8 @@ import {
   type NumberingDefinition,
   type ParagraphChild,
 } from 'docx';
-import { cssColorToHex, cssLengthToPt, imageSize, parseDataUrl, parseHtml, parseStyle, primaryFontFamily } from '../dom';
-import { DEFAULT_PAGE_SETUP, PAGE_SIZES, type Exporter, type PageSetup } from '../types';
+import { cssBorderSide, cssColorToHex, cssLengthToPt, imageSize, parseDataUrl, parseHtml, parseStyle, primaryFontFamily } from '../dom';
+import { CSS_LINE_PER_WORD_LINE, DEFAULT_HF_DISTANCE, DEFAULT_PAGE_SETUP, PAGE_SIZES, type Exporter, type PageSetup } from '../types';
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type Align = (typeof AlignmentType)[keyof typeof AlignmentType];
@@ -48,6 +57,8 @@ const CODE_BLOCK_STYLE = 'CodeBlock';
 const INLINE_CODE_STYLE = 'InlineCode';
 const INDENT_STEP = 720; // twips per list / quote level
 const CELL_PADDING = 230; // twips taken by the default left+right cell margins (+ borders)
+const EMU_PER_PX = 9525;
+const TWIPS_PER_PX = 15;
 const MAX_LEVEL = 8;
 
 // ── inline formatting ────────────────────────────────────────────────────────
@@ -196,6 +207,8 @@ interface BlockCtx {
   /** Available text width in twips. */
   width: number;
   inCell: boolean;
+  /** In a header / footer: floating images are positioned from the page corner. */
+  pageAnchored?: boolean;
 }
 
 interface State {
@@ -299,6 +312,9 @@ class InlineBuilder {
     }
     if (intrinsic && !(intrinsic.width > 0 && intrinsic.height > 0)) intrinsic = null;
     const style = parseStyle(el);
+    const floatX = parseFloat(el.getAttribute('data-float-x') ?? '');
+    const floatY = parseFloat(el.getAttribute('data-float-y') ?? '');
+    const floating = Number.isFinite(floatX) && Number.isFinite(floatY);
     let w = pxLength(el.getAttribute('width')) ?? pxLength(style['width']);
     let h = pxLength(el.getAttribute('height')) ?? pxLength(style['height']);
     if (w && !h) h = intrinsic ? (w * intrinsic.height) / intrinsic.width : null;
@@ -311,18 +327,39 @@ class InlineBuilder {
     // 1 px = 15 twips. Scale down (never up) to fit the available text area.
     const maxW = Math.max(16, this.bc.width / 15);
     const maxH = Math.max(16, this.st.textHeight / 15);
-    const scale = Math.min(1, maxW / w, maxH / h);
+    // floating drawings keep their size and place; inline images are fitted to the text area
+    const scale = floating ? 1 : Math.min(1, maxW / w, maxH / h);
     const width = Math.max(1, Math.round(w * scale));
     const height = Math.max(1, Math.round(h * scale));
     const alt = el.getAttribute('alt') ?? '';
     const n = ++this.st.imageCount;
+    const ink = el.getAttribute('data-ink') === 'true';
     try {
       this.target.push(
         new ImageRun({
           type,
           data: data.bytes,
           transformation: { width, height },
-          altText: { name: `Picture ${n}`, description: alt, title: el.getAttribute('title') ?? '' },
+          // "Ink n" lets the importer recognise drawings made in this app
+          altText: { name: `${ink ? 'Ink' : 'Picture'} ${n}`, description: alt, title: el.getAttribute('title') ?? '' },
+          ...(floating
+            ? {
+                floating: {
+                  horizontalPosition: {
+                    relative: this.bc.pageAnchored ? HorizontalPositionRelativeFrom.PAGE : HorizontalPositionRelativeFrom.COLUMN,
+                    offset: Math.round(floatX * EMU_PER_PX),
+                  },
+                  verticalPosition: {
+                    relative: this.bc.pageAnchored ? VerticalPositionRelativeFrom.PAGE : VerticalPositionRelativeFrom.PARAGRAPH,
+                    offset: Math.round(floatY * EMU_PER_PX),
+                  },
+                  wrap: { type: TextWrappingType.NONE },
+                  allowOverlap: true,
+                  layoutInCell: true,
+                  behindDocument: el.getAttribute('data-behind') === 'true',
+                },
+              }
+            : {}),
         }),
       );
       this.trailingSpace = false;
@@ -403,7 +440,36 @@ function paraOptions(bc: BlockCtx, st: State, el: Element | null, kind: 'text' |
   } else if (bc.quoteDepth > 0) {
     left += INDENT_STEP * bc.quoteDepth;
   }
-  if (left > 0 && !numbered) o.indent = { left };
+  // paragraph spacing, line height, indents and shading (see the HTML contract)
+  const style = el ? parseStyle(el) : {};
+  const spacing: Mutable<NonNullable<IParagraphOptions['spacing']>> = {};
+  const lh = style['line-height'];
+  if (lh) {
+    if (/^\d+(\.\d+)?$/.test(lh)) {
+      spacing.line = Math.max(24, Math.round((parseFloat(lh) / CSS_LINE_PER_WORD_LINE) * 240));
+      spacing.lineRule = LineRuleType.AUTO;
+    } else {
+      const ptVal = cssLengthToPt(lh);
+      if (ptVal && ptVal > 0) {
+        spacing.line = Math.round(ptVal * 20);
+        spacing.lineRule = LineRuleType.AT_LEAST;
+      }
+    }
+  }
+  const before = cssLengthToPt(style['margin-top']);
+  const after = cssLengthToPt(style['margin-bottom']);
+  if (before !== null && before >= 0) spacing.before = Math.round(before * 20);
+  if (after !== null && after >= 0) spacing.after = Math.round(after * 20);
+  if (Object.keys(spacing).length && kind !== 'code') o.spacing = spacing;
+  const marginLeft = cssLengthToPt(style['margin-left']);
+  if (marginLeft && marginLeft > 0 && !numbered) left += Math.round(marginLeft * 20);
+  const textIndent = cssLengthToPt(style['text-indent']);
+  const first = textIndent ? Math.round(textIndent * 20) : 0;
+  if ((left > 0 || first) && !numbered) {
+    o.indent = { ...(left > 0 ? { left } : {}), ...(first > 0 ? { firstLine: first } : first < 0 ? { hanging: -first } : {}) };
+  }
+  const shade = kind !== 'code' ? cssColorToHex(style['background-color']) : null;
+  if (shade) o.shading = { type: ShadingType.CLEAR, color: 'auto', fill: shade.toUpperCase() };
   if (st.pendingPageBreak && !bc.inCell) {
     o.pageBreakBefore = true;
     st.pendingPageBreak = false;
@@ -712,8 +778,24 @@ function convertTable(table: Element, bc: BlockCtx, st: State): Table | null {
   const numCols = Math.max(...grid.map((row) => row.length));
   if (!numCols) return null;
 
-  const total = Math.max(numCols * 200, bc.width);
-  const colWidth = Math.floor(total / numCols);
+  // column widths: from the cells' colwidth (px per spanned column), the rest share what is left
+  const colPx: (number | undefined)[] = [];
+  for (const row of grid) {
+    for (const gc of row) {
+      if (!gc) continue;
+      const widths = (gc.el.getAttribute('colwidth') ?? '').split(',').map((v) => parseFloat(v));
+      if (widths.length !== gc.colspan || !widths.every((v) => v > 0)) continue;
+      widths.forEach((v, i) => (colPx[gc.col + i] ??= v));
+    }
+  }
+  const known = colPx.reduce<number>((n, v) => n + (v ? v * TWIPS_PER_PX : 0), 0);
+  const missing = Array.from({ length: numCols }, (_, i) => i).filter((i) => !colPx[i]).length;
+  const share = missing ? Math.max(200, Math.floor((bc.width - known) / missing)) : 0;
+  let columns = Array.from({ length: numCols }, (_, i) => (colPx[i] ? Math.round(colPx[i]! * TWIPS_PER_PX) : share));
+  const sum = columns.reduce((a, b) => a + b, 0);
+  if (sum > bc.width * 1.02) columns = columns.map((w) => Math.max(20, Math.floor((w * bc.width) / sum))); // keep it on the page
+  const fixed = missing === 0;
+  const spanWidth = (col: number, span: number) => columns.slice(col, col + span).reduce((a, b) => a + b, 0);
   let headerRun = true;
   const rows = trs.map((_, r) => {
     const cells: TableCell[] = [];
@@ -722,23 +804,35 @@ function convertTable(table: Element, bc: BlockCtx, st: State): Table | null {
     for (let c = 0; c < numCols; ) {
       const gc = grid[r][c];
       if (!gc) {
-        cells.push(new TableCell({ children: [new Paragraph({})], width: { size: colWidth, type: WidthType.DXA } }));
+        cells.push(new TableCell({ children: [new Paragraph({})], width: { size: columns[c], type: WidthType.DXA } }));
         allHeader = false;
         c++;
         continue;
       }
-      const width = colWidth * gc.colspan;
+      const width = spanWidth(c, gc.colspan);
       const opts: Mutable<ITableCellOptions> = {
         children: [],
         width: { size: width, type: WidthType.DXA },
       };
+      const cellStyle = parseStyle(gc.el);
+      const borders = cellBorders(gc.el);
+      if (borders) opts.borders = borders;
+      // cell margins (padding) in twips
+      const pst = (gc.el as HTMLElement).style;
+      if (pst?.paddingTop || pst?.paddingLeft) {
+        const tw = (v: string) => Math.max(0, Math.round((cssLengthToPt(v || '0') ?? 0) * 20));
+        opts.margins = { top: tw(pst.paddingTop), right: tw(pst.paddingRight), bottom: tw(pst.paddingBottom), left: tw(pst.paddingLeft) };
+      }
+      const va = cellStyle['vertical-align'];
+      if (va === 'middle') opts.verticalAlign = VerticalAlignTable.CENTER;
+      else if (va === 'bottom') opts.verticalAlign = VerticalAlignTable.BOTTOM;
       if (gc.colspan > 1) opts.columnSpan = gc.colspan;
       if (gc.row === r) {
         const isHeader = gc.el.tagName.toLowerCase() === 'th';
         if (!isHeader) allHeader = false;
         real++;
         if (gc.rowspan > 1) opts.verticalMerge = VerticalMergeType.RESTART;
-        const bg = cssColorToHex(parseStyle(gc.el)['background-color']);
+        const bg = cssColorToHex(parseStyle(gc.el)['background-color'] ?? (gc.el as HTMLElement).style?.backgroundColor);
         if (bg) opts.shading = { type: ShadingType.CLEAR, color: 'auto', fill: bg.toUpperCase() };
         const content: Block[] = [];
         const cellCtx: BlockCtx = {
@@ -760,14 +854,43 @@ function convertTable(table: Element, bc: BlockCtx, st: State): Table | null {
       c += gc.colspan;
     }
     headerRun = headerRun && allHeader && real > 0;
-    return new TableRow({ children: cells, ...(headerRun ? { tableHeader: true } : {}) });
+    const rowHeight = pxLength(parseStyle(trs[r])['height']);
+    return new TableRow({
+      children: cells,
+      ...(headerRun ? { tableHeader: true } : {}),
+      ...(rowHeight ? { height: { value: Math.round(rowHeight * TWIPS_PER_PX), rule: HeightRule.ATLEAST } } : {}),
+    });
   });
 
   return new Table({
     rows,
-    width: { size: colWidth * numCols, type: WidthType.DXA },
-    columnWidths: Array.from({ length: numCols }, () => colWidth),
+    width: { size: columns.reduce((a, b) => a + b, 0), type: WidthType.DXA },
+    columnWidths: columns,
+    ...(fixed ? { layout: TableLayoutType.FIXED } : {}),
   });
+}
+
+type CellBorder = { style: (typeof BorderStyle)[keyof typeof BorderStyle]; size: number; color: string };
+
+/** A cell's CSS borders as Word cell borders; null when the cell sets none. */
+function cellBorders(el: Element): { top?: CellBorder; right?: CellBorder; bottom?: CellBorder; left?: CellBorder } | null {
+  const out: { top?: CellBorder; right?: CellBorder; bottom?: CellBorder; left?: CellBorder } = {};
+  let any = false;
+  for (const side of ['top', 'right', 'bottom', 'left'] as const) {
+    const b = cssBorderSide(el, side);
+    if (!b) continue;
+    any = true;
+    if (b.style === 'none') {
+      out[side] = { style: BorderStyle.NONE, size: 0, color: 'auto' };
+      continue;
+    }
+    const kind = b.style;
+    const wordStyle = kind === 'dashed' ? BorderStyle.DASHED : kind === 'dotted' ? BorderStyle.DOTTED : kind === 'double' ? BorderStyle.DOUBLE : BorderStyle.SINGLE;
+    // Word sizes borders in eighths of a point (a double border's size is one of its lines)
+    const eighths = Math.max(2, Math.min(96, Math.round(b.widthPx * 0.75 * 8 * (kind === 'double' ? 1 / 3 : 1))));
+    out[side] = { style: wordStyle, size: eighths, color: b.color.toUpperCase() };
+  }
+  return any ? out : null;
 }
 
 /**
@@ -800,6 +923,8 @@ function normalisePageSetup(setup: PageSetup | undefined): PageSetup {
       bottom: num(m.bottom, 72),
       left: num(m.left, 72),
     },
+    headerDistance: num(s.headerDistance, DEFAULT_HF_DISTANCE),
+    footerDistance: num(s.footerDistance, DEFAULT_HF_DISTANCE),
   };
 }
 
@@ -845,6 +970,16 @@ export const exportDocx: Exporter = async (doc) => {
   convertChildren(parseHtml(doc.html ?? ''), root, st, blocks);
   flushPageBreak(st, blocks);
   const children = blocks.length ? finishBlocksTopLevel(blocks) : [new Paragraph({})];
+
+  // header / footer: same conversion; their floating images are placed from the page corner
+  const part = (html: string | undefined): Block[] | null => {
+    if (!html || !html.trim()) return null;
+    const out: Block[] = [];
+    convertChildren(parseHtml(html), { ...root, pageAnchored: true, inCell: true }, st, out);
+    return finishBlocks(out);
+  };
+  const headerBlocks = part(doc.header);
+  const footerBlocks = part(doc.footer);
 
   const file = new Document({
     title: doc.title || undefined,
@@ -910,9 +1045,16 @@ export const exportDocx: Exporter = async (doc) => {
               height: twips(portrait.height),
               orientation: landscape ? PageOrientation.LANDSCAPE : PageOrientation.PORTRAIT,
             },
-            margin: { ...margin, header: 708, footer: 708, gutter: 0 },
+            margin: {
+              ...margin,
+              header: twips(setup.headerDistance ?? DEFAULT_HF_DISTANCE),
+              footer: twips(setup.footerDistance ?? DEFAULT_HF_DISTANCE),
+              gutter: 0,
+            },
           },
         },
+        ...(headerBlocks ? { headers: { default: new Header({ children: headerBlocks }) } } : {}),
+        ...(footerBlocks ? { footers: { default: new Footer({ children: footerBlocks }) } } : {}),
         children,
       },
     ],
