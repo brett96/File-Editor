@@ -42,8 +42,16 @@ import {
   type NumberingDefinition,
   type ParagraphChild,
 } from 'docx';
+import JSZip from 'jszip';
 import { cssBorderSide, cssColorToHex, cssLengthToPt, imageSize, parseDataUrl, parseHtml, parseStyle, primaryFontFamily } from '../dom';
 import { CSS_LINE_PER_WORD_LINE, DEFAULT_HF_DISTANCE, DEFAULT_PAGE_SETUP, PAGE_SIZES, type Exporter, type PageSetup } from '../types';
+import { unpackDrawingMl, type DrawingMlPayload } from './drawingml-render';
+
+/** Tiny transparent PNG used as a placeholder while DrawingML shapes are reinjected. */
+const PLACEHOLDER_PNG = Uint8Array.from(
+  atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='),
+  (c) => c.charCodeAt(0),
+);
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type Align = (typeof AlignmentType)[keyof typeof AlignmentType];
@@ -211,6 +219,14 @@ interface BlockCtx {
   pageAnchored?: boolean;
 }
 
+interface ShapeArt {
+  payload: DrawingMlPayload;
+  /** Display size in EMUs (may differ from the original payload after resize). */
+  cx: number;
+  cy: number;
+  behind: boolean;
+}
+
 interface State {
   numbering: Map<string, NumberingDefinition>;
   listPlans: Map<Element, { plan: ListPlan; depth: number }>;
@@ -219,6 +235,8 @@ interface State {
   /** Text-area height in twips (images are scaled to fit). */
   textHeight: number;
   imageCount: number;
+  /** DrawingML payloads to reinject after packing (indexed by ShapeArt:N). */
+  shapeArts: ShapeArt[];
 }
 
 // ── inline content ───────────────────────────────────────────────────────────
@@ -300,48 +318,70 @@ class InlineBuilder {
   }
 
   private image(el: Element, fmt: RunFmt): void {
-    const data = parseDataUrl(el.getAttribute('src') ?? '');
-    if (!data || !data.bytes.length) return;
-    const type = sniffImageType(data.bytes);
-    if (!type) return;
-    let intrinsic: { width: number; height: number } | null = null;
-    try {
-      intrinsic = imageSize(data.bytes);
-    } catch {
-      intrinsic = null;
-    }
-    if (intrinsic && !(intrinsic.width > 0 && intrinsic.height > 0)) intrinsic = null;
     const style = parseStyle(el);
     const floatX = parseFloat(el.getAttribute('data-float-x') ?? '');
     const floatY = parseFloat(el.getAttribute('data-float-y') ?? '');
     const floating = Number.isFinite(floatX) && Number.isFinite(floatY);
     let w = pxLength(el.getAttribute('width')) ?? pxLength(style['width']);
     let h = pxLength(el.getAttribute('height')) ?? pxLength(style['height']);
+    const drawingml = el.getAttribute('data-drawingml');
+    const payload = drawingml ? unpackDrawingMl(drawingml) : null;
+
+    const data = parseDataUrl(el.getAttribute('src') ?? '');
+    let type = data ? sniffImageType(data.bytes) : null;
+    let bytes = data?.bytes;
+    let intrinsic: { width: number; height: number } | null = null;
+    if (bytes && type) {
+      try {
+        intrinsic = imageSize(bytes);
+      } catch {
+        intrinsic = null;
+      }
+      if (intrinsic && !(intrinsic.width > 0 && intrinsic.height > 0)) intrinsic = null;
+    }
+
+    // SVG (or DrawingML art): use a PNG placeholder; reinject native shapes after packing
+    if (payload || (data?.mime.includes('svg') && floating)) {
+      type = 'png';
+      bytes = PLACEHOLDER_PNG;
+      if (!w) w = payload ? payload.cx / EMU_PER_PX : 100;
+      if (!h) h = payload ? payload.cy / EMU_PER_PX : 100;
+    }
+
+    if (!type || !bytes?.length) return;
     if (w && !h) h = intrinsic ? (w * intrinsic.height) / intrinsic.width : null;
     else if (h && !w) w = intrinsic ? (h * intrinsic.width) / intrinsic.height : null;
     else if (!w && !h && intrinsic) {
       w = intrinsic.width;
       h = intrinsic.height;
     }
-    if (!w || !h) return; // size unknown → cannot be placed
-    // 1 px = 15 twips. Scale down (never up) to fit the available text area.
+    if (!w || !h) return;
     const maxW = Math.max(16, this.bc.width / 15);
     const maxH = Math.max(16, this.st.textHeight / 15);
-    // floating drawings keep their size and place; inline images are fitted to the text area
     const scale = floating ? 1 : Math.min(1, maxW / w, maxH / h);
     const width = Math.max(1, Math.round(w * scale));
     const height = Math.max(1, Math.round(h * scale));
     const alt = el.getAttribute('alt') ?? '';
     const n = ++this.st.imageCount;
     const ink = el.getAttribute('data-ink') === 'true';
+    const behind = el.getAttribute('data-behind') === 'true';
+    let name = `${ink ? 'Ink' : 'Picture'} ${n}`;
+    if (payload) {
+      name = `ShapeArt:${this.st.shapeArts.length}`;
+      this.st.shapeArts.push({
+        payload,
+        cx: Math.round(width * EMU_PER_PX),
+        cy: Math.round(height * EMU_PER_PX),
+        behind,
+      });
+    }
     try {
       this.target.push(
         new ImageRun({
           type,
-          data: data.bytes,
+          data: bytes,
           transformation: { width, height },
-          // "Ink n" lets the importer recognise drawings made in this app
-          altText: { name: `${ink ? 'Ink' : 'Picture'} ${n}`, description: alt, title: el.getAttribute('title') ?? '' },
+          altText: { name, description: alt, title: el.getAttribute('title') ?? '' },
           ...(floating
             ? {
                 floating: {
@@ -356,7 +396,7 @@ class InlineBuilder {
                   wrap: { type: TextWrappingType.NONE },
                   allowOverlap: true,
                   layoutInCell: true,
-                  behindDocument: el.getAttribute('data-behind') === 'true',
+                  behindDocument: behind,
                 },
               }
             : {}),
@@ -925,6 +965,8 @@ function normalisePageSetup(setup: PageSetup | undefined): PageSetup {
     },
     headerDistance: num(s.headerDistance, DEFAULT_HF_DISTANCE),
     footerDistance: num(s.footerDistance, DEFAULT_HF_DISTANCE),
+    differentFirstPage: s.differentFirstPage || undefined,
+    differentOddEven: s.differentOddEven || undefined,
   };
 }
 
@@ -957,6 +999,7 @@ export const exportDocx: Exporter = async (doc) => {
     pendingPageBreak: false,
     textHeight: Math.max(1440, pageH - margin.top - margin.bottom),
     imageCount: 0,
+    shapeArts: [],
   };
   const root: BlockCtx = {
     quoteDepth: 0,
@@ -978,13 +1021,20 @@ export const exportDocx: Exporter = async (doc) => {
     convertChildren(parseHtml(html), { ...root, pageAnchored: true, inCell: true }, st, out);
     return finishBlocks(out);
   };
-  const headerBlocks = part(doc.header);
-  const footerBlocks = part(doc.footer);
+  const headerDefault = part(doc.header);
+  const footerDefault = part(doc.footer);
+  const headerFirst = part(doc.headerFirst);
+  const footerFirst = part(doc.footerFirst);
+  const headerEven = part(doc.headerEven);
+  const footerEven = part(doc.footerEven);
+  const titlePage = !!(setup.differentFirstPage || headerFirst || footerFirst);
+  const evenOdd = !!(setup.differentOddEven || headerEven || footerEven);
 
   const file = new Document({
     title: doc.title || undefined,
     creator: 'File Editor',
     lastModifiedBy: 'File Editor',
+    evenAndOddHeaderAndFooters: evenOdd || undefined,
     styles: {
       default: {
         document: {
@@ -1038,6 +1088,7 @@ export const exportDocx: Exporter = async (doc) => {
     sections: [
       {
         properties: {
+          titlePage: titlePage || undefined,
           page: {
             size: {
               // docx swaps width/height itself for landscape, so always pass portrait values
@@ -1053,15 +1104,164 @@ export const exportDocx: Exporter = async (doc) => {
             },
           },
         },
-        ...(headerBlocks ? { headers: { default: new Header({ children: headerBlocks }) } } : {}),
-        ...(footerBlocks ? { footers: { default: new Footer({ children: footerBlocks }) } } : {}),
+        ...((headerDefault || headerFirst || headerEven)
+          ? {
+              headers: {
+                ...(headerDefault ? { default: new Header({ children: headerDefault }) } : {}),
+                ...(headerFirst ? { first: new Header({ children: headerFirst }) } : {}),
+                ...(headerEven ? { even: new Header({ children: headerEven }) } : {}),
+              },
+            }
+          : {}),
+        ...((footerDefault || footerFirst || footerEven)
+          ? {
+              footers: {
+                ...(footerDefault ? { default: new Footer({ children: footerDefault }) } : {}),
+                ...(footerFirst ? { first: new Footer({ children: footerFirst }) } : {}),
+                ...(footerEven ? { even: new Footer({ children: footerEven }) } : {}),
+              },
+            }
+          : {}),
         children,
       },
     ],
   });
 
-  return new Uint8Array(await Packer.toArrayBuffer(file));
+  const packed = new Uint8Array(await Packer.toArrayBuffer(file));
+  return st.shapeArts.length ? reinjectDrawingMl(packed, st.shapeArts) : packed;
 };
+
+const REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';
+const IMG_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image';
+
+function mimeExt(mime: string): { ext: string; contentType: string } {
+  if (/jpeg|jpg/i.test(mime)) return { ext: 'jpeg', contentType: 'image/jpeg' };
+  if (/gif/i.test(mime)) return { ext: 'gif', contentType: 'image/gif' };
+  if (/bmp/i.test(mime)) return { ext: 'bmp', contentType: 'image/bmp' };
+  if (/webp/i.test(mime)) return { ext: 'webp', contentType: 'image/webp' };
+  return { ext: 'png', contentType: 'image/png' };
+}
+
+/**
+ * Replaces placeholder pictures marked ShapeArt:N with the original DrawingML graphicData,
+ * remapping blip relationships and scaling extents to the (possibly resized) frame.
+ */
+async function reinjectDrawingMl(bytes: Uint8Array, arts: ShapeArt[]): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(bytes);
+  const xmlFiles = Object.keys(zip.files).filter((p) => /word\/(document|header\d+|footer\d+)\.xml$/i.test(p));
+  for (const path of xmlFiles) {
+    const file = zip.file(path);
+    if (!file) continue;
+    let xml = await file.async('string');
+    let changed = false;
+    const slash = path.lastIndexOf('/');
+    const dir = slash >= 0 ? path.slice(0, slash) : '';
+    const base = path.slice(slash + 1);
+    const relsPath = `${dir}/_rels/${base}.rels`;
+    let relsXml = (await zip.file(relsPath)?.async('string')) ?? `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${REL_NS}"></Relationships>`;
+    let nextRid = 1;
+    const used = new Set<string>();
+    for (const m of relsXml.matchAll(/\bId="(rId\d+)"/g)) used.add(m[1]);
+    const allocRid = (): string => {
+      while (used.has(`rId${nextRid}`)) nextRid++;
+      const id = `rId${nextRid++}`;
+      used.add(id);
+      return id;
+    };
+
+    xml = xml.replace(/<w:drawing\b[\s\S]*?<\/w:drawing>/g, (drawing) => {
+      const name = /<wp:docPr\b[^>]*\bname="ShapeArt:(\d+)"/.exec(drawing);
+      if (!name) return drawing;
+      const art = arts[Number(name[1])];
+      if (!art) return drawing;
+      try {
+        let inner = art.payload.graphicData;
+        // Remap each original rId to a new relationship and write the media bytes
+        const ridMap = new Map<string, string>();
+        for (const [oldId, dataUrl] of Object.entries(art.payload.media)) {
+          const parsed = parseDataUrl(dataUrl);
+          if (!parsed) continue;
+          const { ext, contentType } = mimeExt(parsed.mime);
+          const newId = allocRid();
+          ridMap.set(oldId, newId);
+          const mediaName = `shapeArt_${name[1]}_${oldId}.${ext}`;
+          const mediaPath = `${dir}/media/${mediaName}`;
+          zip.file(mediaPath, parsed.bytes);
+          void contentType;
+          const target = `media/${mediaName}`;
+          if (!relsXml.includes(`Id="${newId}"`)) {
+            relsXml = relsXml.replace(
+              '</Relationships>',
+              `<Relationship Id="${newId}" Type="${IMG_REL}" Target="${target}"/></Relationships>`,
+            );
+          }
+        }
+        for (const [oldId, newId] of ridMap) {
+          inner = inner.replace(new RegExp(`(r:(?:embed|link)=")(${oldId})(")`, 'g'), `$1${newId}$3`);
+        }
+        // Scale child transforms when the frame was resized in the editor
+        const sx = art.payload.cx > 0 ? art.cx / art.payload.cx : 1;
+        const sy = art.payload.cy > 0 ? art.cy / art.payload.cy : 1;
+        if (Math.abs(sx - 1) > 0.001 || Math.abs(sy - 1) > 0.001) {
+          inner = inner.replace(/\b(cx|cy)="(-?\d+)"/g, (m, attr: string, val: string) => {
+            const n = parseInt(val, 10);
+            if (!Number.isFinite(n)) return m;
+            const k = attr === 'cy' ? sy : sx;
+            return `${attr}="${Math.round(n * k)}"`;
+          });
+        }
+        const uri = art.payload.uri || 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape';
+        const graphicData = `<a:graphicData uri="${uri}">${inner}</a:graphicData>`;
+        // Swap graphicData inside the drawing; update extent
+        let next = drawing.replace(/<a:graphicData\b[\s\S]*?<\/a:graphicData>/, graphicData);
+        next = next.replace(/<wp:extent\b[^>]*\/?>/, `<wp:extent cx="${art.cx}" cy="${art.cy}"/>`);
+        next = next.replace(/<wp:docPr\b([^>]*)\bname="ShapeArt:\d+"/, `<wp:docPr$1name="Group ${name[1]}"`);
+        changed = true;
+        return next;
+      } catch {
+        return drawing;
+      }
+    });
+
+    if (changed) {
+      // Ensure WordprocessingShape / Group namespaces exist on the part root
+      if (xml.includes('wps:') && !/xmlns:wps=/.test(xml)) {
+        xml = xml.replace(
+          /<(w:hdr|w:ftr|w:document)\b/,
+          '<$1 xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"',
+        );
+      }
+      if (xml.includes('wpg:') && !/xmlns:wpg=/.test(xml)) {
+        xml = xml.replace(
+          /<(w:hdr|w:ftr|w:document)\b/,
+          '<$1 xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"',
+        );
+      }
+      zip.file(path, xml);
+      zip.file(relsPath, relsXml);
+    }
+  }
+
+  // Register media content types for any shapeArt_* files
+  const ctFile = zip.file('[Content_Types].xml');
+  if (ctFile) {
+    let ct = await ctFile.async('string');
+    const ensure = (ext: string, type: string) => {
+      if (!ct.includes(`Extension="${ext}"`)) {
+        ct = ct.replace('</Types>', `<Default Extension="${ext}" ContentType="${type}"/></Types>`);
+      }
+    };
+    ensure('png', 'image/png');
+    ensure('jpeg', 'image/jpeg');
+    ensure('jpg', 'image/jpeg');
+    ensure('gif', 'image/gif');
+    ensure('bmp', 'image/bmp');
+    ensure('webp', 'image/webp');
+    zip.file('[Content_Types].xml', ct);
+  }
+
+  return zip.generateAsync({ type: 'uint8array' });
+}
 
 /** Like finishBlocks, but the body may end with a table. */
 function finishBlocksTopLevel(blocks: Block[]): Block[] {

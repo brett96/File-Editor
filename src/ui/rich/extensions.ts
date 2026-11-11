@@ -7,9 +7,51 @@ import { TableKit } from '@tiptap/extension-table';
 import Image from '@tiptap/extension-image';
 import Subscript from '@tiptap/extension-subscript';
 import Superscript from '@tiptap/extension-superscript';
+import { Plugin } from '@tiptap/pm/state';
 import { FindReplace } from './search-extension';
 import { CharacterCount, Placeholder } from '@tiptap/extensions';
 import { CellFormat, FloatingImage, ParagraphFormat } from './format-extensions';
+
+/** Double-click an inline image to request editing (App may listen for `edit-doc-image`). */
+const DocImage = Image.extend({
+  addProseMirrorPlugins() {
+    return [
+      ...(this.parent?.() ?? []),
+      new Plugin({
+        props: {
+          handleDOMEvents: {
+            dblclick(view, event) {
+              const t = event.target;
+              if (!(t instanceof HTMLImageElement)) return false;
+              if (t.classList.contains('float-img') || t.closest('.float-img-wrap')) return false;
+              let pos: number | null = null;
+              try {
+                pos = view.posAtDOM(t, 0);
+              } catch {
+                return false;
+              }
+              if (pos == null) return false;
+              const node = view.state.doc.nodeAt(pos);
+              if (!node || node.type.name !== 'image') return false;
+              view.dom.dispatchEvent(
+                new CustomEvent('edit-doc-image', {
+                  bubbles: true,
+                  detail: {
+                    src: node.attrs.src as string,
+                    width: node.attrs.width as number | undefined,
+                    height: node.attrs.height as number | undefined,
+                    pos,
+                  },
+                }),
+              );
+              return true;
+            },
+          },
+        },
+      }),
+    ];
+  },
+});
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -64,7 +106,7 @@ export function createExtensions(placeholder = 'Start typing…'): Extensions {
     TextAlign.configure({ types: ['heading', 'paragraph'] }),
     // imported layouts use narrow spacer columns; keep them at their real width
     TableKit.configure({ table: { resizable: false, cellMinWidth: 1, HTMLAttributes: {} } }),
-    Image.configure({
+    DocImage.configure({
       inline: true,
       allowBase64: true,
       resize: { enabled: true, minWidth: 24, minHeight: 24, alwaysPreserveAspectRatio: true },

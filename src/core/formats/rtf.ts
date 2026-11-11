@@ -21,6 +21,7 @@ import {
   utf8Encode,
 } from '../dom';
 import {
+  DEFAULT_HF_DISTANCE,
   DEFAULT_PAGE_SETUP,
   PAGE_SIZES,
   pageDimensions,
@@ -28,6 +29,7 @@ import {
   type Importer,
   type PageSetup,
   type PageSize,
+  type RichDocument,
 } from '../types';
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -890,9 +892,25 @@ class RtfWriter {
     this.items.push({ t: 'raw', s: out });
   }
 
+  /** Converts an HTML fragment to an RTF body snippet without touching the document items. */
+  fragment(root: HTMLElement): string {
+    const savedItems = this.items;
+    const savedBreak = this.pendingBreak;
+    this.items = [];
+    this.pendingBreak = false;
+    try {
+      this.blocks(root, { li: 0, ri: 0, inTable: false, quote: false, bold: false, listDepth: 0, item: null });
+      this.flushBreak();
+      return this.items.map((i) => (i.t === 'p' ? `${i.s}\\par\n` : i.s)).join('');
+    } finally {
+      this.items = savedItems;
+      this.pendingBreak = savedBreak;
+    }
+  }
+
   /* ── document ── */
 
-  finish(title: string | undefined): string {
+  finish(title: string | undefined, headers: RtfHeaderFooterParts = {}): string {
     this.flushBreak();
     const body = this.items.map((i) => (i.t === 'p' ? `${i.s}\\par\n` : i.s)).join('');
 
@@ -940,12 +958,41 @@ class RtfWriter {
     const m = this.setup.margins;
     const tw = (pt: number) => Math.round(pt * 20);
     const landscape = this.setup.orientation === 'landscape';
+    const facing = !!(headers.headerEven || headers.footerEven || this.setup.differentOddEven);
+    const titlepg = !!(headers.headerFirst || headers.footerFirst || this.setup.differentFirstPage);
+    const hasHf = !!(
+      headers.header || headers.footer || headers.headerFirst || headers.footerFirst ||
+      headers.headerEven || headers.footerEven
+    );
+    const dest = (name: string, content: string | undefined) =>
+      content && content.trim() ? `{\\${name} ${content}}` : '';
+    let hf = '';
+    if (facing) {
+      // even = left, odd/default = right
+      hf += dest('headerl', headers.headerEven || headers.header);
+      hf += dest('headerr', headers.header);
+      hf += dest('footerl', headers.footerEven || headers.footer);
+      hf += dest('footerr', headers.footer);
+    } else {
+      hf += dest('header', headers.header);
+      hf += dest('footer', headers.footer);
+    }
+    if (titlepg) {
+      hf += dest('headerf', headers.headerFirst || headers.header);
+      hf += dest('footerf', headers.footerFirst || headers.footer);
+    }
+    const hfDist =
+      hasHf || this.setup.headerDistance !== undefined || this.setup.footerDistance !== undefined
+        ? `\\headery${tw(this.setup.headerDistance ?? DEFAULT_HF_DISTANCE)}\\footery${tw(this.setup.footerDistance ?? DEFAULT_HF_DISTANCE)}`
+        : '';
     const page =
       `\\paperw${tw(dims.width)}\\paperh${tw(dims.height)}` +
       `\\margl${tw(m.left)}\\margr${tw(m.right)}\\margt${tw(m.top)}\\margb${tw(m.bottom)}` +
+      hfDist +
       (landscape ? '\\landscape' : '') +
+      (facing ? '\\facingp' : '') +
       '\\widowctrl\\ftnbj\\viewkind1' +
-      `\\sectd${landscape ? '\\lndscpsxn' : ''}\\pgwsxn${tw(dims.width)}\\pghsxn${tw(dims.height)}` +
+      `\\sectd${landscape ? '\\lndscpsxn' : ''}${titlepg ? '\\titlepg' : ''}\\pgwsxn${tw(dims.width)}\\pghsxn${tw(dims.height)}` +
       `\\marglsxn${tw(m.left)}\\margrsxn${tw(m.right)}\\margtsxn${tw(m.top)}\\margbsxn${tw(m.bottom)}`;
 
     return (
@@ -956,18 +1003,42 @@ class RtfWriter {
       (listtable ? `{\\*\\listtable\n${listtable}}\n{\\*\\listoverridetable${overrides}}\n` : '') +
       (title ? `{\\info{\\title ${rtfEscape(title)}}}\n` : '') +
       `${page}\n` +
+      (hf ? `${hf}\n` : '') +
       body +
       '}\n'
     );
   }
 }
 
+interface RtfHeaderFooterParts {
+  header?: string;
+  footer?: string;
+  headerFirst?: string;
+  footerFirst?: string;
+  headerEven?: string;
+  footerEven?: string;
+}
+
 export const exportRtf: Exporter = async (doc) => {
-  const root = parseHtml(doc.html ?? '');
-  const images = await prepareImages(root);
+  const roots = [doc.html, doc.header, doc.footer, doc.headerFirst, doc.footerFirst, doc.headerEven, doc.footerEven]
+    .filter((h): h is string => !!h && !!h.trim())
+    .map((h) => parseHtml(h));
+  const images = new Map<string, PreparedImage>();
+  for (const root of roots) {
+    for (const [k, v] of await prepareImages(root)) images.set(k, v);
+  }
   const writer = new RtfWriter(doc.pageSetup ?? DEFAULT_PAGE_SETUP, images);
-  writer.blocks(root, { li: 0, ri: 0, inTable: false, quote: false, bold: false, listDepth: 0, item: null });
-  return utf8Encode(writer.finish(doc.title));
+  const frag = (html: string | undefined) => (html && html.trim() ? writer.fragment(parseHtml(html)) : undefined);
+  const headers: RtfHeaderFooterParts = {
+    header: frag(doc.header),
+    footer: frag(doc.footer),
+    headerFirst: frag(doc.headerFirst),
+    footerFirst: frag(doc.footerFirst),
+    headerEven: frag(doc.headerEven),
+    footerEven: frag(doc.footerEven),
+  };
+  writer.blocks(parseHtml(doc.html ?? ''), { li: 0, ri: 0, inTable: false, quote: false, bold: false, listDepth: 0, item: null });
+  return utf8Encode(writer.finish(doc.title, headers));
 };
 
 /* ════════════════════════════════════════════════════════════════════════════
@@ -1263,9 +1334,14 @@ function decoderFor(cp: number): ByteDecoder {
   return d;
 }
 
+/** Header / footer destinations captured into RichDocument fields. */
+const HF_DESTINATIONS = new Set([
+  'header', 'headerl', 'headerr', 'headerf', 'footer', 'footerl', 'footerr', 'footerf',
+]);
+
 /** Destinations whose content is never document text. */
 const SKIP_DESTINATIONS = new Set([
-  'header', 'headerl', 'headerr', 'headerf', 'footer', 'footerl', 'footerr', 'footerf', 'footnote',
+  'footnote',
   'pn', 'pnseclvl', 'object', 'shp', 'shpgrp', 'shprslt', 'shpinst', 'do', 'xe', 'tc', 'rxe', 'txe', 'private',
   'generator', 'themedata', 'colorschememapping', 'latentstyles', 'datastore', 'filetbl', 'revtbl', 'rsidtbl',
   'xmlnstbl', 'listpicture', 'mmathPr', 'template', 'operator', 'author', 'title', 'subject', 'keywords',
@@ -1308,7 +1384,21 @@ class RtfReader {
   private link: string | null = null;
 
   title: string | undefined;
-  private paper: { w?: number; h?: number; l?: number; r?: number; t?: number; b?: number; landscape?: boolean } = {};
+  private paper: {
+    w?: number;
+    h?: number;
+    l?: number;
+    r?: number;
+    t?: number;
+    b?: number;
+    landscape?: boolean;
+    headery?: number;
+    footery?: number;
+    facingp?: boolean;
+    titlepg?: boolean;
+  } = {};
+  /** Captured header / footer HTML by destination name. */
+  private hfHtml: Partial<Record<string, string>> = {};
 
   constructor(private readonly src: Uint8Array) {
     this.defC = {
@@ -1474,10 +1564,64 @@ class RtfReader {
           this.run(g.kids, first.index + 1);
           return;
         default:
+          if (HF_DESTINATIONS.has(first.word)) {
+            this.captureHeaderFooter(first.word, g, first.index + 1);
+            return;
+          }
           if (first.starred || SKIP_DESTINATIONS.has(first.word)) return;
       }
     }
     this.run(g.kids, 0);
+  }
+
+  /** Parses a header/footer destination into HTML without polluting the body. */
+  private captureHeaderFooter(word: string, g: GroupNode, from: number): void {
+    const saved = {
+      blocks: this.blocks,
+      cellBlocks: this.cellBlocks,
+      rowCells: this.rowCells,
+      rowDefs: this.rowDefs,
+      rowHeader: this.rowHeader,
+      pendDef: this.pendDef,
+      lastSect: this.lastSect,
+      runs: this.runs,
+      marker: this.marker,
+      afterBreak: this.afterBreak,
+      link: this.link,
+    };
+    this.blocks = [];
+    this.cellBlocks = [];
+    this.rowCells = [];
+    this.rowDefs = [];
+    this.rowHeader = false;
+    this.pendDef = { vmgf: false, vmrg: false, mgf: false, mrg: false };
+    this.lastSect = null;
+    this.runs = [];
+    this.marker = null;
+    this.afterBreak = false;
+    this.link = null;
+    try {
+      this.run(g.kids, from);
+      if (this.runs.length || this.marker !== null) {
+        if (this.rowCells.length || this.cellBlocks.length) this.endCell();
+        else this.endPara();
+      }
+      if (this.rowCells.length || this.cellBlocks.length) this.endRow();
+      const html = this.render(this.blocks, false);
+      if (html.trim()) this.hfHtml[word] = html;
+    } finally {
+      this.blocks = saved.blocks;
+      this.cellBlocks = saved.cellBlocks;
+      this.rowCells = saved.rowCells;
+      this.rowDefs = saved.rowDefs;
+      this.rowHeader = saved.rowHeader;
+      this.pendDef = saved.pendDef;
+      this.lastSect = saved.lastSect;
+      this.runs = saved.runs;
+      this.marker = saved.marker;
+      this.afterBreak = saved.afterBreak;
+      this.link = saved.link;
+    }
   }
 
   private run(kids: RtfNode[], from: number): void {
@@ -1838,6 +1982,18 @@ class RtfReader {
       case 'landscape':
         this.paper.landscape = true;
         return;
+      case 'headery':
+        this.paper.headery = p ?? undefined;
+        return;
+      case 'footery':
+        this.paper.footery = p ?? undefined;
+        return;
+      case 'facingp':
+        this.paper.facingp = true;
+        return;
+      case 'titlepg':
+        this.paper.titlepg = true;
+        return;
     }
   }
 
@@ -2099,12 +2255,39 @@ class RtfReader {
     const p = this.paper;
     if (p.w === undefined && p.h === undefined && p.l === undefined && p.t === undefined && !p.landscape) return undefined;
     const pt = (v: number | undefined) => (v === undefined ? undefined : v / 20);
-    return nearestPageSetup(
+    const setup = nearestPageSetup(
       (p.w ?? 12240) / 20,
       (p.h ?? 15840) / 20,
       { top: pt(p.t), right: pt(p.r), bottom: pt(p.b), left: pt(p.l) },
       !!p.landscape && (p.w ?? 0) >= (p.h ?? 0),
     );
+    const hd = pt(p.headery);
+    const fd = pt(p.footery);
+    if (hd !== undefined && Math.round(hd * 100) / 100 !== DEFAULT_HF_DISTANCE) setup.headerDistance = Math.round(hd * 100) / 100;
+    if (fd !== undefined && Math.round(fd * 100) / 100 !== DEFAULT_HF_DISTANCE) setup.footerDistance = Math.round(fd * 100) / 100;
+    if (p.titlepg) setup.differentFirstPage = true;
+    if (p.facingp) setup.differentOddEven = true;
+    return setup;
+  }
+
+  /** Maps captured RTF header/footer destinations onto RichDocument fields. */
+  headerFooterFields(): Pick<RichDocument, 'header' | 'footer' | 'headerFirst' | 'footerFirst' | 'headerEven' | 'footerEven'> {
+    const h = this.hfHtml;
+    const pick = (...keys: string[]) => {
+      for (const k of keys) {
+        const v = h[k];
+        if (v && v.trim()) return v;
+      }
+      return undefined;
+    };
+    return {
+      header: pick('header', 'headerr'),
+      footer: pick('footer', 'footerr'),
+      headerFirst: pick('headerf'),
+      footerFirst: pick('footerf'),
+      headerEven: pick('headerl'),
+      footerEven: pick('footerl'),
+    };
   }
 
   /* ── HTML rendering ── */
@@ -2403,9 +2586,11 @@ export const importRtf: Importer = async (bytes) => {
   const reader = new RtfReader(start ? bytes.subarray(start) : bytes);
   reader.read();
   const html = reader.render();
+  const hf = reader.headerFooterFields();
   return {
     html: html || '<p></p>',
     title: reader.title,
     pageSetup: reader.pageSetup(),
+    ...hf,
   };
 };

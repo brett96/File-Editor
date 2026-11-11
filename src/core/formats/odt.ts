@@ -23,7 +23,7 @@ import {
   primaryFontFamily,
   toDataUrl,
 } from '../dom';
-import { DEFAULT_PAGE_SETUP, pageDimensions, UnsupportedError, type Exporter, type Importer, type PageSetup } from '../types';
+import { DEFAULT_HF_DISTANCE, DEFAULT_PAGE_SETUP, pageDimensions, UnsupportedError, type Exporter, type Importer, type PageSetup } from '../types';
 import { nearestPageSetup, PAGE_BREAK_HTML, renderInlineRuns, type InlineFmt, type InlineRun } from './rtf';
 
 const NS = {
@@ -749,9 +749,11 @@ class OdtWriter {
     );
   }
 
-  stylesXml(): string {
+  stylesXml(headerXml: string, footerXml: string): string {
     const dims = pageDimensions(this.setup);
     const m = this.setup.margins;
+    const hd = (this.setup.headerDistance ?? DEFAULT_HF_DISTANCE) / 72;
+    const fd = (this.setup.footerDistance ?? DEFAULT_HF_DISTANCE) / 72;
     let headings = '';
     const spacing = [
       [0.25, 0.0833],
@@ -778,6 +780,18 @@ class OdtWriter {
     }
     outline += '</text:outline-style>';
     const mono = escapeXml(MONO_FONT);
+    // auto styles for master-page header/footer (same definitions as content.xml)
+    const auto =
+      this.paraXml.join('') + this.textXml.join('') + this.tableXml.join('') + this.listXml.join('');
+    const headerStyle =
+      `<style:header-style><style:header-footer-properties fo:min-height="0in" fo:margin-left="0in" fo:margin-right="0in" fo:margin-bottom="${inch(Math.max(0, hd))}"/></style:header-style>`;
+    const footerStyle =
+      `<style:footer-style><style:header-footer-properties fo:min-height="0in" fo:margin-left="0in" fo:margin-right="0in" fo:margin-top="${inch(Math.max(0, fd))}"/></style:footer-style>`;
+    let master =
+      `<style:master-page style:name="Standard" style:page-layout-name="pm1">`;
+    if (headerXml) master += `<style:header>${headerXml}</style:header>`;
+    if (footerXml) master += `<style:footer>${footerXml}</style:footer>`;
+    master += `</style:master-page>`;
     return (
       `<?xml version="1.0" encoding="UTF-8"?>\n` +
       `<office:document-styles ${NS_DECLS} office:version="1.2">${this.fontDecls()}` +
@@ -803,11 +817,11 @@ class OdtWriter {
       `<style:style style:name="Graphics" style:family="graphic"><style:graphic-properties text:anchor-type="as-char" svg:y="0in" style:vertical-pos="top" style:vertical-rel="baseline"/></style:style>` +
       outline +
       `</office:styles>` +
-      `<office:automatic-styles><style:page-layout style:name="pm1"><style:page-layout-properties ` +
+      `<office:automatic-styles>${auto}<style:page-layout style:name="pm1"><style:page-layout-properties ` +
       `fo:page-width="${inch(dims.width / 72)}" fo:page-height="${inch(dims.height / 72)}" style:print-orientation="${this.setup.orientation}" ` +
       `fo:margin-top="${inch(m.top / 72)}" fo:margin-bottom="${inch(m.bottom / 72)}" fo:margin-left="${inch(m.left / 72)}" fo:margin-right="${inch(m.right / 72)}" style:writing-mode="lr-tb"/>` +
-      `</style:page-layout></office:automatic-styles>` +
-      `<office:master-styles><style:master-page style:name="Standard" style:page-layout-name="pm1"/></office:master-styles>` +
+      `${headerStyle}${footerStyle}</style:page-layout></office:automatic-styles>` +
+      `<office:master-styles>${master}</office:master-styles>` +
       `</office:document-styles>`
     );
   }
@@ -840,9 +854,16 @@ export const exportOdt: Exporter = async (doc) => {
   const setup = doc.pageSetup ?? DEFAULT_PAGE_SETUP;
   const writer = new OdtWriter(setup);
   const ctx: OCtx = { inTable: false, quote: 0, base: 'Standard', inList: false };
+  const part = (html: string | undefined): string => {
+    if (!html || !html.trim()) return '';
+    return writer.blocks(parseHtml(html), { ...ctx }) + writer.finish({ ...ctx });
+  };
+  // headers / footers first so their styles are registered before the body
+  const headerXml = part(doc.header);
+  const footerXml = part(doc.footer);
   const body = writer.blocks(parseHtml(doc.html ?? ''), ctx) + writer.finish(ctx);
   const content = writer.contentXml(body);
-  const styles = writer.stylesXml();
+  const styles = writer.stylesXml(headerXml, footerXml);
 
   const zip = new JSZip();
   // The mimetype entry must come first and be stored uncompressed (ODF 1.2 part 3, §3.3).
@@ -1549,11 +1570,17 @@ export const importOdt: Importer = async (bytes) => {
     styles = null;
   }
 
-  // load every image referenced by the content
+  // load every image referenced by the content or by styles (headers / footers live in styles.xml)
   const images = new Map<string, { url: string; width: number; height: number }>();
-  for (const img of Array.from(content.getElementsByTagNameNS(NS.draw, 'image'))) {
-    const href = (attr(img, NS.xlink, 'href') ?? '').replace(/^\.\//, '');
-    if (!href || images.has(href) || /^[a-z]+:/i.test(href)) continue;
+  const hrefs = new Set<string>();
+  for (const root of [content.documentElement, styles?.documentElement]) {
+    if (!root) continue;
+    for (const img of Array.from(root.getElementsByTagNameNS(NS.draw, 'image'))) {
+      const href = (attr(img, NS.xlink, 'href') ?? '').replace(/^\.\//, '');
+      if (href && !/^[a-z]+:/i.test(href)) hrefs.add(href);
+    }
+  }
+  for (const href of hrefs) {
     const file = zip.file(href);
     if (!file) continue;
     const data = await file.async('uint8array');
@@ -1591,8 +1618,30 @@ export const importOdt: Importer = async (bytes) => {
     }
   }
 
-  return { html: html || '<p></p>', title, pageSetup: stylesRoot ? readPageSetup(stylesRoot) : undefined };
+  const pageSetup = stylesRoot ? readPageSetup(stylesRoot) : undefined;
+  const hf = stylesRoot ? readHeaderFooter(stylesRoot, reader) : {};
+  return { html: html || '<p></p>', title, pageSetup, ...hf };
 };
+
+/** Default master-page header / footer HTML (style:header / style:footer). */
+function readHeaderFooter(root: Element, reader: OdtReader): { header?: string; footer?: string } {
+  const masters = Array.from(root.getElementsByTagNameNS(NS.style, 'master-page'));
+  const master =
+    masters.find((m) => attr(m, NS.style, 'name') === 'Standard') ?? masters[0];
+  if (!master) return {};
+  const out: { header?: string; footer?: string } = {};
+  const headerEl = childrenNS(master, NS.style, 'header')[0];
+  const footerEl = childrenNS(master, NS.style, 'footer')[0];
+  if (headerEl) {
+    const h = reader.blocks(headerEl, { top: false, th: false });
+    if (h.trim()) out.header = h;
+  }
+  if (footerEl) {
+    const f = reader.blocks(footerEl, { top: false, th: false });
+    if (f.trim()) out.footer = f;
+  }
+  return out;
+}
 
 function readPageSetup(root: Element): PageSetup | undefined {
   const master = root.getElementsByTagNameNS(NS.style, 'master-page');
@@ -1610,10 +1659,22 @@ function readPageSetup(root: Element): PageSetup | undefined {
   if (!w || !h) return undefined;
   const margin = lengthPt(attr(props, NS.fo, 'margin')) ?? undefined;
   const side = (s: string) => lengthPt(attr(props, NS.fo, `margin-${s}`)) ?? margin;
-  return nearestPageSetup(
+  const setup = nearestPageSetup(
     w,
     h,
     { top: side('top'), right: side('right'), bottom: side('bottom'), left: side('left') },
     attr(props, NS.style, 'print-orientation') === 'landscape' && w >= h,
   );
+  // header / footer distances from style:header-style / style:footer-style
+  const headerStyle = layout ? childrenNS(layout, NS.style, 'header-style')[0] : undefined;
+  const footerStyle = layout ? childrenNS(layout, NS.style, 'footer-style')[0] : undefined;
+  const hfProps = (el: Element | undefined) =>
+    el ? childrenNS(el, NS.style, 'header-footer-properties')[0] : undefined;
+  const hdEl = hfProps(headerStyle);
+  const fdEl = hfProps(footerStyle);
+  const hd = hdEl ? lengthPt(attr(hdEl, NS.fo, 'margin-bottom')) : null;
+  const fd = fdEl ? lengthPt(attr(fdEl, NS.fo, 'margin-top')) : null;
+  if (hd !== null && Math.round(hd * 100) / 100 !== DEFAULT_HF_DISTANCE) setup.headerDistance = Math.round(hd * 100) / 100;
+  if (fd !== null && Math.round(fd * 100) / 100 !== DEFAULT_HF_DISTANCE) setup.footerDistance = Math.round(fd * 100) / 100;
+  return setup;
 }

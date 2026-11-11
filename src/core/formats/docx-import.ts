@@ -8,7 +8,7 @@
  */
 import JSZip from 'jszip';
 import { cssLengthToPt, decodeText, escapeHtml, parseXml, toDataUrl } from '../dom';
-import { readThemeColors, renderGraphic, type RenderEnv, type ThemeColors } from './drawingml-render';
+import { packDrawingMl, readThemeColors, renderGraphic, renderGraphicSvg, type RenderEnv, type ThemeColors } from './drawingml-render';
 import { CSS_LINE_PER_WORD_LINE, DEFAULT_HF_DISTANCE, DEFAULT_PAGE_SETUP, PAGE_SIZES, type Importer, type PageSetup, type PageSize, type RichDocument } from '../types';
 
 // ── XML helpers ──────────────────────────────────────────────────────────────
@@ -876,7 +876,14 @@ interface FloatPos {
   behind?: boolean;
 }
 
-function imgTag(src: string, width: number | null, height: number | null, alt: string, float?: FloatPos | null): string {
+function imgTag(
+  src: string,
+  width: number | null,
+  height: number | null,
+  alt: string,
+  float?: FloatPos | null,
+  drawingml?: string | null,
+): string {
   let html = `<img src="${escapeHtml(src)}"`;
   if (width && width > 0) html += ` width="${Math.round(width)}"`;
   if (height && height > 0) html += ` height="${Math.round(height)}"`;
@@ -885,6 +892,7 @@ function imgTag(src: string, width: number | null, height: number | null, alt: s
     if (float.ink) html += ' data-ink="true"';
     if (float.behind) html += ' data-behind="true"';
   }
+  if (drawingml) html += ` data-drawingml="${drawingml}"`;
   return `${html} alt="${escapeHtml(alt)}">`;
 }
 
@@ -974,12 +982,20 @@ function processPageAnchor(anchor: Element, pc: ParaCtx, ctx: Ctx): boolean {
   return true;
 }
 
-/** Renders the shape groups a header / footer referenced and puts the pictures in place. */
+/**
+ * Renders header/footer shape groups as SVG (preferred) or raster, and keeps the original
+ * DrawingML so save can put editable shapes back into Word.
+ */
 async function resolveArt(html: string, hf: HeaderFooterCtx, env: RenderEnv): Promise<string> {
   const rendered = await Promise.all(
     hf.jobs.map(async (job) => {
       try {
-        return await renderGraphic(job.graphicData, job.cx, job.cy, env, job.behind);
+        const svg = await renderGraphicSvg(job.graphicData, job.cx, job.cy, env);
+        const raster = svg ? null : await renderGraphic(job.graphicData, job.cx, job.cy, env, job.behind);
+        const src = svg ?? raster;
+        if (!src) return null;
+        const drawingml = packDrawingMl(job.graphicData, job.cx, job.cy, env.media);
+        return { src, drawingml };
       } catch {
         return null;
       }
@@ -987,8 +1003,10 @@ async function resolveArt(html: string, hf: HeaderFooterCtx, env: RenderEnv): Pr
   );
   return html.replace(/<img data-art-job="(\d+)">/g, (_m, i: string) => {
     const job = hf.jobs[Number(i)];
-    const src = rendered[Number(i)];
-    return job && src ? imgTag(src, job.cx / EMU_PER_PX, job.cy / EMU_PER_PX, job.name, { x: job.x, y: job.y, ink: false, behind: job.behind }) : '';
+    const art = rendered[Number(i)];
+    return job && art
+      ? imgTag(art.src, job.cx / EMU_PER_PX, job.cy / EMU_PER_PX, job.name, { x: job.x, y: job.y, ink: false, behind: job.behind }, art.drawingml)
+      : '';
   });
 }
 
@@ -1785,6 +1803,7 @@ function readPageSetup(body: Element): PageSetup {
   const dist = (tw: number) => Math.round(Math.abs(tw) * 5) / 100;
   if (header !== null && dist(header) !== DEFAULT_HF_DISTANCE) setup.headerDistance = dist(header);
   if (footer !== null && dist(footer) !== DEFAULT_HF_DISTANCE) setup.footerDistance = dist(footer);
+  if (kid(sect, 'titlePg')) setup.differentFirstPage = true;
   return setup;
 }
 
@@ -1825,10 +1844,20 @@ function hasVisibleContent(html: string): boolean {
   return /<img\b/i.test(html) || html.replace(/<[^>]+>/g, '').replace(/&nbsp;|\s/g, '').length > 0;
 }
 
-/** The default header / footer of the last section, converted with its own relationships. */
-async function readHeaderFooter(kind: 'header' | 'footer', sect: Element | null, zip: JSZip, rels: Map<string, Rel>, dir: string, ctx: Ctx, colors: ThemeColors): Promise<string | undefined> {
+/** One header / footer part (by w:type), converted with its own relationships. */
+async function readHeaderFooterPart(
+  kind: 'header' | 'footer',
+  type: string,
+  sect: Element | null,
+  zip: JSZip,
+  rels: Map<string, Rel>,
+  dir: string,
+  ctx: Ctx,
+  colors: ThemeColors,
+): Promise<string | undefined> {
   const refs = kids(sect, `${kind}Reference`);
-  const ref = refs.find((r) => attr(r, 'type') === 'default') ?? refs.find((r) => attr(r, 'type') === 'first') ?? refs[0];
+  const ref = refs.find((r) => (attr(r, 'type') || 'default') === type);
+  if (!ref) return undefined;
   const id = relAttr(ref, 'id');
   const rel = id ? rels.get(id) : undefined;
   if (!rel || rel.external) return undefined;
@@ -1844,6 +1873,45 @@ async function readHeaderFooter(kind: 'header' | 'footer', sect: Element | null,
   let html = processBlocks(xml.documentElement, partCtx, false);
   html = await resolveArt(html, hf, { theme: colors, media });
   return hasVisibleContent(html) ? html : undefined;
+}
+
+/** Default / first / even header or footer of the last section. */
+async function readHeaderFooters(
+  kind: 'header' | 'footer',
+  sect: Element | null,
+  zip: JSZip,
+  rels: Map<string, Rel>,
+  dir: string,
+  ctx: Ctx,
+  colors: ThemeColors,
+): Promise<{ default?: string; first?: string; even?: string }> {
+  const out: { default?: string; first?: string; even?: string } = {};
+  for (const type of ['default', 'first', 'even'] as const) {
+    try {
+      const html = await readHeaderFooterPart(kind, type, sect, zip, rels, dir, ctx, colors);
+      if (html) out[type] = html;
+    } catch {
+      /* a broken header must not lose the document */
+    }
+  }
+  // Word sometimes omits w:type="default"; fall back to the first untyped / unknown ref
+  if (!out.default && !out.first && !out.even) {
+    const refs = kids(sect, `${kind}Reference`);
+    const ref = refs[0];
+    if (ref) {
+      try {
+        const type = attr(ref, 'type') || 'default';
+        const html = await readHeaderFooterPart(kind, type, sect, zip, rels, dir, ctx, colors);
+        if (html) out.default = html;
+      } catch {
+        /* ignore */
+      }
+    }
+  } else if (!out.default) {
+    // prefer first as the editor's default when only title-page HF exists
+    if (out.first) out.default = out.first;
+  }
+  return out;
 }
 
 // ── entry point ──────────────────────────────────────────────────────────────
@@ -1942,16 +2010,26 @@ export const importDocx: Importer = async (bytes) => {
     pageSetup: readPageSetup(body),
   };
 
-  // headers and footers (the default ones of the last section)
+  // headers and footers of the last section (default / first / even)
   const sect = finalSection(body);
-  const colors = readThemeColors(themeXml, await readXml(zip, relTarget(rels, '/settings', dir, `${prefix}settings.xml`)));
-  for (const kind of ['header', 'footer'] as const) {
-    try {
-      const html = await readHeaderFooter(kind, sect, zip, rels, dir, ctx, colors);
-      if (html) result[kind] = html;
-    } catch {
-      /* a broken header must not lose the document */
-    }
+  const settingsXml = await readXml(zip, relTarget(rels, '/settings', dir, `${prefix}settings.xml`));
+  const colors = readThemeColors(themeXml, settingsXml);
+  if (toggle(settingsXml?.documentElement ?? null, 'evenAndOddHeaders') === true) {
+    result.pageSetup = { ...(result.pageSetup ?? { ...DEFAULT_PAGE_SETUP }), differentOddEven: true };
+  }
+  const headers = await readHeaderFooters('header', sect, zip, rels, dir, ctx, colors);
+  const footers = await readHeaderFooters('footer', sect, zip, rels, dir, ctx, colors);
+  if (headers.default) result.header = headers.default;
+  if (headers.first) result.headerFirst = headers.first;
+  if (headers.even) result.headerEven = headers.even;
+  if (footers.default) result.footer = footers.default;
+  if (footers.first) result.footerFirst = footers.first;
+  if (footers.even) result.footerEven = footers.even;
+  if ((headers.first || footers.first) && result.pageSetup && !result.pageSetup.differentFirstPage) {
+    result.pageSetup = { ...result.pageSetup, differentFirstPage: true };
+  }
+  if ((headers.even || footers.even) && result.pageSetup && !result.pageSetup.differentOddEven) {
+    result.pageSetup = { ...result.pageSetup, differentOddEven: true };
   }
 
   const core = await readXml(zip, 'docProps/core.xml');

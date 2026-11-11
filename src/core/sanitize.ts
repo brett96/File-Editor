@@ -20,7 +20,7 @@ const DROP_WITH_CONTENT = new Set([
 
 const ALLOWED_ATTRS: Record<string, string[]> = {
   a: ['href'],
-  img: ['src', 'alt', 'width', 'height', 'data-float-x', 'data-float-y', 'data-ink', 'data-behind'],
+  img: ['src', 'alt', 'width', 'height', 'data-float-x', 'data-float-y', 'data-ink', 'data-behind', 'data-drawingml'],
   td: ['colspan', 'rowspan', 'colwidth'],
   th: ['colspan', 'rowspan', 'colwidth'],
   div: ['data-page-break'],
@@ -71,7 +71,7 @@ function styleAllowed(prop: string, value: string, tag: string): boolean {
 }
 
 const SAFE_HREF = /^(https?:|mailto:|tel:|#)/i;
-const SAFE_IMG = /^data:image\/(png|jpe?g|gif|bmp|webp);base64,/i;
+const SAFE_IMG = /^data:image\/(png|jpe?g|gif|bmp|webp|svg\+xml);base64,/i;
 
 function cleanStyle(raw: string | null, tag: string): string {
   if (!raw) return '';

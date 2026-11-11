@@ -886,6 +886,136 @@ body {
   overflow: hidden;
 }
 
+.statusbar .popover-wrap {
+  flex: none;
+}
+
+.statusbar .btn-popover {
+  height: 22px;
+  padding: 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.statusbar .btn-popover:hover,
+.statusbar .btn-popover.is-active {
+  color: var(--text);
+  background: var(--hover, color-mix(in srgb, var(--text) 6%, transparent));
+}
+
+.format-switch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.format-menu {
+  min-width: 220px;
+  padding: 4px 0;
+}
+
+.format-menu-sep {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--border);
+}
+
+.format-menu-group {
+  padding: 6px 12px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── code editor ────────────────────────────────────────────────────── */
+.code-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  background: var(--bg, #f6f7f9);
+}
+
+.code-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex: none;
+}
+
+.code-mode-toggle {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+}
+
+.code-mode-toggle .btn {
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.code-mode-toggle .btn.is-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+.code-preview-note {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.code-panes {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+.code-panes.is-split {
+  grid-template-columns: 1fr 1fr;
+}
+
+.code-pane {
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+
+.code-source {
+  overflow: hidden;
+}
+
+.code-source .cm-editor {
+  height: 100%;
+}
+
+.code-source.is-hidden {
+  display: none;
+}
+
+.code-preview {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: #fff;
+}
+
+.btn-sm {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
 .status-lock {
   display: inline-flex;
   align-items: center;
@@ -1313,20 +1443,80 @@ body {
 
 
 /* ── floating images & drawing ───────────────────────────────────────────── */
-.doc-content img.float-img {
+.doc-content .float-img-wrap {
   position: absolute;
   z-index: 3;
+  display: inline-block;
+  max-width: none;
+  line-height: 0;
+  cursor: move;
+  user-select: none;
+  touch-action: none;
+}
+
+.doc-content .float-img-wrap img.float-img {
+  display: block;
+  width: 100%;
+  height: 100%;
   max-width: none;
   cursor: move;
   user-select: none;
   -webkit-user-drag: none;
-  touch-action: none;
+  pointer-events: auto;
 }
 
-.doc-content img.float-img.ProseMirror-selectednode {
+.doc-content .float-img-wrap.ProseMirror-selectednode {
   outline: 2px solid #2f5bea;
   outline-offset: 2px;
   border-radius: 2px;
+}
+
+.float-rh-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.float-rh {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  margin: -6px 0 0 -6px;
+  background: var(--accent);
+  border: 2px solid #fff;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 25%);
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.float-rh-n,
+.float-rh-s {
+  width: 16px;
+  height: 8px;
+  margin: -4px 0 0 -8px;
+  border-radius: 4px;
+}
+
+.float-rh-e,
+.float-rh-w {
+  width: 8px;
+  height: 16px;
+  margin: -8px 0 0 -4px;
+  border-radius: 4px;
+}
+
+.float-rh::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}
+
+@media (pointer: coarse) {
+  .float-rh::after {
+    inset: -14px;
+  }
 }
 
 .ink-overlay {
@@ -1409,6 +1599,42 @@ body {
 }
 
 
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  grid-column: 1 / -1;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+/* ── in-document image editor overlay ────────────────────────────────────── */
+.doc-image-edit {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg, #e9eaee);
+}
+
+.doc-image-edit-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--surface, #fff);
+  border-bottom: 1px solid var(--border, #d8dbe3);
+  flex: none;
+}
+
+.doc-image-edit .editor-root,
+.doc-image-edit > .image-editor,
+.doc-image-edit > *:last-child {
+  flex: 1;
+  min-height: 0;
+}
+
 /* ── headers & footers ───────────────────────────────────────────────────── */
 /* Page-sized layers behind the body. Floating pictures in them are placed from the page
    corner, so their paragraphs must not be positioned. */
@@ -1431,10 +1657,14 @@ body {
 }
 
 .hf-footer {
-  bottom: 0;
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
+}
+
+/* Mirrored headers/footers on pages after the first (not editable) */
+.hf-mirror {
+  pointer-events: none;
 }
 
 .hf-page .doc-content {
@@ -1454,6 +1684,7 @@ body {
 }
 
 /* "behind text" pictures paint under the text of their own layer (header, footer or body) */
+.doc-content .float-img-wrap[data-behind],
 .doc-content img.float-img[data-behind] {
   z-index: -1;
 }

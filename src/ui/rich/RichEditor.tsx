@@ -46,9 +46,12 @@ import {
   Undo2,
 } from 'lucide-react';
 import { DEFAULT_HF_DISTANCE, DEFAULT_PAGE_SETUP, pageDimensions, type PageSetup, type RichDocument } from '../../core/types';
+import { toDataUrl } from '../../core/dom';
+import { decodeImage, encodeImage, type DecodedImage } from '../../core/media/image-codecs';
 import { getHost } from '../../platform/host';
 import { ColorPicker, cx, Divider, Field, IconButton, MenuItem, Modal, Popover, PromptModal, Select } from '../components';
 import { IMAGE_EXTENSIONS, loadImageFile } from '../image-utils';
+import { ImageEditor, type ImageEditorHandle } from '../image/ImageEditor';
 import { createExtensions } from './extensions';
 import { FindBar } from '../FindBar';
 import { DEFAULT_SEARCH, type SearchOptions } from '../../core/search';
@@ -69,6 +72,8 @@ interface Props {
   onZoom?: (zoom: number) => void;
   onChange: () => void;
   onStats?: (stats: { words: number; characters: number }) => void;
+  /** Approximate page count for the status bar (headers repeat visually per page). */
+  onPageCount?: (n: number) => void;
   onError: (message: string, kind?: 'error' | 'info') => void;
 }
 
@@ -543,6 +548,14 @@ function PageSetupModal({ value, onApply, onClose }: { value: PageSetup; onApply
             <input className="input" type="number" min={0} max={4} step={0.05} value={inches(draft.margins[side])} onChange={(e) => setMargin(side, e.target.value)} />
           </Field>
         ))}
+        <label className="check-row">
+          <input type="checkbox" checked={!!draft.differentFirstPage} onChange={(e) => setDraft({ ...draft, differentFirstPage: e.target.checked })} />
+          Different first page header/footer
+        </label>
+        <label className="check-row">
+          <input type="checkbox" checked={!!draft.differentOddEven} onChange={(e) => setDraft({ ...draft, differentOddEven: e.target.checked })} />
+          Different odd and even headers/footers
+        </label>
       </div>
     </Modal>
   );
@@ -550,7 +563,7 @@ function PageSetupModal({ value, onApply, onClose }: { value: PageSetup; onApply
 
 /** True when an editor holds any text or picture. */
 function hasContent(ed: Editor | null): boolean {
-  return !!ed && (ed.getText().trim().length > 0 || /<img\b/.test(ed.getHTML()));
+  return !!ed && (ed.getText().trim().length > 0 || /<img\b/i.test(ed.getHTML()));
 }
 
 /** A small editor for the page header or footer (same schema as the body). */
@@ -567,7 +580,7 @@ function useSideEditor(content: string | undefined, placeholder: string, onChang
   });
 }
 
-export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initial, zoom, onZoom, onChange, onStats, onError }, ref) {
+export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEditor({ initial, zoom, onZoom, onChange, onStats, onPageCount, onError }, ref) {
   const [pageSetup, setPageSetup] = useState<PageSetup>(initial.pageSetup ?? DEFAULT_PAGE_SETUP);
   const [setupOpen, setSetupOpen] = useState(false);
   const [find, setFind] = useState<{ replace: boolean; token: number } | null>(null);
@@ -584,6 +597,10 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
   const headerEditor = useSideEditor(initial.header, 'Header', onChange);
   const footerEditor = useSideEditor(initial.footer, 'Footer', onChange);
   const [sheetEl, setSheetEl] = useState<HTMLDivElement | null>(null);
+  const [pageCount, setPageCount] = useState(1);
+  const [hfSnap, setHfSnap] = useState({ header: initial.header ?? '', footer: initial.footer ?? '' });
+  const [imgEdit, setImgEdit] = useState<{ pos: number; decoded: DecodedImage } | null>(null);
+  const imgEditRef = useRef<ImageEditorHandle>(null);
   usePinchZoom(scrollEl, sheetEl, zoom, onZoom, { min: 0.25, max: 4 });
   const extensions = useMemo(() => createExtensions(), []);
 
@@ -653,6 +670,11 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
           pageSetup,
           header: hasContent(headerEditor) ? headerEditor!.getHTML() : undefined,
           footer: hasContent(footerEditor) ? footerEditor!.getHTML() : undefined,
+          // first / even variants are not edited in the UI yet — keep what was imported
+          headerFirst: initial.headerFirst,
+          footerFirst: initial.footerFirst,
+          headerEven: initial.headerEven,
+          footerEven: initial.footerEven,
         };
       },
     }),
@@ -696,8 +718,99 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
     setSearch(editor.view, query, searchOpts);
   }, [editor, find, query, searchOpts]);
 
+  // Snapshot header/footer HTML so later pages can mirror the live editors
+  useEffect(() => {
+    if (!headerEditor || !footerEditor) return;
+    const sync = () => setHfSnap({ header: headerEditor.getHTML(), footer: footerEditor.getHTML() });
+    sync();
+    headerEditor.on('update', sync);
+    footerEditor.on('update', sync);
+    return () => {
+      headerEditor.off('update', sync);
+      footerEditor.off('update', sync);
+    };
+  }, [headerEditor, footerEditor]);
+
+  // Double-click an image in the document to open the photo editor
+  useEffect(() => {
+    const editors = [editor, headerEditor, footerEditor].filter(Boolean) as Editor[];
+    const onEdit = (e: Event) => {
+      const detail = (e as CustomEvent<{ src: string; pos: number }>).detail;
+      if (!detail?.src?.startsWith('data:image/')) return;
+      void (async () => {
+        try {
+          const res = await fetch(detail.src);
+          const blob = await res.blob();
+          const decoded = await decodeImage(blob, 'image.png');
+          setImgEdit({ pos: detail.pos, decoded });
+        } catch (err) {
+          onError(err instanceof Error ? err.message : 'Could not open the image for editing.');
+        }
+      })();
+    };
+    for (const ed of editors) ed.view.dom.addEventListener('edit-doc-image', onEdit);
+    return () => {
+      for (const ed of editors) ed.view.dom.removeEventListener('edit-doc-image', onEdit);
+    };
+  }, [editor, headerEditor, footerEditor, onError]);
+
+
+  // How many page-tall slices the body needs (measure the body only — not the padded minHeight)
+  useEffect(() => {
+    if (!sheetEl) return;
+    const pageH = (pageDimensions(pageSetup).height * 96) / 72;
+    const topPad = (pageSetup.margins.top * 96) / 72;
+    const bottomPad = (pageSetup.margins.bottom * 96) / 72;
+    const measure = () => {
+      const body = sheetEl.querySelector('.body-layer') as HTMLElement | null;
+      const bodyH = body ? body.scrollHeight : 0;
+      const total = topPad + bodyH + bottomPad;
+      const n = Math.max(1, Math.ceil(total / pageH - 0.001));
+      setPageCount((cur) => (cur === n ? cur : n));
+      onPageCount?.(n);
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    const body = sheetEl.querySelector('.body-layer');
+    if (body) ro.observe(body);
+    else ro.observe(sheetEl);
+    editor?.on('update', measure);
+    return () => {
+      ro.disconnect();
+      editor?.off('update', measure);
+    };
+  }, [sheetEl, pageSetup, editor, onPageCount]);
+
   // the editor being worked on: the body, or the header / footer while editing it
   const active = (hfEdit === 'header' ? headerEditor : hfEdit === 'footer' ? footerEditor : editor) ?? editor;
+
+  const applyImgEdit = async () => {
+    if (!imgEdit || !editor) return;
+    try {
+      const pixels = imgEditRef.current?.getPixels() ?? imgEdit.decoded.pixels;
+      const bytes = await encodeImage(pixels, 'png');
+      const src = toDataUrl('image/png', bytes);
+      const target = active ?? editor;
+      const node = target.state.doc.nodeAt(imgEdit.pos);
+      if (node && (node.type.name === 'image' || node.type.name === 'floatingImage')) {
+        const w = node.attrs.width || pixels.width;
+        const h = Math.round((w * pixels.height) / Math.max(1, pixels.width));
+        target.view.dispatch(
+          target.state.tr.setNodeMarkup(imgEdit.pos, undefined, {
+            ...node.attrs,
+            src,
+            width: w,
+            height: h,
+            drawingml: null,
+          }),
+        );
+        onChange();
+      }
+      setImgEdit(null);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : 'Could not save the edited image.');
+    }
+  };
 
   // entering header / footer editing puts the cursor there; Esc leaves
   useEffect(() => {
@@ -853,48 +966,83 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
           onDoubleClick={onSheetDoubleClick}
           style={{
             width: px(dims.width),
-            minHeight: px(dims.height),
+            minHeight: px(dims.height * pageCount),
             padding: `${px(pageSetup.margins.top)} ${px(pageSetup.margins.right)} ${px(pageSetup.margins.bottom)} ${px(pageSetup.margins.left)}`,
             zoom,
+            // Visual page breaks between stacked page regions
+            backgroundImage:
+              pageCount > 1
+                ? `repeating-linear-gradient(to bottom, #fff 0, #fff calc(${px(dims.height)} - 10px), #d8dbe3 calc(${px(dims.height)} - 10px), #d8dbe3 ${px(dims.height)})`
+                : undefined,
           }}
         >
-          {(['header', 'footer'] as const).map((part) => {
-            const ed = part === 'header' ? headerEditor : footerEditor;
-            if (!ed) return null;
-            const distance = px((part === 'header' ? pageSetup.headerDistance : pageSetup.footerDistance) ?? DEFAULT_HF_DISTANCE);
-            return (
-              <div key={part} className={`hf-page hf-${part}`} style={{ height: px(dims.height) }}>
+          {Array.from({ length: pageCount }, (_, pageIndex) => {
+            const oneBased = pageIndex + 1;
+            const pick = (part: 'header' | 'footer'): string => {
+              if (pageSetup.differentFirstPage && oneBased === 1) {
+                const v = part === 'header' ? initial.headerFirst : initial.footerFirst;
+                if (v) return v;
+              }
+              if (pageSetup.differentOddEven && oneBased % 2 === 0) {
+                const v = part === 'header' ? initial.headerEven : initial.footerEven;
+                if (v) return v;
+              }
+              return part === 'header' ? hfSnap.header : hfSnap.footer;
+            };
+            return (['header', 'footer'] as const).map((part) => {
+              const ed = part === 'header' ? headerEditor : footerEditor;
+              if (!ed) return null;
+              const distance = px((part === 'header' ? pageSetup.headerDistance : pageSetup.footerDistance) ?? DEFAULT_HF_DISTANCE);
+              const editable = pageIndex === 0;
+              const html = pick(part);
+              return (
                 <div
-                  className="hf-content"
+                  key={`${pageIndex}-${part}`}
+                  className={cx('hf-page', `hf-${part}`, !editable && 'hf-mirror')}
                   style={{
-                    marginLeft: px(pageSetup.margins.left),
-                    marginRight: px(pageSetup.margins.right),
-                    ...(part === 'header' ? { paddingTop: distance } : { paddingBottom: distance }),
+                    height: px(dims.height),
+                    top: px(dims.height * pageIndex),
+                    bottom: 'auto',
                   }}
                 >
-                  {part === 'header' && <EditorContent editor={ed} />}
-                  {hfEdit === part && (
-                    <div className="hf-label">
-                      <span>{part === 'header' ? 'Header' : 'Footer'}</span>
-                      <button type="button" className="hf-switch" onClick={() => setHfEdit(part === 'header' ? 'footer' : 'header')}>
-                        Go to {part === 'header' ? 'footer' : 'header'}
-                      </button>
-                      <button
-                        type="button"
-                        className="hf-close"
-                        onClick={() => {
-                          setHfEdit(null);
-                          editor.commands.focus();
-                        }}
-                      >
-                        Close
-                      </button>
-                    </div>
-                  )}
-                  {part === 'footer' && <EditorContent editor={ed} />}
+                  <div
+                    className="hf-content"
+                    style={{
+                      marginLeft: px(pageSetup.margins.left),
+                      marginRight: px(pageSetup.margins.right),
+                      ...(part === 'header' ? { paddingTop: distance } : { paddingBottom: distance }),
+                    }}
+                  >
+                    {editable ? (
+                      <>
+                        {part === 'header' && <EditorContent editor={ed} />}
+                        {hfEdit === part && (
+                          <div className="hf-label">
+                            <span>{part === 'header' ? 'Header' : 'Footer'}</span>
+                            <button type="button" className="hf-switch" onClick={() => setHfEdit(part === 'header' ? 'footer' : 'header')}>
+                              Go to {part === 'header' ? 'footer' : 'header'}
+                            </button>
+                            <button
+                              type="button"
+                              className="hf-close"
+                              onClick={() => {
+                                setHfEdit(null);
+                                editor.commands.focus();
+                              }}
+                            >
+                              Close
+                            </button>
+                          </div>
+                        )}
+                        {part === 'footer' && <EditorContent editor={ed} />}
+                      </>
+                    ) : (
+                      html.trim() ? <div className="doc-content" dangerouslySetInnerHTML={{ __html: html }} /> : null
+                    )}
+                  </div>
                 </div>
-              </div>
-            );
+              );
+            });
           })}
           <div className="body-layer">
             <EditorContent editor={editor} />
@@ -912,6 +1060,21 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
             onChange();
           }}
         />
+      )}
+      {imgEdit && (
+        <div className="doc-image-edit" role="dialog" aria-label="Edit image">
+          <div className="doc-image-edit-bar">
+            <strong>Edit image</strong>
+            <span className="spacer" />
+            <button type="button" className="btn" onClick={() => setImgEdit(null)}>
+              Cancel
+            </button>
+            <button type="button" className="btn primary" onClick={() => void applyImgEdit()}>
+              Done
+            </button>
+          </div>
+          <ImageEditor ref={imgEditRef} initial={imgEdit.decoded} onChange={() => {}} onError={onError} />
+        </div>
       )}
     </div>
   );

@@ -161,8 +161,78 @@ function adj(prstGeom: Element | null, name: string, d: number): number {
   return d;
 }
 
-/** Path of a preset shape in a w×h box, or null for shapes we don't draw. */
-function shapePath(prstGeom: Element | null, w: number, h: number): Path2D | null {
+/** Builds a Path2D from DrawingML path commands (preset or custom geometry). */
+function pathFromCommands(
+  cmds: Array<{ op: string; pts: Array<{ x: number; y: number }> }>,
+  sx: number,
+  sy: number,
+): Path2D {
+  const p = new Path2D();
+  for (const c of cmds) {
+    const pts = c.pts.map((pt) => ({ x: pt.x * sx, y: pt.y * sy }));
+    switch (c.op) {
+      case 'moveTo':
+        if (pts[0]) p.moveTo(pts[0].x, pts[0].y);
+        break;
+      case 'lnTo':
+        if (pts[0]) p.lineTo(pts[0].x, pts[0].y);
+        break;
+      case 'cubicBezTo':
+        if (pts.length >= 3) p.bezierCurveTo(pts[0].x, pts[0].y, pts[1].x, pts[1].y, pts[2].x, pts[2].y);
+        break;
+      case 'quadBezTo':
+        if (pts.length >= 2) p.quadraticCurveTo(pts[0].x, pts[0].y, pts[1].x, pts[1].y);
+        break;
+      case 'arcTo':
+        // approximate as a line to the end point (icons rarely rely on arcTo alone)
+        if (pts[0]) p.lineTo(pts[0].x, pts[0].y);
+        break;
+      case 'close':
+        p.closePath();
+        break;
+      default:
+        break;
+    }
+  }
+  return p;
+}
+
+function readPathCommands(pathEl: Element): Array<{ op: string; pts: Array<{ x: number; y: number }> }> {
+  const cmds: Array<{ op: string; pts: Array<{ x: number; y: number }> }> = [];
+  for (const child of kids(pathEl)) {
+    const pts = kids(child, 'pt').map((pt) => ({ x: num(pt, 'x'), y: num(pt, 'y') }));
+    // arcTo uses different attributes; keep an end-ish point if present
+    if (child.localName === 'arcTo' && !pts.length) {
+      pts.push({ x: num(child, 'wR') + num(child, 'hR'), y: num(child, 'hR') });
+    }
+    cmds.push({ op: child.localName, pts });
+  }
+  return cmds;
+}
+
+/** Custom geometry (footer icons etc.): scale each path's coordinate space into the shape box. */
+function custGeomPath(custGeom: Element | null, w: number, h: number): Path2D | null {
+  if (!custGeom) return null;
+  const paths = kids(kid(custGeom, 'pathLst'), 'path');
+  if (!paths.length) return null;
+  const combined = new Path2D();
+  let any = false;
+  for (const pathEl of paths) {
+    const pw = num(pathEl, 'w', w) || w;
+    const ph = num(pathEl, 'h', h) || h;
+    const cmds = readPathCommands(pathEl);
+    if (!cmds.length) continue;
+    combined.addPath(pathFromCommands(cmds, w / pw, h / ph));
+    any = true;
+  }
+  return any ? combined : null;
+}
+
+/** Path of a preset or custom shape in a w×h box, or null for shapes we don't draw. */
+function shapePath(spPr: Element | null, w: number, h: number): Path2D | null {
+  const cust = kid(spPr, 'custGeom');
+  if (cust) return custGeomPath(cust, w, h);
+  const prstGeom = kid(spPr, 'prstGeom');
   const prst = prstGeom?.getAttribute('prst') ?? 'rect';
   const p = new Path2D();
   const ss = Math.min(w, h);
@@ -199,14 +269,144 @@ function shapePath(prstGeom: Element | null, w: number, h: number): Path2D | nul
       return p;
     }
     case 'ellipse':
+    case 'circle':
       p.ellipse(w / 2, h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
       return p;
     case 'line':
       p.moveTo(0, 0);
       p.lineTo(w, h);
       return p;
+    case 'triangle':
+      p.moveTo(w / 2, 0);
+      p.lineTo(w, h);
+      p.lineTo(0, h);
+      p.closePath();
+      return p;
+    case 'diamond':
+      p.moveTo(w / 2, 0);
+      p.lineTo(w, h / 2);
+      p.lineTo(w / 2, h);
+      p.lineTo(0, h / 2);
+      p.closePath();
+      return p;
+    case 'pentagon': {
+      for (let i = 0; i < 5; i++) {
+        const a = (-Math.PI / 2) + (i * 2 * Math.PI) / 5;
+        const x = w / 2 + (w / 2) * Math.cos(a);
+        const y = h / 2 + (h / 2) * Math.sin(a);
+        if (i === 0) p.moveTo(x, y);
+        else p.lineTo(x, y);
+      }
+      p.closePath();
+      return p;
+    }
+    case 'hexagon': {
+      for (let i = 0; i < 6; i++) {
+        const a = (i * Math.PI) / 3;
+        const x = w / 2 + (w / 2) * Math.cos(a);
+        const y = h / 2 + (h / 2) * Math.sin(a);
+        if (i === 0) p.moveTo(x, y);
+        else p.lineTo(x, y);
+      }
+      p.closePath();
+      return p;
+    }
+    case 'rightArrow': {
+      const neck = h * 0.35;
+      p.moveTo(0, neck);
+      p.lineTo(w * 0.55, neck);
+      p.lineTo(w * 0.55, 0);
+      p.lineTo(w, h / 2);
+      p.lineTo(w * 0.55, h);
+      p.lineTo(w * 0.55, h - neck);
+      p.lineTo(0, h - neck);
+      p.closePath();
+      return p;
+    }
+    case 'leftArrow': {
+      const neck = h * 0.35;
+      p.moveTo(w, neck);
+      p.lineTo(w * 0.45, neck);
+      p.lineTo(w * 0.45, 0);
+      p.lineTo(0, h / 2);
+      p.lineTo(w * 0.45, h);
+      p.lineTo(w * 0.45, h - neck);
+      p.lineTo(w, h - neck);
+      p.closePath();
+      return p;
+    }
+    case 'upArrow': {
+      const neck = w * 0.35;
+      p.moveTo(neck, h);
+      p.lineTo(neck, h * 0.45);
+      p.lineTo(0, h * 0.45);
+      p.lineTo(w / 2, 0);
+      p.lineTo(w, h * 0.45);
+      p.lineTo(w - neck, h * 0.45);
+      p.lineTo(w - neck, h);
+      p.closePath();
+      return p;
+    }
+    case 'downArrow': {
+      const neck = w * 0.35;
+      p.moveTo(neck, 0);
+      p.lineTo(neck, h * 0.55);
+      p.lineTo(0, h * 0.55);
+      p.lineTo(w / 2, h);
+      p.lineTo(w, h * 0.55);
+      p.lineTo(w - neck, h * 0.55);
+      p.lineTo(w - neck, 0);
+      p.closePath();
+      return p;
+    }
+    case 'plus':
+    case 'cross': {
+      const t = ss * 0.28;
+      p.moveTo((w - t) / 2, 0);
+      p.lineTo((w + t) / 2, 0);
+      p.lineTo((w + t) / 2, (h - t) / 2);
+      p.lineTo(w, (h - t) / 2);
+      p.lineTo(w, (h + t) / 2);
+      p.lineTo((w + t) / 2, (h + t) / 2);
+      p.lineTo((w + t) / 2, h);
+      p.lineTo((w - t) / 2, h);
+      p.lineTo((w - t) / 2, (h + t) / 2);
+      p.lineTo(0, (h + t) / 2);
+      p.lineTo(0, (h - t) / 2);
+      p.lineTo((w - t) / 2, (h - t) / 2);
+      p.closePath();
+      return p;
+    }
+    case 'star4':
+    case 'star5':
+    case 'star6': {
+      const tips = prst === 'star4' ? 4 : prst === 'star6' ? 6 : 5;
+      const outer = 0.5;
+      const inner = 0.2;
+      for (let i = 0; i < tips * 2; i++) {
+        const r = i % 2 === 0 ? outer : inner;
+        const a = (-Math.PI / 2) + (i * Math.PI) / tips;
+        const x = w / 2 + w * r * Math.cos(a);
+        const y = h / 2 + h * r * Math.sin(a);
+        if (i === 0) p.moveTo(x, y);
+        else p.lineTo(x, y);
+      }
+      p.closePath();
+      return p;
+    }
+    case 'heart': {
+      p.moveTo(w / 2, h * 0.35);
+      p.bezierCurveTo(w / 2, h * 0.05, 0, h * 0.05, 0, h * 0.35);
+      p.bezierCurveTo(0, h * 0.6, w / 2, h * 0.85, w / 2, h);
+      p.bezierCurveTo(w / 2, h * 0.85, w, h * 0.6, w, h * 0.35);
+      p.bezierCurveTo(w, h * 0.05, w / 2, h * 0.05, w / 2, h * 0.35);
+      p.closePath();
+      return p;
+    }
     default:
-      return null;
+      // unknown preset: fall back to the bounding rectangle so icons still appear
+      p.rect(0, 0, w, h);
+      return p;
   }
 }
 
@@ -307,7 +507,7 @@ async function drawShape(ctx: Ctx2D, sp: Element, env: RenderEnv): Promise<void>
   const spPr = kid(sp, 'spPr');
   const x = readXfrm(kid(spPr, 'xfrm'));
   if (x.w <= 0 && x.h <= 0) return;
-  const path = shapePath(kid(spPr, 'prstGeom'), x.w, x.h);
+  const path = shapePath(spPr, x.w, x.h);
   if (!path) return;
   ctx.save();
   enterBox(ctx, x);
@@ -364,7 +564,7 @@ async function drawPicture(ctx: Ctx2D, pic: Element, env: RenderEnv): Promise<vo
   if (x.w <= 0 || x.h <= 0) return;
   ctx.save();
   enterBox(ctx, x);
-  await drawBlip(ctx, kid(pic, 'blipFill')!, env, x.w, x.h, shapePath(kid(spPr, 'prstGeom'), x.w, x.h) ?? undefined);
+  await drawBlip(ctx, kid(pic, 'blipFill')!, env, x.w, x.h, shapePath(spPr, x.w, x.h) ?? undefined);
   ctx.restore();
 }
 
@@ -451,6 +651,241 @@ export async function renderGraphic(graphicData: Element, widthEmu: number, heig
     reader.onerror = () => resolve(null);
     reader.readAsDataURL(blob);
   });
+}
+
+/**
+ * Payload stored on floating images so DrawingML shapes round-trip as editable shapes in Word
+ * instead of being flattened to pictures.
+ */
+export interface DrawingMlPayload {
+  /** Inner XML of <a:graphicData> (children only — avoids duplicate xmlns on reinjection). */
+  graphicData: string;
+  /** Original graphicData/@uri */
+  uri: string;
+  cx: number;
+  cy: number;
+  /** Relationship id → image data URL for blips inside the graphic. */
+  media: Record<string, string>;
+}
+
+/** Collects every blip relationship id under a graphic. */
+function collectBlipIds(el: Element, out: Set<string>): void {
+  if (el.localName === 'blip') {
+    const id = relId(el);
+    if (id) out.add(id);
+  }
+  for (const c of kids(el)) collectBlipIds(c, out);
+}
+
+/** Serializes graphicData children + embedded media so the drawing can be re-emitted on save. */
+export function packDrawingMl(graphicData: Element, cx: number, cy: number, media: Map<string, string>): string {
+  const ids = new Set<string>();
+  collectBlipIds(graphicData, ids);
+  const used: Record<string, string> = {};
+  for (const id of ids) {
+    const src = media.get(id);
+    if (src) used[id] = src;
+  }
+  const ser = new XMLSerializer();
+  const inner = Array.from(graphicData.childNodes)
+    .map((n) => ser.serializeToString(n))
+    .join('');
+  const uri = graphicData.getAttribute('uri') ?? '';
+  const payload: DrawingMlPayload = { graphicData: inner, uri, cx, cy, media: used };
+  return btoa(unescape(encodeURIComponent(JSON.stringify(payload))));
+}
+
+export function unpackDrawingMl(encoded: string): DrawingMlPayload | null {
+  try {
+    const json = decodeURIComponent(escape(atob(encoded)));
+    const p = JSON.parse(json) as DrawingMlPayload;
+    if (!p?.graphicData || !(p.cx > 0) || !(p.cy > 0)) return null;
+    return { ...p, uri: p.uri ?? '' };
+  } catch {
+    return null;
+  }
+}
+
+/** SVG path `d` from the same geometry used for canvas drawing (for vector preview). */
+function svgPathD(spPr: Element | null, w: number, h: number): string | null {
+  // Reuse Path2D by stroking into a temporary canvas is heavy; rebuild for common cases via Path2D is not serializable.
+  // Instead, reconstruct from custGeom commands or approximate presets as SVG.
+  const cust = kid(spPr, 'custGeom');
+  if (cust) {
+    const paths = kids(kid(cust, 'pathLst'), 'path');
+    const parts: string[] = [];
+    for (const pathEl of paths) {
+      const pw = num(pathEl, 'w', w) || w;
+      const ph = num(pathEl, 'h', h) || h;
+      const sx = w / pw;
+      const sy = h / ph;
+      for (const c of readPathCommands(pathEl)) {
+        const pts = c.pts.map((pt) => `${pt.x * sx},${pt.y * sy}`);
+        switch (c.op) {
+          case 'moveTo':
+            if (pts[0]) parts.push(`M${pts[0]}`);
+            break;
+          case 'lnTo':
+            if (pts[0]) parts.push(`L${pts[0]}`);
+            break;
+          case 'cubicBezTo':
+            if (pts.length >= 3) parts.push(`C${pts[0]} ${pts[1]} ${pts[2]}`);
+            break;
+          case 'quadBezTo':
+            if (pts.length >= 2) parts.push(`Q${pts[0]} ${pts[1]}`);
+            break;
+          case 'close':
+            parts.push('Z');
+            break;
+          default:
+            break;
+        }
+      }
+    }
+    return parts.length ? parts.join(' ') : null;
+  }
+  const prst = kid(spPr, 'prstGeom')?.getAttribute('prst') ?? 'rect';
+  const ss = Math.min(w, h);
+  switch (prst) {
+    case 'rect':
+      return `M0,0 H${w} V${h} H0 Z`;
+    case 'ellipse':
+    case 'circle':
+      return `M${w / 2},0 A${w / 2},${h / 2} 0 1 1 ${w / 2 - 0.001},0 Z`;
+    case 'roundRect': {
+      const r = (ss * adj(kid(spPr, 'prstGeom'), 'adj', 16667)) / 100000;
+      return `M${r},0 H${w - r} Q${w},0 ${w},${r} V${h - r} Q${w},${h} ${w - r},${h} H${r} Q0,${h} 0,${h - r} V${r} Q0,0 ${r},0 Z`;
+    }
+    case 'line':
+      return `M0,0 L${w},${h}`;
+    default:
+      return `M0,0 H${w} V${h} H0 Z`;
+  }
+}
+
+function svgColor(el: Element | null, env: RenderEnv): string | null {
+  const c = colorOf(el, env);
+  return c ? css(c) : null;
+}
+
+function svgEscape(s: string): string {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+async function svgShape(sp: Element, env: RenderEnv): Promise<string> {
+  const spPr = kid(sp, 'spPr');
+  const x = readXfrm(kid(spPr, 'xfrm'));
+  if (x.w <= 0 && x.h <= 0) return '';
+  const d = svgPathD(spPr, x.w, x.h);
+  if (!d) return '';
+  const style = kid(sp, 'style');
+  let fill = 'none';
+  const solid = kid(spPr, 'solidFill');
+  if (solid) fill = svgColor(firstColor(solid), env) ?? 'none';
+  else if (!kid(spPr, 'noFill')) {
+    const ref = kid(style, 'fillRef');
+    if (ref && num(ref, 'idx') > 0) fill = svgColor(firstColor(ref), env) ?? 'none';
+  }
+  const line = lineStyle(spPr, style, env);
+  const stroke = line ? ` stroke="${svgEscape(line.color)}" stroke-width="${line.width}"` : ' stroke="none"';
+  const transform = `translate(${x.x} ${x.y})` + (x.rot ? ` rotate(${x.rot} ${x.w / 2} ${x.h / 2})` : '') + (x.flipH || x.flipV ? ` translate(${x.flipH ? x.w : 0} ${x.flipV ? x.h : 0}) scale(${x.flipH ? -1 : 1} ${x.flipV ? -1 : 1})` : '');
+  let blip = '';
+  const blipFill = kid(spPr, 'blipFill');
+  if (blipFill) {
+    const id = relId(kid(blipFill, 'blip'));
+    const src = id ? env.media.get(id) : undefined;
+    if (src) {
+      blip = `<image href="${svgEscape(src)}" x="0" y="0" width="${x.w}" height="${x.h}" preserveAspectRatio="none"/>`;
+    }
+  }
+  return `<g transform="${transform}"><path d="${d}" fill="${svgEscape(fill)}"${stroke}/>${blip}</g>`;
+}
+
+async function svgPicture(pic: Element, env: RenderEnv): Promise<string> {
+  const spPr = kid(pic, 'spPr');
+  const x = readXfrm(kid(spPr, 'xfrm'));
+  if (x.w <= 0 || x.h <= 0) return '';
+  const id = relId(kid(kid(pic, 'blipFill'), 'blip'));
+  const src = id ? env.media.get(id) : undefined;
+  if (!src) return '';
+  const transform = `translate(${x.x} ${x.y})`;
+  return `<g transform="${transform}"><image href="${svgEscape(src)}" x="0" y="0" width="${x.w}" height="${x.h}" preserveAspectRatio="none"/></g>`;
+}
+
+async function svgGroup(grp: Element, env: RenderEnv, root: boolean): Promise<string> {
+  const x = readXfrm(kid(kid(grp, 'grpSpPr'), 'xfrm'));
+  const chOff = kid(kid(kid(grp, 'grpSpPr'), 'xfrm'), 'chOff');
+  const chExt = kid(kid(kid(grp, 'grpSpPr'), 'xfrm'), 'chExt');
+  const cw = num(chExt, 'cx', x.w) || 1;
+  const ch = num(chExt, 'cy', x.h) || 1;
+  const parts: string[] = [];
+  for (const child of kids(grp)) {
+    const s = await svgElement(child, env);
+    if (s) parts.push(s);
+  }
+  const inner = parts.join('');
+  if (root) {
+    return `<g transform="scale(${x.w / cw || 1} ${x.h / ch || 1}) translate(${-num(chOff, 'x')} ${-num(chOff, 'y')})">${inner}</g>`;
+  }
+  return `<g transform="translate(${x.x} ${x.y}) scale(${x.w / cw || 1} ${x.h / ch || 1}) translate(${-num(chOff, 'x')} ${-num(chOff, 'y')})">${inner}</g>`;
+}
+
+async function svgElement(el: Element, env: RenderEnv): Promise<string> {
+  try {
+    switch (el.localName) {
+      case 'grpSp':
+      case 'wgp':
+        return await svgGroup(el, env, false);
+      case 'wsp':
+      case 'sp':
+        return await svgShape(el, env);
+      case 'pic':
+        return await svgPicture(el, env);
+      default:
+        return '';
+    }
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Renders DrawingML as an SVG data URL (vector, stays sharp when resized). Falls back to null
+ * when the graphic cannot be represented.
+ */
+export async function renderGraphicSvg(graphicData: Element, widthEmu: number, heightEmu: number, env: RenderEnv): Promise<string | null> {
+  if (widthEmu <= 0 || heightEmu <= 0) return null;
+  const content = kids(graphicData)[0];
+  if (!content) return null;
+  let body = '';
+  if (content.localName === 'wgp' || content.localName === 'grpSp') {
+    const x = readXfrm(kid(kid(content, 'grpSpPr'), 'xfrm'));
+    const chOff = kid(kid(kid(content, 'grpSpPr'), 'xfrm'), 'chOff');
+    const chExt = kid(kid(kid(content, 'grpSpPr'), 'xfrm'), 'chExt');
+    const cw = num(chExt, 'cx', x.w) || widthEmu;
+    const ch = num(chExt, 'cy', x.h) || heightEmu;
+    const parts: string[] = [];
+    for (const child of kids(content)) {
+      const s = await svgElement(child, env);
+      if (s) parts.push(s);
+    }
+    body = `<g transform="scale(${widthEmu / cw} ${heightEmu / ch}) translate(${-num(chOff, 'x')} ${-num(chOff, 'y')})">${parts.join('')}</g>`;
+  } else if (content.localName === 'wsp' || content.localName === 'pic' || content.localName === 'sp') {
+    const spPr = kid(content, 'spPr');
+    const xfrm = kid(spPr, 'xfrm');
+    if (xfrm) {
+      const x = readXfrm(xfrm);
+      body = `<g transform="scale(${widthEmu / (x.w || widthEmu)} ${heightEmu / (x.h || heightEmu)}) translate(${-x.x} ${-x.y})">${await svgElement(content, env)}</g>`;
+    } else {
+      body = await svgElement(content, env);
+    }
+  } else {
+    return null;
+  }
+  if (!body.replace(/<g[^>]*>|<\/g>/g, '').trim()) return null;
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="${widthEmu / EMU_PER_PX}" height="${heightEmu / EMU_PER_PX}" viewBox="0 0 ${widthEmu} ${heightEmu}">${body}</svg>`;
+  return `data:image/svg+xml;base64,${btoa(unescape(encodeURIComponent(svg)))}`;
 }
 
 /** Theme colours from theme1.xml (a:clrScheme). */

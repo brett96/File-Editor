@@ -9,6 +9,7 @@ import { NodeSelection } from '@tiptap/pm/state';
 import { CellSelection } from '@tiptap/pm/tables';
 import type { EditorView, NodeView } from '@tiptap/pm/view';
 import { borderSideCss, cssBorderSide, cssColorToHex } from '../../core/dom';
+import { ALL_HANDLES, HANDLE_CURSOR, HANDLE_POS, resizeBox, type Handle } from '../resize';
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -331,6 +332,10 @@ export const FloatingImage = Node.create({
       y: num('data-float-y'),
       ink: { default: false, parseHTML: (el: HTMLElement) => el.getAttribute('data-ink') === 'true' },
       behind: { default: false, parseHTML: (el: HTMLElement) => el.getAttribute('data-behind') === 'true' },
+      drawingml: {
+        default: null as string | null,
+        parseHTML: (el: HTMLElement) => el.getAttribute('data-drawingml'),
+      },
     };
   },
 
@@ -351,6 +356,7 @@ export const FloatingImage = Node.create({
         'data-float-y': Math.round(a.y),
         ...(a.ink ? { 'data-ink': 'true' } : {}),
         ...(a.behind ? { 'data-behind': 'true' } : {}),
+        ...(a.drawingml ? { 'data-drawingml': a.drawingml } : {}),
       },
     ];
   },
@@ -360,8 +366,12 @@ export const FloatingImage = Node.create({
   },
 });
 
+const FLOAT_MIN = 24;
+
 class FloatingImageView implements NodeView {
-  dom: HTMLImageElement;
+  dom: HTMLElement;
+  private img: HTMLImageElement;
+  private handlesRoot: HTMLElement | null = null;
   private node: PMNode;
 
   constructor(
@@ -370,54 +380,85 @@ class FloatingImageView implements NodeView {
     private readonly view: EditorView,
   ) {
     this.node = node;
+    const wrap = document.createElement('span');
+    wrap.className = 'float-img-wrap';
+    wrap.contentEditable = 'false';
     const img = document.createElement('img');
     img.className = 'float-img';
     img.draggable = false;
-    img.contentEditable = 'false';
-    this.dom = img;
+    wrap.appendChild(img);
+    this.dom = wrap;
+    this.img = img;
     this.apply();
-    img.addEventListener('pointerdown', this.onPointerDown);
+    wrap.addEventListener('pointerdown', this.onPointerDown);
+    wrap.addEventListener('dblclick', this.onDblClick);
   }
 
   private apply(): void {
     const a = this.node.attrs;
-    const img = this.dom;
+    const wrap = this.dom;
+    const img = this.img;
     if (img.getAttribute('src') !== a.src) img.src = a.src;
     img.alt = a.alt ?? '';
-    img.style.left = `${a.x}px`;
-    img.style.top = `${a.y}px`;
-    img.style.width = `${a.width}px`;
-    img.style.height = `${a.height}px`;
+    wrap.style.left = `${a.x}px`;
+    wrap.style.top = `${a.y}px`;
+    wrap.style.width = `${a.width}px`;
+    wrap.style.height = `${a.height}px`;
+    wrap.toggleAttribute('data-ink', !!a.ink);
+    wrap.toggleAttribute('data-behind', !!a.behind);
     img.toggleAttribute('data-ink', !!a.ink);
     img.toggleAttribute('data-behind', !!a.behind);
   }
 
+  private scale(): number {
+    return this.dom.getBoundingClientRect().width / Math.max(1, this.node.attrs.width) || 1;
+  }
+
+  private dispatchEditEvent(pos: number): void {
+    const a = this.node.attrs;
+    this.view.dom.dispatchEvent(
+      new CustomEvent('edit-doc-image', {
+        bubbles: true,
+        detail: { src: a.src as string, width: a.width as number, height: a.height as number, pos },
+      }),
+    );
+  }
+
+  private onDblClick = (e: MouseEvent): void => {
+    e.preventDefault();
+    e.stopPropagation();
+    const pos = this.getPos();
+    if (pos === undefined) return;
+    this.dispatchEditEvent(pos);
+  };
+
   /** Drag to move; a click selects the drawing (Delete removes it). */
   private onPointerDown = (e: PointerEvent): void => {
     if (e.button !== 0 || !this.view.editable) return;
+    if ((e.target as HTMLElement | null)?.closest?.('.float-rh')) return;
     const pos = this.getPos();
     if (pos === undefined) return;
     e.preventDefault();
     e.stopPropagation();
     this.view.dispatch(this.view.state.tr.setSelection(NodeSelection.create(this.view.state.doc, pos)));
     this.view.focus();
-    const img = this.dom;
-    const scale = img.getBoundingClientRect().width / Math.max(1, this.node.attrs.width) || 1;
+    const wrap = this.dom;
+    const scale = this.scale();
     const start = { x: e.clientX, y: e.clientY, left: this.node.attrs.x as number, top: this.node.attrs.y as number };
     let moved = false;
-    img.setPointerCapture(e.pointerId);
+    wrap.setPointerCapture(e.pointerId);
     const move = (ev: PointerEvent) => {
       const dx = (ev.clientX - start.x) / scale;
       const dy = (ev.clientY - start.y) / scale;
       if (!moved && Math.hypot(dx, dy) < 3) return;
       moved = true;
-      img.style.left = `${start.left + dx}px`;
-      img.style.top = `${start.top + dy}px`;
+      wrap.style.left = `${start.left + dx}px`;
+      wrap.style.top = `${start.top + dy}px`;
     };
     const up = (ev: PointerEvent) => {
-      img.removeEventListener('pointermove', move);
-      img.removeEventListener('pointerup', up);
-      img.removeEventListener('pointercancel', up);
+      wrap.removeEventListener('pointermove', move);
+      wrap.removeEventListener('pointerup', up);
+      wrap.removeEventListener('pointercancel', up);
       if (!moved) return;
       const p = this.getPos();
       if (p === undefined) return;
@@ -425,10 +466,86 @@ class FloatingImageView implements NodeView {
       const y = Math.round(start.top + (ev.clientY - start.y) / scale);
       this.view.dispatch(this.view.state.tr.setNodeMarkup(p, undefined, { ...this.node.attrs, x, y }));
     };
-    img.addEventListener('pointermove', move);
-    img.addEventListener('pointerup', up);
-    img.addEventListener('pointercancel', up);
+    wrap.addEventListener('pointermove', move);
+    wrap.addEventListener('pointerup', up);
+    wrap.addEventListener('pointercancel', up);
   };
+
+  private onHandleDown = (e: PointerEvent, handle: Handle): void => {
+    if (e.button !== 0 || !this.view.editable) return;
+    const pos = this.getPos();
+    if (pos === undefined) return;
+    e.preventDefault();
+    e.stopPropagation();
+    this.view.dispatch(this.view.state.tr.setSelection(NodeSelection.create(this.view.state.doc, pos)));
+    this.view.focus();
+    const wrap = this.dom;
+    const scale = this.scale();
+    const a = this.node.attrs;
+    const startBox = { x: a.x as number, y: a.y as number, width: a.width as number, height: a.height as number };
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const keepAspect = handle.length === 2;
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const move = (ev: PointerEvent) => {
+      const box = resizeBox(startBox, handle, (ev.clientX - startX) / scale, (ev.clientY - startY) / scale, {
+        keepAspect,
+        min: FLOAT_MIN,
+      });
+      wrap.style.left = `${box.x}px`;
+      wrap.style.top = `${box.y}px`;
+      wrap.style.width = `${box.width}px`;
+      wrap.style.height = `${box.height}px`;
+    };
+    const up = (ev: PointerEvent) => {
+      el.removeEventListener('pointermove', move);
+      el.removeEventListener('pointerup', up);
+      el.removeEventListener('pointercancel', up);
+      const p = this.getPos();
+      if (p === undefined) return;
+      const box = resizeBox(startBox, handle, (ev.clientX - startX) / scale, (ev.clientY - startY) / scale, {
+        keepAspect,
+        min: FLOAT_MIN,
+      });
+      this.view.dispatch(
+        this.view.state.tr.setNodeMarkup(p, undefined, {
+          ...this.node.attrs,
+          x: Math.round(box.x),
+          y: Math.round(box.y),
+          width: Math.round(box.width),
+          height: Math.round(box.height),
+        }),
+      );
+    };
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', up);
+    el.addEventListener('pointercancel', up);
+  };
+
+  private showHandles(): void {
+    if (this.handlesRoot) return;
+    const root = document.createElement('span');
+    root.className = 'float-rh-layer';
+    root.contentEditable = 'false';
+    for (const h of ALL_HANDLES) {
+      const el = document.createElement('span');
+      el.className = `float-rh float-rh-${h}`;
+      el.style.left = `${HANDLE_POS[h][0] * 100}%`;
+      el.style.top = `${HANDLE_POS[h][1] * 100}%`;
+      el.style.cursor = HANDLE_CURSOR[h];
+      el.setAttribute('aria-label', `Resize ${h}`);
+      el.addEventListener('pointerdown', (e) => this.onHandleDown(e, h));
+      root.appendChild(el);
+    }
+    this.dom.appendChild(root);
+    this.handlesRoot = root;
+  }
+
+  private hideHandles(): void {
+    this.handlesRoot?.remove();
+    this.handlesRoot = null;
+  }
 
   update(node: PMNode): boolean {
     if (node.type !== this.node.type) return false;
@@ -439,14 +556,16 @@ class FloatingImageView implements NodeView {
 
   selectNode(): void {
     this.dom.classList.add('ProseMirror-selectednode');
+    this.showHandles();
   }
 
   deselectNode(): void {
     this.dom.classList.remove('ProseMirror-selectednode');
+    this.hideHandles();
   }
 
   stopEvent(e: Event): boolean {
-    return e.type.startsWith('pointer') || e.type === 'mousedown' || e.type === 'dragstart';
+    return e.type.startsWith('pointer') || e.type === 'mousedown' || e.type === 'dragstart' || e.type === 'dblclick';
   }
 
   ignoreMutation(): boolean {
@@ -454,7 +573,9 @@ class FloatingImageView implements NodeView {
   }
 
   destroy(): void {
+    this.hideHandles();
     this.dom.removeEventListener('pointerdown', this.onPointerDown);
+    this.dom.removeEventListener('dblclick', this.onDblClick);
   }
 }
 

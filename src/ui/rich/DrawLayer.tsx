@@ -100,7 +100,9 @@ export const DrawLayer = forwardRef<DrawLayerHandle, { editor: Editor; sheet: HT
     let target = -1;
     view.state.doc.descendants((node: PMNode, pos: number) => {
       if (target >= 0) return false;
-      if (node.type.name === 'floatingImage' && view.nodeDOM(pos) === hit) target = pos;
+      if (node.type.name !== 'floatingImage') return true;
+      const dom = view.nodeDOM(pos);
+      if (dom === hit || (dom instanceof Node && dom.contains(hit))) target = pos;
       return true;
     });
     if (target >= 0) view.dispatch(view.state.tr.delete(target, target + 1));
