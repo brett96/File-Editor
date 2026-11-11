@@ -45,6 +45,7 @@ import { newId } from '../../core/pdf/types';
 import { getHost } from '../../platform/host';
 import { ColorPicker, Divider, IconButton, Select, cx } from '../components';
 import { IMAGE_EXTENSIONS, loadImageFile } from '../image-utils';
+import { ALL_HANDLES, CORNER_HANDLES, HANDLE_CURSOR, HANDLE_POS, mapPoint, resizeBox, type Box, type Handle } from '../resize';
 
 export interface ImageEditorHandle {
   /** Final pixels with every overlay drawn in. Does not change the editor state. */
@@ -145,6 +146,26 @@ function bbox(o: ImgObject): Rect {
     }
     default:
       return { x: o.x, y: o.y, width: o.width, height: o.height };
+  }
+}
+
+/** Fits an object into a new bounding box (resize from any of the 8 handles). */
+function resizeObj(o: ImgObject, from: Box, to: Box): ImgObject {
+  switch (o.type) {
+    case 'text': {
+      const k = from.height > 0 ? to.height / from.height : 1;
+      return { ...o, x: to.x, y: to.y, size: Math.max(6, Math.round(o.size * k)) };
+    }
+    case 'line':
+    case 'arrow': {
+      const [x1, y1] = mapPoint(from, to, o.x1, o.y1);
+      const [x2, y2] = mapPoint(from, to, o.x2, o.y2);
+      return { ...o, x1, y1, x2, y2 };
+    }
+    case 'ink':
+      return { ...o, points: o.points.map(([x, y]) => mapPoint(from, to, x, y)) };
+    default:
+      return { ...o, x: to.x, y: to.y, width: to.width, height: to.height };
   }
 }
 
@@ -287,11 +308,11 @@ function applyLook(px: Pixels, l: Look, scale = 1): Pixels {
 
 type Gesture =
   | { kind: 'move'; id: string; start: [number, number]; orig: ImgObject }
-  | { kind: 'resize'; id: string; start: [number, number]; orig: ImgObject }
+  | { kind: 'resize'; id: string; start: [number, number]; orig: ImgObject; box: Box; handle: Handle }
   | { kind: 'draw'; id: string; start: [number, number] }
   | { kind: 'crop-new'; start: [number, number] }
   | { kind: 'crop-move'; start: [number, number]; orig: Rect }
-  | { kind: 'crop-resize'; corner: 'nw' | 'ne' | 'sw' | 'se'; orig: Rect }
+  | { kind: 'crop-resize'; handle: Handle; start: [number, number]; orig: Rect }
   | { kind: 'redact'; start: [number, number] };
 
 export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEditor({ initial, onChange, onError, onStatus }, ref) {
@@ -573,18 +594,11 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
       return;
     }
     if (g.kind === 'crop-resize') {
-      const o = g.orig;
-      const fx = g.corner.includes('w') ? o.x + o.width : o.x;
-      const fy = g.corner.includes('n') ? o.y + o.height : o.y;
-      let w = x - fx;
-      let h = y - fy;
-      const ar = aspectRatio();
-      if (ar) {
-        const m = Math.max(Math.abs(w), Math.abs(h) * ar);
-        w = Math.sign(w || 1) * m;
-        h = (Math.sign(h || 1) * m) / ar;
-      }
-      setCropRect({ x: Math.min(fx, fx + w), y: Math.min(fy, fy + h), width: Math.abs(w), height: Math.abs(h) });
+      const r = resizeBox(g.orig, g.handle, x - g.start[0], y - g.start[1], { keepAspect: !!aspectRatio(), min: 8 });
+      // keep the crop inside the image
+      const x0 = Math.max(0, r.x);
+      const y0 = Math.max(0, r.y);
+      setCropRect({ x: x0, y: y0, width: Math.min(W, r.x + r.width) - x0, height: Math.min(H, r.y + r.height) - y0 });
       return;
     }
     if (g.kind === 'draw') {
@@ -619,21 +633,12 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
       return;
     }
     if (g.kind === 'resize') {
-      const o = g.orig;
-      if (o.type === 'text') {
-        const b = bbox(o);
-        const k = Math.max(0.1, (b.width + x - g.start[0]) / Math.max(1, b.width));
-        updateObject(g.id, () => ({ ...o, size: Math.max(6, Math.round(o.size * k)) }), false);
-      } else if ('width' in o) {
-        let w = Math.max(4, o.width + x - g.start[0]);
-        let h = Math.max(4, o.height + y - g.start[1]);
-        if (o.type === 'image' !== e.shiftKey) {
-          const k = Math.max(w / o.width, h / o.height);
-          w = o.width * k;
-          h = o.height * k;
-        }
-        updateObject(g.id, (cur) => ({ ...cur, width: w, height: h }) as ImgObject, false);
-      }
+      // the toLocal clamp above would stop handles at the image edge; use the raw pointer
+      const [rx, ry] = toLocal(e);
+      // pictures and text keep their proportions (hold Shift to stretch a picture freely)
+      const keepAspect = g.orig.type === 'text' || ((g.orig.type === 'image') !== e.shiftKey);
+      const to = resizeBox(g.box, g.handle, rx - g.start[0], ry - g.start[1], { keepAspect, min: 4 });
+      updateObject(g.id, () => resizeObj(g.orig, g.box, to), false);
     }
   };
 
@@ -679,7 +684,7 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
     if (g.kind === 'move' || g.kind === 'resize') onChange();
   };
 
-  const startObj = (e: RPointerEvent, o: ImgObject, kind: 'move' | 'resize') => {
+  const startObj = (e: RPointerEvent, o: ImgObject, kind: 'move' | 'resize', handle: Handle = 'se') => {
     if (e.button !== 0 || tool !== 'select') return;
     e.stopPropagation();
     e.preventDefault();
@@ -688,7 +693,7 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
     setEditing(null);
     stageRef.current?.setPointerCapture(e.pointerId);
     snapshot();
-    gesture.current = { kind, id: o.id, start: toLocal(e), orig: o };
+    gesture.current = kind === 'move' ? { kind, id: o.id, start: toLocal(e), orig: o } : { kind, id: o.id, start: toLocal(e), orig: o, box: bbox(o), handle };
   };
 
   // ── operations ───────────────────────────────────────────────────────────
@@ -875,11 +880,12 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
               {selectedObj && !editing && (() => {
                 const b = bbox(selectedObj);
                 const pad = 4 / s;
-                const resizable = selectedObj.type !== 'line' && selectedObj.type !== 'arrow' && selectedObj.type !== 'ink';
+                const frame = { x: b.x - pad, y: b.y - pad, width: b.width + pad * 2, height: b.height + pad * 2 };
+                const handles = selectedObj.type === 'text' ? CORNER_HANDLES : ALL_HANDLES;
                 return (
                   <g className="img-selection">
-                    <rect x={b.x - pad} y={b.y - pad} width={b.width + pad * 2} height={b.height + pad * 2} fill="none" stroke="#2f5bea" strokeWidth={1.5 / s} strokeDasharray={`${4 / s} ${3 / s}`} />
-                    {resizable && <rect className="img-handle" x={b.x + b.width + pad - 6 / s} y={b.y + b.height + pad - 6 / s} width={12 / s} height={12 / s} fill="#2f5bea" stroke="#fff" strokeWidth={2 / s} onPointerDown={(e) => startObj(e, selectedObj, 'resize')} />}
+                    <rect x={frame.x} y={frame.y} width={frame.width} height={frame.height} fill="none" stroke="#2f5bea" strokeWidth={1.5 / s} strokeDasharray={`${4 / s} ${3 / s}`} />
+                    <SvgHandles box={frame} scale={s} handles={handles} fill="#2f5bea" stroke="#fff" onStart={(e, h) => startObj(e, selectedObj, 'resize', h)} />
                   </g>
                 );
               })()}
@@ -893,14 +899,19 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
                       <line x1={cropRect.x} y1={cropRect.y + (cropRect.height * i) / 3} x2={cropRect.x + cropRect.width} y2={cropRect.y + (cropRect.height * i) / 3} />
                     </g>
                   ))}
-                  {(['nw', 'ne', 'sw', 'se'] as const).map((c) => {
-                    const hx = c.includes('w') ? cropRect.x : cropRect.x + cropRect.width;
-                    const hy = c.includes('n') ? cropRect.y : cropRect.y + cropRect.height;
-                    return (
-                      <rect key={c} className={`crop-handle crop-${c}`} x={hx - 8 / s} y={hy - 8 / s} width={16 / s} height={16 / s} fill="#fff" stroke="#2f5bea" strokeWidth={2 / s}
-                        onPointerDown={(e) => { e.stopPropagation(); stageRef.current?.setPointerCapture(e.pointerId); gesture.current = { kind: 'crop-resize', corner: c, orig: cropRect }; }} />
-                    );
-                  })}
+                  <SvgHandles
+                    box={cropRect}
+                    scale={s}
+                    handles={ALL_HANDLES}
+                    fill="#fff"
+                    stroke="#2f5bea"
+                    onStart={(e, h) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                      stageRef.current?.setPointerCapture(e.pointerId);
+                      gesture.current = { kind: 'crop-resize', handle: h, start: toLocal(e), orig: cropRect };
+                    }}
+                  />
                 </g>
               )}
               {draftRect && <rect x={draftRect.x} y={draftRect.y} width={draftRect.width} height={draftRect.height} fill="rgba(225,29,72,0.15)" stroke="#e11d48" strokeWidth={1.5 / s} strokeDasharray={`${5 / s} ${4 / s}`} />}
@@ -910,12 +921,16 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
               if (!o || o.type !== 'text') return null;
               return (
                 <TextBox
+                  key={o.id}
                   obj={o}
                   scale={s}
                   onCommit={(text) => {
-                    setEditing(null);
+                    // never cancel an edit that has since started on another caption
+                    setEditing((cur) => (cur === o.id ? null : cur));
+                    const cur = objectsRef.current.find((x) => x.id === o.id);
+                    if (!cur || cur.type !== 'text') return;
                     if (!text.trim()) commit({ objects: objectsRef.current.filter((x) => x.id !== o.id) });
-                    else if (text !== o.text) updateObject(o.id, (cur) => ({ ...cur, text }) as ImgObject);
+                    else if (text !== cur.text) updateObject(o.id, (c) => ({ ...c, text }) as ImgObject);
                   }}
                 />
               );
@@ -1031,9 +1046,26 @@ function TextBox({ obj, scale, onCommit }: { obj: Extract<ImgObject, { type: 'te
   const [text, setText] = useState(obj.text);
   const ref = useRef<HTMLTextAreaElement>(null);
   const done = useRef(false);
+  const mounted = useRef(false);
+  const textRef = useRef(text);
+  textRef.current = text;
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
   useEffect(() => {
     ref.current?.focus();
     ref.current?.select();
+    // Closing the box without a blur (clicking the picture or a tool unmounts it first) must
+    // still save. Deferred so React StrictMode's test unmount/remount doesn't commit.
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      queueMicrotask(() => {
+        if (!mounted.current && !done.current) {
+          done.current = true;
+          onCommitRef.current(textRef.current);
+        }
+      });
+    };
   }, []);
   useEffect(() => {
     const el = ref.current;
@@ -1077,5 +1109,29 @@ function TextBox({ obj, scale, onCommit }: { obj: Extract<ImgObject, { type: 'te
         }
       }}
     />
+  );
+}
+
+/** The 8 resize anchors drawn in image space (kept a constant size on screen). */
+function SvgHandles({ box, scale, handles, fill, stroke, onStart }: { box: Box; scale: number; handles: Handle[]; fill: string; stroke: string; onStart: (e: RPointerEvent, h: Handle) => void }) {
+  const coarse = typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches;
+  const size = (coarse ? 18 : 12) / scale;
+  const hit = (coarse ? 40 : 22) / scale;
+  return (
+    <>
+      {handles.map((h) => {
+        const cx = box.x + box.width * HANDLE_POS[h][0];
+        const cy = box.y + box.height * HANDLE_POS[h][1];
+        const side = h.length === 1;
+        const w = side && (h === 'n' || h === 's') ? size * 1.5 : side ? size * 0.7 : size;
+        const ht = side && (h === 'e' || h === 'w') ? size * 1.5 : side ? size * 0.7 : size;
+        return (
+          <g key={h} style={{ cursor: HANDLE_CURSOR[h] }} onPointerDown={(e) => onStart(e, h)} className="svg-handle">
+            <rect x={cx - hit / 2} y={cy - hit / 2} width={hit} height={hit} fill="transparent" />
+            <rect x={cx - w / 2} y={cy - ht / 2} width={w} height={ht} rx={side ? Math.min(w, ht) / 2 : 2 / scale} fill={fill} stroke={stroke} strokeWidth={2 / scale} />
+          </g>
+        );
+      })}
+    </>
   );
 }

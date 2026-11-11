@@ -749,16 +749,48 @@ textarea {
   outline: 1px dashed rgb(47 91 234 / 70%);
 }
 
-.resize-handle {
+/* 8-handle resize box: corners + a width/height anchor mid-way along each side */
+.rh {
   position: absolute;
-  right: -6px;
-  bottom: -6px;
   width: 11px;
   height: 11px;
+  margin: -6px 0 0 -6px;
   background: var(--accent);
   border: 2px solid #fff;
   border-radius: 2px;
-  cursor: nwse-resize;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 25%);
+  z-index: 4;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.rh-n,
+.rh-s {
+  width: 16px;
+  height: 8px;
+  margin: -4px 0 0 -8px;
+  border-radius: 4px;
+}
+
+.rh-e,
+.rh-w {
+  width: 8px;
+  height: 16px;
+  margin: -8px 0 0 -4px;
+  border-radius: 4px;
+}
+
+/* bigger invisible touch target on coarse pointers */
+.rh::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}
+
+@media (pointer: coarse) {
+  .rh::after {
+    inset: -14px;
+  }
 }
 
 .text-run {

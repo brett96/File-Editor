@@ -205,6 +205,12 @@ export default function App() {
       }
     }
     if (!info) {
+      // Phones run out of memory converting big files in the browser (ffmpeg holds the whole
+      // file plus its output in WebAssembly memory); refuse early with a useful message.
+      const phone = window.matchMedia?.('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 820;
+      if (phone && blob.size > 150 * 1024 * 1024) {
+        throw new Error("This video uses a format your phone's browser can't edit directly, and it is too large to convert on a phone. Open it on a computer, or convert it to MP4 first.");
+      }
       // a container or codec the browser can't read: convert it once with ffmpeg
       const { normalizeForEditing, FfmpegCancelled } = await import('./core/media/ffmpeg-engine');
       const ctrl = new AbortController();

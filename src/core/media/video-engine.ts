@@ -50,8 +50,13 @@ export interface MediaInfo {
   audioCodec: string | null;
   sampleRate: number | null;
   channels: number | null;
-  /** WebCodecs can decode the streams (otherwise ffmpeg must convert first). */
+  /**
+   * The editor can work with this file: WebCodecs decodes its picture (or, for audio-only
+   * files, its sound). Otherwise ffmpeg must convert it first.
+   */
   decodable: boolean;
+  /** The sound can be decoded (re-encoded / processed). When false it can only be copied as-is. */
+  audioDecodable: boolean;
 }
 
 export async function probeMedia(blob: Blob): Promise<MediaInfo> {
@@ -69,7 +74,10 @@ export async function probeMedia(blob: Blob): Promise<MediaInfo> {
         fps = null;
       }
     }
-    const decodable = (!video || (await video.canDecode())) && (!audio || (await audio.canDecode()));
+    // Sound is judged separately: iOS Safari before 26 has VideoDecoder but no AudioDecoder,
+    // and requiring both sent every iPhone video into the (far too heavy for a phone) ffmpeg path.
+    const audioDecodable = !!audio && (await audio.canDecode().catch(() => false));
+    const decodable = video ? await video.canDecode().catch(() => false) : audioDecodable;
     return {
       duration,
       container: format.name,
@@ -85,6 +93,7 @@ export async function probeMedia(blob: Blob): Promise<MediaInfo> {
       sampleRate: audio ? await audio.getSampleRate() : null,
       channels: audio ? await audio.getNumberOfChannels() : null,
       decodable,
+      audioDecodable,
     };
   } finally {
     input.dispose();
@@ -379,6 +388,15 @@ async function convert(a: ConvertArgs): Promise<Uint8Array> {
     },
   });
 
+  const lostAudio = conversion.discardedTracks.find((d) => d.track.type === 'audio' && d.reason !== 'discarded_by_user');
+  if (lostAudio && !e.mute && !a.discardAudio && conversion.isValid) {
+    input.dispose();
+    throw new Error(
+      a.info.audioDecodable
+        ? `The sound can't be written to ${CONTAINERS[a.container].label} by this browser. Pick another format, or turn on "Remove sound".`
+        : `This browser can't re-encode this video's sound, so it can only be kept unchanged. Save as MP4, MOV or MKV without changing the volume or fades, or turn on "Remove sound" — or use a desktop browser.`,
+    );
+  }
   if (!conversion.isValid) {
     input.dispose();
     const reasons = conversion.discardedTracks.map((d) => `${d.track.type}: ${d.reason.replace(/_/g, ' ')}`).join('; ');

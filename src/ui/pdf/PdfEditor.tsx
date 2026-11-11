@@ -35,6 +35,7 @@ import {
 import { getHost, type OpenedFile } from '../../platform/host';
 import { ColorPicker, Divider, IconButton, MenuItem, Popover, PromptModal, Select, cx } from '../components';
 import { IMAGE_EXTENSIONS, loadImageFile } from '../image-utils';
+import { ALL_HANDLES, CORNER_HANDLES, HANDLE_CURSOR, HANDLE_POS, mapPoint, resizeBox, type Box, type Handle } from '../resize';
 import { PageCanvas, PdfSourceCache, extractTextRuns, type TextRun } from './PageCanvas';
 
 export interface PdfEditorHandle {
@@ -89,6 +90,34 @@ function hasBox(o: PdfObject): o is Extract<PdfObject, { width: number }> {
   return 'width' in o;
 }
 
+let measureCtx: CanvasRenderingContext2D | null = null;
+function textWidth(line: string, o: PdfTextObject): number {
+  measureCtx ??= document.createElement('canvas').getContext('2d');
+  if (!measureCtx) return line.length * o.fontSize * 0.55;
+  measureCtx.font = `${o.italic ? 'italic ' : ''}${o.bold ? 700 : 400} ${o.fontSize}px ${PDF_FONTS[o.fontFamily].css}`;
+  return measureCtx.measureText(line).width;
+}
+
+/** Fits an object into a new bounding box (resize from any of the 8 handles). */
+function resizeObject(o: PdfObject, from: Box, to: Box): PdfObject {
+  switch (o.type) {
+    case 'text': {
+      const k = from.height > 0 ? to.height / from.height : 1;
+      const fontSize = Math.max(4, Math.min(400, Math.round(o.fontSize * k * 10) / 10));
+      return { ...o, x: to.x, y: to.y, fontSize };
+    }
+    case 'line': {
+      const [x1, y1] = mapPoint(from, to, o.x1, o.y1);
+      const [x2, y2] = mapPoint(from, to, o.x2, o.y2);
+      return { ...o, x1, y1, x2, y2 };
+    }
+    case 'ink':
+      return { ...o, points: o.points.map(([x, y]) => mapPoint(from, to, x, y)) };
+    default:
+      return { ...o, x: to.x, y: to.y, width: to.width, height: to.height };
+  }
+}
+
 function bounds(o: PdfObject): { x: number; y: number; width: number; height: number } {
   switch (o.type) {
     case 'line':
@@ -102,7 +131,7 @@ function bounds(o: PdfObject): { x: number; y: number; width: number; height: nu
     }
     case 'text': {
       const lines = o.text.split('\n');
-      const w = Math.max(...lines.map((l) => l.length)) * o.fontSize * 0.55;
+      const w = Math.max(...lines.map((l) => textWidth(l, o)));
       return { x: o.x, y: o.y, width: w, height: lines.length * o.fontSize * PDF_LINE_HEIGHT };
     }
     default:
@@ -174,7 +203,7 @@ async function buildPages(cache: PdfSourceCache, source: PdfSource): Promise<Pdf
 
 type Gesture =
   | { kind: 'move'; pageId: string; objId: string; start: [number, number]; orig: PdfObject }
-  | { kind: 'resize'; pageId: string; objId: string; start: [number, number]; orig: PdfObject; keepAspect: boolean }
+  | { kind: 'resize'; pageId: string; objId: string; start: [number, number]; orig: PdfObject; box: Box; handle: Handle }
   | { kind: 'draw'; pageId: string; objId: string; start: [number, number] };
 
 export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({ bytes, zoom, onChange, onError, onPageCount, loadAsPdf }, ref) {
@@ -559,16 +588,10 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
       const moved = moveObject(g.orig, x - sx, y - sy);
       updateObject(page.id, g.objId, () => moved, false);
     } else if (g.kind === 'resize') {
-      const o = g.orig;
-      if (!hasBox(o)) return;
-      let w = Math.max(4, o.width + (x - sx));
-      let h = Math.max(4, o.height + (y - sy));
-      if (g.keepAspect !== e.shiftKey && o.width > 0 && o.height > 0) {
-        const k = Math.max(w / o.width, h / o.height);
-        w = o.width * k;
-        h = o.height * k;
-      }
-      updateObject(page.id, g.objId, (cur) => ({ ...cur, width: w, height: h }) as PdfObject, false);
+      // images and text keep their proportions (hold Shift to stretch an image freely)
+      const keepAspect = g.orig.type === 'text' || ((g.orig.type === 'image') !== e.shiftKey);
+      const to = resizeBox(g.box, g.handle, x - sx, y - sy, { keepAspect, min: 4 });
+      updateObject(page.id, g.objId, () => resizeObject(g.orig, g.box, to), false);
     }
   };
 
@@ -608,12 +631,29 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
     gesture.current = { kind: 'move', pageId: page.id, objId: obj.id, start: toLocal(e, page), orig: obj };
   };
 
-  const startResize = (e: RPointerEvent, page: PdfPageModel, obj: PdfObject) => {
+  const startResize = (e: RPointerEvent, page: PdfPageModel, obj: PdfObject, handle: Handle) => {
+    if (e.button !== 0) return;
     e.stopPropagation();
     e.preventDefault();
     pageRefs.current[page.id]?.querySelector<HTMLElement>('.pdf-page-inner')?.setPointerCapture(e.pointerId);
     snapshot();
-    gesture.current = { kind: 'resize', pageId: page.id, objId: obj.id, start: toLocal(e, page), orig: obj, keepAspect: obj.type === 'image' };
+    gesture.current = { kind: 'resize', pageId: page.id, objId: obj.id, start: toLocal(e, page), orig: obj, box: bounds(obj), handle };
+  };
+
+  /**
+   * Saves typed text. Runs when the box loses focus, on Escape, and when the box is closed
+   * any other way (clicking the page, another text run, a tool) — so edits are never lost.
+   */
+  const commitText = (pageId: string, objId: string, text: string) => {
+    setEditingId((cur) => (cur === objId ? null : cur));
+    const o = pagesRef.current?.find((p) => p.id === pageId)?.objects.find((x) => x.id === objId);
+    if (!o || o.type !== 'text') return;
+    if (!text.trim() && !o.cover) {
+      commit((list) => list.map((p) => (p.id === pageId ? { ...p, objects: p.objects.filter((x) => x.id !== objId) } : p)));
+      setSelected((cur) => (cur?.objId === objId ? null : cur));
+    } else if (text !== o.text) {
+      updateObject(pageId, objId, (cur) => ({ ...cur, text }) as PdfObject);
+    }
   };
 
   const replaceRun = (e: RPointerEvent, page: PdfPageModel, run: TextRun) => {
@@ -903,14 +943,9 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
                       selected={selected?.objId === o.id}
                       editing={editingId === o.id}
                       onPointerDown={(e) => startMove(e, page, o)}
-                      onResize={(e) => startResize(e, page, o)}
+                      onResize={(e, h) => startResize(e, page, o, h)}
                       onDoubleClick={() => o.type === 'text' && setEditingId(o.id)}
-                      onTextCommit={(text) => {
-                        setEditingId(null);
-                        if (o.type !== 'text') return;
-                        if (!text.trim() && !o.cover) removeObject(page.id, o.id);
-                        else if (text !== o.text) updateObject(page.id, o.id, (cur) => ({ ...cur, text }) as PdfObject);
-                      }}
+                      onTextCommit={(text) => commitText(page.id, o.id, text)}
                     />
                   ))}
                   {pageRuns
@@ -983,7 +1018,7 @@ function ObjectView({
   selected: boolean;
   editing: boolean;
   onPointerDown: (e: RPointerEvent) => void;
-  onResize: (e: RPointerEvent) => void;
+  onResize: (e: RPointerEvent, handle: Handle) => void;
   onDoubleClick: () => void;
   onTextCommit: (text: string) => void;
 }) {
@@ -992,7 +1027,11 @@ function ObjectView({
     if (!selected) return null;
     const b = bounds(obj);
     const pad = obj.strokeWidth / 2 + 3;
-    return <div className="obj-outline" style={{ left: (b.x - pad) * s, top: (b.y - pad) * s, width: (b.width + pad * 2) * s, height: (b.height + pad * 2) * s }} />;
+    return (
+      <div className="obj-outline" style={{ left: (b.x - pad) * s, top: (b.y - pad) * s, width: (b.width + pad * 2) * s, height: (b.height + pad * 2) * s }}>
+        <ResizeHandles handles={ALL_HANDLES} onStart={onResize} />
+      </div>
+    );
   }
   if (obj.type === 'text') {
     const font = PDF_FONTS[obj.fontFamily];
@@ -1024,6 +1063,7 @@ function ObjectView({
             title={obj.url ? `Link: ${obj.url}` : 'Double-click to edit'}
           >
             {obj.text || '​'}
+            {selected && <ResizeHandles handles={CORNER_HANDLES} onStart={onResize} />}
           </div>
         )}
       </>
@@ -1057,8 +1097,25 @@ function ObjectView({
   return (
     <div className={cx('obj', `obj-${obj.type}`, selected && 'is-selected')} style={style} onPointerDown={onPointerDown} title={obj.type === 'link' ? obj.url : undefined}>
       {inner}
-      {selected && <div className="resize-handle" onPointerDown={onResize} aria-label="Resize" />}
+      {selected && <ResizeHandles handles={ALL_HANDLES} onStart={onResize} />}
     </div>
+  );
+}
+
+/** Corner and side-midpoint anchors; drag one to resize from that side. */
+function ResizeHandles({ handles, onStart }: { handles: Handle[]; onStart: (e: RPointerEvent, h: Handle) => void }) {
+  return (
+    <>
+      {handles.map((h) => (
+        <div
+          key={h}
+          className={cx('rh', `rh-${h}`)}
+          style={{ left: `${HANDLE_POS[h][0] * 100}%`, top: `${HANDLE_POS[h][1] * 100}%`, cursor: HANDLE_CURSOR[h] }}
+          onPointerDown={(e) => onStart(e, h)}
+          aria-label={`Resize ${h}`}
+        />
+      ))}
+    </>
   );
 }
 
@@ -1066,11 +1123,29 @@ function TextEditBox({ obj, scale, css, onCommit }: { obj: PdfTextObject; scale:
   const [text, setText] = useState(obj.text);
   const ref = useRef<HTMLTextAreaElement>(null);
   const committed = useRef(false);
+  const mounted = useRef(false);
+  const textRef = useRef(text);
+  textRef.current = text;
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
   useEffect(() => {
     const el = ref.current;
-    if (!el) return;
-    el.focus();
-    el.select();
+    if (el) {
+      el.focus();
+      el.select();
+    }
+    // Closing the box without a blur (clicking the page or another text run unmounts it first)
+    // must still save. Deferred so React StrictMode's test unmount/remount doesn't commit.
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      queueMicrotask(() => {
+        if (!mounted.current && !committed.current) {
+          committed.current = true;
+          onCommitRef.current(textRef.current);
+        }
+      });
+    };
   }, []);
   useEffect(() => {
     const el = ref.current;

@@ -255,11 +255,27 @@ export const VideoEditor = forwardRef<VideoEditorHandle, Props>(function VideoEd
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [playable]);
 
+  // iOS Safari (and data-saver modes) don't load video frames until the user taps play, so a
+  // paused <video> has nothing to draw. Show a WebCodecs-decoded frame until it does.
+  useEffect(() => {
+    if (!info.hasVideo) return;
+    const timer = setTimeout(() => {
+      const v = videoRef.current;
+      if (!v || v.readyState < 2) void renderSinkFrame(v?.currentTime ?? 0);
+    }, 700);
+    return () => clearTimeout(timer);
+  }, [info.hasVideo, renderSinkFrame]);
+
   const seek = (t: number) => {
     const clamped = Math.max(0, Math.min(duration, t));
     const v = videoRef.current;
-    if (playable && v) v.currentTime = clamped;
-    else {
+    if (playable && v) {
+      v.currentTime = clamped;
+      if (v.readyState < 2) {
+        setTime(clamped);
+        void renderSinkFrame(clamped);
+      }
+    } else {
       setTime(clamped);
       void renderSinkFrame(clamped);
     }
