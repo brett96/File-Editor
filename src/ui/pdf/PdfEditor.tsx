@@ -2,6 +2,8 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRe
 import {
   ArrowDown,
   ArrowUp,
+  PanelLeftClose,
+  PanelLeftOpen,
   Circle,
   Copy,
   Eraser,
@@ -221,6 +223,8 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
   const [runs, setRuns] = useState<Record<string, TextRun[]>>({});
   const [linkPrompt, setLinkPrompt] = useState<{ pageId: string; objId: string; initial: string } | null>(null);
   const [dragThumb, setDragThumb] = useState<number | null>(null);
+  // the page list takes a third of a phone screen, so it starts hidden there
+  const [showThumbs, setShowThumbs] = useState(() => typeof window === 'undefined' || window.matchMedia('(min-width: 721px)').matches);
   const canvases = useRef<Record<string, HTMLCanvasElement>>({});
   const gesture = useRef<Gesture | null>(null);
   /** Last press on an object, for double-click / double-tap detection (see startMove). */
@@ -675,7 +679,7 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
     }
   };
 
-  const replaceRun = (e: RPointerEvent, page: PdfPageModel, run: TextRun) => {
+  const replaceRun = (e: { stopPropagation(): void; preventDefault(): void }, page: PdfPageModel, run: TextRun) => {
     e.stopPropagation();
     e.preventDefault();
     const { bg, fg } = sampleColors(canvases.current[page.id], run, page.width);
@@ -757,6 +761,9 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
         <IconButton label="Highlight area" active={tool === 'highlight'} onClick={() => setTool('highlight')}><Highlighter size={16} /></IconButton>
         <IconButton label="White-out (cover content)" active={tool === 'whiteout'} onClick={() => setTool('whiteout')}><Eraser size={16} /></IconButton>
         <Divider />
+        <IconButton label={showThumbs ? 'Hide page list' : 'Show page list'} active={showThumbs} onClick={() => setShowThumbs((v) => !v)}>
+          {showThumbs ? <PanelLeftClose size={16} /> : <PanelLeftOpen size={16} />}
+        </IconButton>
         <Popover label="Insert pages" text button={<><FilePlus2 size={16} /><span>Pages</span></>}>
           {(close) => (
             <div className="menu">
@@ -865,7 +872,7 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
       </div>
 
       <div className="pdf-body">
-        <aside className="thumbs" aria-label="Pages">
+        {showThumbs && <aside className="thumbs" aria-label="Pages">
           {pages.map((p, i) => {
             const src = sources.find((s) => s.id === p.sourceId) ?? null;
             const tScale = 110 / Math.max(p.width, p.height);
@@ -912,7 +919,7 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
               </div>
             );
           })}
-        </aside>
+        </aside>}
 
         <div className={cx('workspace', 'pdf-workspace', `tool-${tool}`)} ref={scrollRef}>
           {pages.map((page, index) => {
@@ -975,7 +982,10 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
                         className="text-run"
                         title="Click to edit this text"
                         style={{ left: r.x * scale, top: r.y * scale, width: r.width * scale, height: r.height * scale }}
-                        onPointerDown={(e) => replaceRun(e, page, r)}
+                        // open on click (pointer up without moving), so a swipe that starts on
+                        // text scrolls the page on touch screens instead of opening an edit box
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => replaceRun(e, page, r)}
                       />
                     ))}
                 </div>

@@ -78,7 +78,24 @@ interface Toast {
   text: string;
 }
 
-const ZOOMS = [0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+const ZOOMS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+
+/**
+ * Zoom at which the widest page fills the editor's scroll area. Pages are measured from the
+ * DOM (PDF pages and the document sheet both size themselves in CSS px at the current zoom).
+ */
+function fitWidthZoom(current: number): number {
+  const ws = document.querySelector<HTMLElement>('.editor-root .workspace');
+  if (!ws) return 1;
+  const cs = getComputedStyle(ws);
+  const avail = ws.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  let base = 816; // a Letter page at 100 %
+  const pdfPage = ws.querySelector<HTMLElement>('.pdf-page');
+  const sheet = ws.querySelector<HTMLElement>('.page-sheet');
+  if (pdfPage) base = pdfPage.offsetWidth / current;
+  else if (sheet) base = parseFloat(sheet.style.width) || base; // its width is unzoomed (CSS zoom)
+  return Math.max(0.1, Math.min(4, Math.floor((avail / base) * 100) / 100));
+}
 let docKey = 1;
 
 const BLANK: RichDocument = { html: '<p></p>', title: 'Untitled' };
@@ -100,6 +117,8 @@ export default function App() {
   const [doc, setDoc] = useState<OpenDoc | null>(null);
   const [dirty, setDirty] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
   const [busy, setBusy] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [askPw, setAskPw] = useState<PasswordAsk | null>(null);
@@ -119,6 +138,24 @@ export default function App() {
   docRef.current = doc;
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
+
+  // On phone-sized screens, open PDFs and documents at "fit width" instead of 100 % (a Letter
+  // page is 816 px wide, about twice a phone). PDF pages appear asynchronously, so wait for one.
+  const docKind = doc?.kind;
+  const docKeyValue = doc?.key;
+  useEffect(() => {
+    if ((docKind !== 'pdf' && docKind !== 'flow') || window.innerWidth >= 900) return;
+    let tries = 0;
+    const timer = setInterval(() => {
+      tries++;
+      const ready = document.querySelector(docKind === 'pdf' ? '.editor-root .pdf-page' : '.editor-root .page-sheet');
+      if (ready || tries > 40) {
+        clearInterval(timer);
+        if (ready) setZoom(fitWidthZoom(zoomRef.current));
+      }
+    }, 100);
+    return () => clearInterval(timer);
+  }, [docKind, docKeyValue]);
 
   const toast = useCallback((text: string, kind: Toast['kind'] = 'error') => {
     const id = Date.now() + Math.random();
@@ -679,7 +716,14 @@ export default function App() {
                 <>
                   <Divider />
                   <IconButton label="Zoom out (Ctrl -)" onClick={() => setZoom((z) => [...ZOOMS].reverse().find((v) => v < z - 0.001) ?? z)}><ZoomOut size={16} /></IconButton>
-                  <select className="tb-select zoom-select" aria-label="Zoom" value={String(zoom)} onChange={(e) => setZoom(parseFloat(e.target.value))}>
+                  <select
+                    className="tb-select zoom-select"
+                    aria-label="Zoom"
+                    value={String(zoom)}
+                    onChange={(e) => setZoom(e.target.value === 'fit' ? fitWidthZoom(zoom) : parseFloat(e.target.value))}
+                  >
+                    <option value="fit">Fit width</option>
+                    {!ZOOMS.includes(zoom) && <option value={String(zoom)}>{Math.round(zoom * 100)}%</option>}
                     {ZOOMS.map((z) => <option key={z} value={String(z)}>{Math.round(z * 100)}%</option>)}
                   </select>
                   <IconButton label="Zoom in (Ctrl +)" onClick={() => setZoom((z) => ZOOMS.find((v) => v > z + 0.001) ?? z)}><ZoomIn size={16} /></IconButton>

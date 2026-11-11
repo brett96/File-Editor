@@ -863,7 +863,7 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
               </defs>
               {objects.map((o) => {
                 if (o.id === editing) return null;
-                const common = { onPointerDown: (e: RPointerEvent) => startObj(e, o, 'move'), className: 'img-obj' };
+                const common = { onPointerDown: (e: RPointerEvent) => startObj(e, o, 'move'), className: o.id === selected ? 'img-obj is-selected' : 'img-obj' };
                 switch (o.type) {
                   case 'text':
                     return (
