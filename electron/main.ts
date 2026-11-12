@@ -17,6 +17,7 @@ import { randomUUID } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { activateLicense, getLicenseState, refreshLicenseStatus } from './license';
 
 const APP_SCHEME = 'app';
 const APP_HOST = 'editor';
@@ -274,15 +275,21 @@ function buildMenu() {
     {
       role: 'help',
       submenu: [
+        { label: 'Enter License Key…', click: () => send('license') },
+        { type: 'separator' },
         {
           label: 'About File Editor',
-          click: () =>
+          click: async () => {
+            const lic = await getLicenseState().catch(() => null);
+            const licensed =
+              lic?.status === 'active' ? `Licensed to ${lic.email} (key ${lic.keyHint}).` : lic?.status === 'revoked' ? 'License revoked.' : 'Not activated.';
             void dialog.showMessageBox({
               type: 'info',
               title: 'About',
               message: `File Editor ${app.getVersion()}`,
-              detail: 'Documents are processed locally on this computer and are never uploaded.',
-            }),
+              detail: `Documents are processed locally on this computer and are never uploaded.\n\n${licensed}`,
+            });
+          },
         },
       ],
     },
@@ -335,6 +342,17 @@ function registerIpc() {
     return { name: basename(res.filePath), token: grant(res.filePath) };
   });
 
+  // license: activation talks to the license server from this process only (see license.ts)
+  ipcMain.handle('license-get', async (e) => {
+    assertSender(e);
+    return getLicenseState();
+  });
+
+  ipcMain.handle('license-activate', async (e, key: unknown) => {
+    assertSender(e);
+    return activateLicense(typeof key === 'string' ? key.slice(0, 100) : '');
+  });
+
   ipcMain.on('set-dirty', (e, value: boolean) => {
     try {
       assertSender(e);
@@ -383,6 +401,9 @@ app.whenReady().then(async () => {
       /* updater not configured */
     }
   }
+
+  // daily license check-in (refund / revoke); does nothing offline or without a license
+  setTimeout(() => void refreshLicenseStatus().catch(() => undefined), 15_000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

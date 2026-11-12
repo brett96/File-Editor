@@ -1110,6 +1110,48 @@ textarea {
   color: #fff;
 }
 
+/* ── license dialog (desktop) ───────────────────────────────────────── */
+.license-card {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.license-card-warn {
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  color: var(--danger);
+}
+
+.license-card-warn .dialog-text {
+  margin: 0;
+}
+
+.license-ok {
+  color: var(--ok);
+  flex: none;
+}
+
+.license-title {
+  font-weight: 600;
+  margin: 2px 0 6px;
+}
+
+.license-key-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.license-key-input .input {
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', Menlo, monospace;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 /* ── overlays ───────────────────────────────────────────────────────── */
 .drop-overlay {
   position: fixed;

@@ -24,6 +24,10 @@ const bridge = {
     ipcRenderer.on('menu', listener);
     return () => ipcRenderer.removeListener('menu', listener);
   },
+  license: {
+    get: () => ipcRenderer.invoke('license-get'),
+    activate: (key: string) => ipcRenderer.invoke('license-activate', key),
+  },
   setDirty: (dirty: boolean) => ipcRenderer.send('set-dirty', dirty),
   setTitle: (title: string) => ipcRenderer.send('set-title', title),
 };
