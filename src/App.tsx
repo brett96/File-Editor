@@ -41,6 +41,9 @@ import { PdfEditor, type PdfEditorHandle } from './ui/pdf/PdfEditor';
 import { ImageEditor, type ImageEditorHandle } from './ui/image/ImageEditor';
 import type { ProImageEditorHandle } from './ui/pro-image/ProImageEditor';
 import type { ProDocument } from './core/pro-image/document';
+import type { StudioHandle } from './ui/studio/StudioEditor';
+import type { StudioExportChoice } from './ui/studio/StudioExport';
+import type { Project as StudioProject } from './core/studio/model';
 import { VideoEditor, formatTime, rotatedSize, type VideoEditorHandle } from './ui/video/VideoEditor';
 import { CodeEditor, type CodeEditorHandle } from './ui/code/CodeEditor';
 import { ImageExportModal, MediaExportModal, ProgressModal, type ImageExportChoice, type MediaExportChoice } from './ui/media-dialogs';
@@ -54,8 +57,12 @@ import { SheetExportModal, SheetSecurityModal, type SheetExportChoice } from './
 
 // Pro editors are desktop-only and loaded on demand, so the web build never downloads them.
 const ProImageEditor = lazy(() => import('./ui/pro-image/ProImageEditor').then((m) => ({ default: m.ProImageEditor })));
+const StudioEditor = lazy(() => import('./ui/studio/StudioEditor').then((m) => ({ default: m.StudioEditor })));
+const StudioExportModal = lazy(() => import('./ui/studio/StudioExport').then((m) => ({ default: m.StudioExportModal })));
 
 const ALL_OPEN_EXTENSIONS = [...new Set([...OPEN_EXTENSIONS, ...SHEET_EXTENSIONS, ...IMAGE_EXTENSIONS_ALL, ...MEDIA_EXTENSIONS_ALL])];
+
+type MediaDoc = { kind: 'media'; key: number; name: string; blob: Blob; info: MediaInfo; container: ContainerFormat; handle?: unknown; protection: ProtectionDraft };
 
 type OpenDoc =
   | { kind: 'flow'; key: number; name: string; format: FlowFormat; initial: RichDocument; handle?: unknown; protection: ProtectionDraft }
@@ -64,7 +71,8 @@ type OpenDoc =
   | { kind: 'image'; key: number; name: string; decoded: DecodedImage; format: ImageFormat; handle?: unknown; protection: ProtectionDraft }
   /** desktop pro photo editor: a layered document (format: what Save writes without asking) */
   | { kind: 'proimage'; key: number; name: string; doc: ProDocument; format: ImageFormat | 'psd'; handle?: unknown; protection: ProtectionDraft }
-  | { kind: 'media'; key: number; name: string; blob: Blob; info: MediaInfo; container: ContainerFormat; handle?: unknown; protection: ProtectionDraft }
+  | MediaDoc
+  | { kind: 'studio'; key: number; name: string; project: StudioProject; blobs: Map<string, Blob>; origin: MediaDoc; protection: ProtectionDraft; handle?: undefined }
   | { kind: 'sheet'; key: number; name: string; format: SheetFormat; workbook: IWorkbookData; handle?: unknown; protection: ProtectionDraft };
 
 const PRIMARY_SWITCH: Array<DocFormat | 'image'> = ['docx', 'txt', 'html', 'css', 'js', 'pdf', 'image'];
@@ -178,6 +186,7 @@ export default function App() {
   const imageRef = useRef<ImageEditorHandle>(null);
   const proImageRef = useRef<ProImageEditorHandle>(null);
   const videoRef = useRef<VideoEditorHandle>(null);
+  const studioRef = useRef<StudioHandle>(null);
   const sheetRef = useRef<SheetEditorHandle>(null);
   const docRef = useRef(doc);
   docRef.current = doc;
@@ -516,6 +525,36 @@ export default function App() {
     }
   };
 
+  /** Desktop: move the open video / audio file between the quick editor and the multi-track Studio. */
+  const switchVideoWorkspace = async (to: 'quick' | 'studio') => {
+    const d = docRef.current;
+    if (!d) return;
+    if (to === 'studio' && d.kind === 'media') {
+      if (dirtyRef.current && !window.confirm('Changes made in Quick edit (trim, crop, filters…) are not carried into Studio. Open the original file in Studio?')) return;
+      const { projectFromSource } = await import('./core/studio/build');
+      const id = 'S0';
+      const project = projectFromSource({
+        id,
+        name: d.name,
+        kind: d.info.hasVideo ? 'video' : 'audio',
+        duration: d.info.duration,
+        width: d.info.width,
+        height: d.info.height,
+        hasAudio: d.info.hasAudio,
+        fps: d.info.fps,
+      });
+      setDoc({ kind: 'studio', key: docKey++, name: d.name, project, blobs: new Map([[id, d.blob]]), origin: d, protection: EMPTY_PROTECTION });
+      setDirty(false);
+      return;
+    }
+    if (to === 'quick' && d.kind === 'studio') {
+      if (dirtyRef.current && !window.confirm('Quick edit works on the original file only, so your Studio timeline, effects and mix will be discarded. Export first to keep them. Continue?')) return;
+      studioRef.current?.stop();
+      setDoc({ ...d.origin, key: docKey++ });
+      setDirty(false);
+    }
+  };
+
   const newSpreadsheet = () => {
     if (!confirmDiscard()) return;
     setDoc({ kind: 'sheet', key: docKey++, name: 'Untitled.xlsx', format: 'xlsx', workbook: blankWorkbook('Untitled'), protection: EMPTY_PROTECTION });
@@ -726,7 +765,7 @@ export default function App() {
 
   const render = async (format: DocFormat, protection: ProtectionDraft): Promise<Uint8Array> => {
     const d = docRef.current!;
-    if (d.kind === 'image' || d.kind === 'proimage' || d.kind === 'media' || d.kind === 'sheet') throw new Error('Use the image, video or spreadsheet save dialog.');
+    if (d.kind === 'image' || d.kind === 'proimage' || d.kind === 'media' || d.kind === 'studio' || d.kind === 'sheet') throw new Error('Use the image, video or spreadsheet save dialog.');
     const pdfProt = protectionToPdf(protection);
     const pw = protection.enabled ? protection.password : undefined;
     if (d.kind === 'code') {
@@ -896,6 +935,40 @@ export default function App() {
     }
   };
 
+  const saveStudio = async (c: StudioExportChoice) => {
+    const d = docRef.current;
+    const studio = studioRef.current;
+    if (d?.kind !== 'studio' || !studio) return;
+    studio.stop();
+    const ctrl = new AbortController();
+    const info = CONTAINERS[c.container];
+    setProgress({ title: `Exporting ${c.fileName}`, phase: 'Preparing media', progress: 0, cancel: () => ctrl.abort() });
+    try {
+      const { exportStudio, StudioCancelled } = await import('./core/studio/export');
+      const media = await studio.getMedia();
+      let result: Awaited<ReturnType<typeof exportStudio>>;
+      try {
+        result = await exportStudio(studio.getProject(), media.blobs, media.buffers, c, (phase, progress) => setProgress((cur) => cur && { ...cur, phase, progress }), ctrl.signal);
+      } catch (err) {
+        if (err instanceof StudioCancelled || ctrl.signal.aborted) {
+          toast('Export cancelled.', 'info');
+          return;
+        }
+        throw err;
+      }
+      setProgress(null);
+      const res = await host.save({ suggestedName: c.fileName, bytes: result.bytes, mime: info.mime, ext: info.ext, description: info.label });
+      if (!res) return;
+      setDirty(false);
+      const lufs = result.loudness !== null && Number.isFinite(result.loudness) ? ` · ${result.loudness.toFixed(1)} LUFS` : '';
+      toast(`Exported ${res.name} (${(result.bytes.length / 1024 / 1024).toFixed(1)} MB${lufs})`, 'info');
+    } catch (err) {
+      toast(`Could not export: ${errorText(err)}`);
+    } finally {
+      setProgress(null);
+    }
+  };
+
   // ── spreadsheets ─────────────────────────────────────────────────────────
   const saveSheet = async (c: SheetExportChoice, handle: unknown | undefined, adopt: boolean) => {
     const d = docRef.current;
@@ -947,7 +1020,7 @@ export default function App() {
       else setExportOpen('save-as');
       return;
     }
-    if (d.kind === 'media') {
+    if (d.kind === 'media' || d.kind === 'studio') {
       setExportOpen('save-as');
       return;
     }
@@ -982,7 +1055,7 @@ export default function App() {
     setBusy('Preparing to print…');
     try {
       let url: string;
-      if (d.kind === 'media') throw new Error('Video and audio cannot be printed. Save a frame as an image to print it.');
+      if (d.kind === 'media' || d.kind === 'studio') throw new Error('Video and audio cannot be printed. Save a frame as an image to print it.');
       if (d.kind === 'image' || d.kind === 'proimage') {
         const px = d.kind === 'proimage' ? proImageRef.current!.getPixels() : imageRef.current!.getPixels();
         const { pixelsToCanvas } = await import('./core/media/image-codecs');
@@ -1174,7 +1247,7 @@ export default function App() {
         ? doc.format
         : null
     : null;
-  const isMediaDoc = doc?.kind === 'image' || doc?.kind === 'proimage' || doc?.kind === 'media';
+  const isMediaDoc = doc?.kind === 'image' || doc?.kind === 'proimage' || doc?.kind === 'media' || doc?.kind === 'studio';
   const canSwitchFormat = doc?.kind === 'flow' || doc?.kind === 'code' || doc?.kind === 'sheet';
   const currentFormat: SwitchTarget | null = doc?.kind === 'sheet' ? doc.format : format;
   const formatLabel = format
@@ -1185,6 +1258,8 @@ export default function App() {
       ? doc.format === 'psd' ? 'Photoshop document' : `${IMAGE_FORMATS[doc.format].label} · layers`
       : doc?.kind === 'image'
       ? `${IMAGE_FORMATS[doc.format].label} image`
+      : doc?.kind === 'studio'
+      ? 'Studio project'
       : doc?.kind === 'media'
         ? doc.info.hasVideo
           ? 'Video'
@@ -1217,7 +1292,7 @@ export default function App() {
                   {doc.protection.enabled ? <ShieldCheck size={16} /> : <LockOpen size={16} />}
                 </IconButton>
               )}
-              {doc.kind !== 'media' && <IconButton label="Print" onClick={print}><Printer size={16} /></IconButton>}
+              {doc.kind !== 'media' && doc.kind !== 'studio' && <IconButton label="Print" onClick={print}><Printer size={16} /></IconButton>}
               {doc.kind === 'pdf' && (
                 <IconButton label="Convert PDF to editable document" onClick={convertPdfToFlow}><Wand2 size={16} /></IconButton>
               )}
@@ -1262,6 +1337,11 @@ export default function App() {
         )}
         {doc?.kind === 'image' && (
           <ImageEditor key={doc.key} ref={imageRef} initial={doc.decoded} onChange={markDirty} onError={toast} onStatus={setImageStatus} />
+        )}
+        {doc?.kind === 'studio' && (
+          <Suspense fallback={<div className="busy" role="status"><span className="spinner" /> Loading Studio…</div>}>
+            <StudioEditor key={doc.key} ref={studioRef} initial={doc.project} blobs={doc.blobs} onChange={markDirty} onError={toast} />
+          </Suspense>
         )}
         {doc?.kind === 'media' && (
           <VideoEditor key={doc.key} ref={videoRef} blob={doc.blob} info={doc.info} onChange={markDirty} onError={toast} onSaveFrame={onSaveFrame} onEditFrame={onEditFrame} />
@@ -1337,6 +1417,12 @@ export default function App() {
             <div className="workspace-switch" role="radiogroup" aria-label="Photo workspace">
               <button type="button" role="radio" aria-checked={doc.kind === 'image'} className={doc.kind === 'image' ? 'is-active' : ''} onClick={() => void switchPhotoWorkspace('quick')} title="Crop, adjust, filters, text and drawing on one image">Quick edit</button>
               <button type="button" role="radio" aria-checked={doc.kind === 'proimage'} className={doc.kind === 'proimage' ? 'is-active' : ''} onClick={() => void switchPhotoWorkspace('pro')} title="Layers, masks, adjustment layers, selections, brushes, filters, Photoshop files">Pro</button>
+            </div>
+          )}
+          {host.kind === 'desktop' && (doc.kind === 'media' || doc.kind === 'studio') && (
+            <div className="workspace-switch" role="radiogroup" aria-label="Video and audio workspace">
+              <button type="button" role="radio" aria-checked={doc.kind === 'media'} className={doc.kind === 'media' ? 'is-active' : ''} onClick={() => void switchVideoWorkspace('quick')} title="Trim, crop, rotate, filters and format conversion of one file">Quick edit</button>
+              <button type="button" role="radio" aria-checked={doc.kind === 'studio'} className={doc.kind === 'studio' ? 'is-active' : ''} onClick={() => void switchVideoWorkspace('studio')} title="Multi-track timeline, keyframes, titles, compositing, colour grading, green screen, mixing console, loudness and waveform editing">Studio</button>
             </div>
           )}
           {(doc.kind === 'image' || doc.kind === 'proimage') && imageStatus && <span>{imageStatus.width} × {imageStatus.height} px</span>}
@@ -1425,6 +1511,27 @@ export default function App() {
           }}
         />
       )}
+      {exportOpen && doc?.kind === 'studio' && (() => {
+        const sp = studioRef.current?.getProject() ?? doc.project;
+        return (
+          <Suspense fallback={null}>
+            <StudioExportModal
+              hasVideo={sp.tracks.some((t) => t.kind === 'video' && t.clips.length > 0)}
+              width={sp.width}
+              height={sp.height}
+              fps={sp.fps}
+              loudnessTarget={sp.master.loudnessTarget}
+              initialName={baseName(doc.name)}
+              initialContainer={doc.origin.container}
+              onClose={() => setExportOpen(null)}
+              onSubmit={(c) => {
+                setExportOpen(null);
+                void saveStudio(c);
+              }}
+            />
+          </Suspense>
+        );
+      })()}
       {exportOpen && doc?.kind === 'media' && (() => {
         const e = videoRef.current?.getEdits();
         const r = e ? rotatedSize(doc.info, e) : { width: doc.info.width, height: doc.info.height };

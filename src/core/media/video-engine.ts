@@ -14,13 +14,13 @@ type MB = typeof import('mediabunny');
 let mbPromise: Promise<MB> | null = null;
 let extraEncoders: Promise<void> | null = null;
 
-async function mediabunny(): Promise<MB> {
+export async function mediabunny(): Promise<MB> {
   if (!mbPromise) mbPromise = import('mediabunny');
   return mbPromise;
 }
 
 /** Registers WASM encoders for codecs WebCodecs lacks (MP3 always; AAC/FLAC where missing). */
-async function ensureExtraEncoders(mb: MB): Promise<void> {
+export async function ensureExtraEncoders(mb: MB): Promise<void> {
   if (!extraEncoders) {
     extraEncoders = (async () => {
       const [{ registerMp3Encoder }, { registerFlacEncoder }] = await Promise.all([import('@mediabunny/mp3-encoder'), import('@mediabunny/flac-encoder')]);
@@ -180,11 +180,11 @@ export class ExportCancelled extends Error {
   }
 }
 
-async function qualityOf(mb: MB, q: QualityLevel): Promise<Quality> {
+export async function qualityOf(mb: MB, q: QualityLevel): Promise<Quality> {
   return [mb.QUALITY_VERY_LOW, mb.QUALITY_LOW, mb.QUALITY_MEDIUM, mb.QUALITY_HIGH, mb.QUALITY_VERY_HIGH][q - 1];
 }
 
-function outputFormat(mb: MB, container: ContainerFormat) {
+export function outputFormat(mb: MB, container: ContainerFormat) {
   switch (container) {
     case 'mp4':
       return new mb.Mp4OutputFormat({ fastStart: 'in-memory' });
