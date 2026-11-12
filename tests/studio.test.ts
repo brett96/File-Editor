@@ -182,3 +182,27 @@ describe('studio project building', () => {
     expect(del.tracks.filter((t) => t.kind === 'audio')).toHaveLength(1);
   });
 });
+
+describe('studio project files', () => {
+  it('round-trips the timeline and only the media it uses', async () => {
+    const { projectFromSource, addSource } = await import('../src/core/studio/build');
+    const { writeProjectFile, readProjectFile } = await import('../src/core/studio/project-file');
+    const src = { id: 'S1', name: 'clip.mp4', kind: 'video' as const, duration: 4, width: 640, height: 360, hasAudio: true, fps: 30 };
+    let p = projectFromSource(src);
+    // an unused source (left behind by a waveform edit) is dropped from the file
+    p = addSource(p, { id: 'S9', name: 'old.wav', kind: 'audio', duration: 1, width: 0, height: 0, hasAudio: true, fps: null });
+    p = { ...p, master: { ...p.master, loudnessTarget: -14 } };
+    const media = new Uint8Array(5000).map((_, i) => i % 251);
+    const bytes = await writeProjectFile(p, new Map([['S1', new Blob([media])], ['S9', new Blob([new Uint8Array(10)])]]));
+    const back = await readProjectFile(bytes);
+    expect(back.project.master.loudnessTarget).toBe(-14);
+    expect(back.project.tracks.map((t) => t.clips.length)).toEqual([1, 1]);
+    expect(Object.keys(back.project.sources)).toEqual(['S1']);
+    expect([...back.blobs.keys()]).toEqual(['S1']);
+    expect(new Uint8Array(await back.blobs.get('S1')!.arrayBuffer())).toEqual(media);
+  });
+  it('rejects other files', async () => {
+    const { readProjectFile } = await import('../src/core/studio/project-file');
+    await expect(readProjectFile(new Uint8Array([1, 2, 3]))).rejects.toThrow(/not a Studio project/);
+  });
+});

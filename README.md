@@ -14,6 +14,7 @@ there is no server to run.
 | **Video & audio** | Open MP4, MOV, WebM, MKV, TS, MP3, M4A, WAV, FLAC, OGG/Opus, AAC, plus legacy AVI, WMV, FLV, MPEG, 3GP, OGV, WMA, AIFF, AMR. Trim, crop, rotate, flip, resize, change frame rate; colour look and filters; text overlays with timing; fade in/out; volume or mute; save a frame as a picture or edit it in the photo editor |
 | **Pro Photo** (desktop app only) | Photoshop-style workspace: layers (pixel, text, shape, fill) with 16 blend modes, opacity, masks and lock; non-destructive adjustment layers (Curves, Levels, Hue/Saturation, Color Balance, Black & White, Exposure, Brightness/Contrast, Vibrance, Photo Filter, Invert, Threshold, Posterize); marquee, lasso and magic-wand selections with add/subtract/intersect, feather and invert; brush, eraser, clone stamp, spot healing, dodge/burn, gradient and paint bucket; filters (Gaussian blur, unsharp mask, noise, median, motion blur, emboss, find edges); image/canvas size, rotate, crop; open and save layered **.psd** |
 | **Studio** (desktop app only) | After Effects / Premiere-style video and audio editing: multi-track timeline (move, trim, split, snap, linked picture + sound, lock/hide/mute/solo); titles and colour layers; keyframed position, scale, rotation and opacity with easing; blend modes, fades, blur, drop shadow, colour grading and looks, chroma key (green screen); mixing console per audio track (EQ with low/high cut, shelves and parametric mid, compressor, delay, reverb, pan, fader, meters), master limiter and loudness normalization to −14/−16/−23/−24 LUFS; clip gain, fades and volume automation; waveform editor (cut/copy/paste, silence, gain, normalize, fades, reverse, noise gate, noise-profile noise reduction); export to MP4, WebM, MOV, MKV, TS or audio formats |
+| **Saving** | **Save** writes back to the file you opened, in its own format (documents, spreadsheets, PDFs, photos, Photoshop files, video and audio, Studio projects); **Save as / Convert** makes a copy or changes the format. **Auto-save** (on by default; status bar or desktop File menu) saves every change to the file a moment after you stop. **Recent** (and the desktop File ▸ Open Recent menu and the start screen) reopens recently used files |
 | **Convert** | Documents ↔ documents (incl. PDF ↔ DOCX); spreadsheets ↔ .xlsx, CSV, TSV; photos ↔ any photo format or PDF; video ↔ MP4 (H.264/HEVC/AV1/VP9), WebM, MOV, MKV, TS, animated GIF, AVI, WMV, FLV, MPEG, 3GP, OGV; video or audio → MP3, M4A, WAV, FLAC, OGG, Opus, AAC |
 | **Passwords** | Open Word, Excel and PDF files protected by Office, Acrobat or other tools (with the password); save password-protected DOCX and XLSX (Office AES-256) and PDF (AES-256, with optional permission restrictions) |
 
@@ -247,6 +248,22 @@ Developer ID certificate.
   trims and container changes without visual edits are copied without re-encoding where
   possible. Multi-clip editing and audio mixing are in Studio (desktop app); there is no speed
   change yet.
+- **Saving in place, auto-save and recent files:**
+  - *Desktop:* every opened file can be written back in place. Auto-save writes to the opened
+    file (or to the project or file chosen at the first Save); new and converted files are
+    auto-saved once they have been saved somewhere. Recent files (12) are kept in the app's
+    data folder, are also handed to the OS (Windows jump list, macOS Dock), and paths never
+    reach the web page — it only sees a name and an opaque id.
+  - *Web:* Chrome and Edge (File System Access API) save in place, auto-save and remember
+    recent files (the file handles are kept in this browser's IndexedDB; reopening one asks
+    for permission once per session). Files dropped onto the window are saved in place too.
+    Firefox and Safari can't write to files a page opened, so Save downloads a copy and auto-save
+    and Recent are not offered there.
+  - *Video and audio* (Quick edit) are saved in place with **Save** but not auto-saved,
+    because saving re-encodes the whole file. On the web, a video up to 1 GB is copied into
+    memory when opened so it can be overwritten safely; larger ones are saved with Save as.
+  - Layered pro photos auto-save when they are `.psd` (or a single layer); flattening layers into
+    a JPEG/PNG always needs Save as. Formats that can't be written (HEIC) need Save as.
 - **Desktop-only workspaces:** Pro Photo and Studio are offered only when the app runs inside
   the desktop shell (the status bar shows **Quick edit | Pro** for photos and **Quick edit |
   Studio** for video/audio). Their code is split into separate chunks that the web build never
@@ -264,7 +281,9 @@ Developer ID certificate.
   Mediabunny/WebCodecs; the sound is mixed offline, normalized to the loudness target (ITU-R
   BS.1770 / EBU R128 gated measurement) and peak-limited with a look-ahead limiter. Waveform
   edits are applied to a copy of the clip's sound (the original file is not changed). Studio
-  projects are not saved as project files yet: export the result, and keep the sources. Media
+  projects are saved as `.fstudio` files (Save, or Save as ▸ Studio project): a zip holding the
+  timeline, effects and mix plus a copy of every media file the timeline uses, so a project can
+  be moved to another computer; it reopens with the timeline intact. Media
   the browser engine can't decode (e.g. some AVI/WMV) must be opened on its own first, which
   converts it, and then added. GIF and the ffmpeg-only formats are not Studio export targets.
 

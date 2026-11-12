@@ -311,6 +311,13 @@
         "description": "Photoshop document",
         "role": "Editor",
         "mimeType": "image/vnd.adobe.photoshop"
+      },
+      {
+        "ext": "fstudio",
+        "name": "File Editor Studio Project",
+        "description": "File Editor Studio project",
+        "role": "Editor",
+        "mimeType": "application/x-file-editor-studio"
       }
     ],
     "win": {

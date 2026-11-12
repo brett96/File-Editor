@@ -2,7 +2,7 @@
  * Preload bridge. Runs in the sandboxed renderer with access to a minimal Electron API and
  * exposes exactly the DesktopBridge interface (src/platform/host.ts) — nothing else.
  */
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron';
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 
 type FilePayload = { name: string; bytes: Uint8Array; token: string };
 
@@ -30,6 +30,26 @@ const bridge = {
     return () => ipcRenderer.removeListener('update-status', listener);
   },
   installUpdate: () => ipcRenderer.send('install-update'),
+  recent: {
+    list: (): Promise<{ id: string; name: string; folder: string }[]> => ipcRenderer.invoke('recent-list'),
+    open: (id: string): Promise<FilePayload> => ipcRenderer.invoke('recent-open', id),
+    clear: (): Promise<void> => ipcRenderer.invoke('recent-clear'),
+    onChange: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on('recent-changed', listener);
+      return () => ipcRenderer.removeListener('recent-changed', listener);
+    },
+  },
+  setAutoSave: (on: boolean) => ipcRenderer.send('set-autosave', on),
+  // Only a real dropped File has a path; one constructed by page script resolves to null.
+  openDropped: async (file: File): Promise<FilePayload | null> => {
+    const path = webUtils.getPathForFile(file);
+    return path ? ipcRenderer.invoke('open-dropped', path) : null;
+  },
+  license: {
+    get: () => ipcRenderer.invoke('license-get'),
+    activate: (key: string) => ipcRenderer.invoke('license-activate', key),
+  },
   setDirty: (dirty: boolean) => ipcRenderer.send('set-dirty', dirty),
   setTitle: (title: string) => ipcRenderer.send('set-title', title),
 };

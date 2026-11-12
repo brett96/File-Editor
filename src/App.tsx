@@ -14,6 +14,7 @@ import {
   ShieldCheck,
   Upload,
   RefreshCw,
+  History,
   Wand2,
   ZoomIn,
   ZoomOut,
@@ -23,7 +24,7 @@ import { buildPdf } from './core/pdf/apply-edits';
 import type { PdfProtection } from './core/pdf/types';
 import { PasswordError, UnsupportedError, isCodeFormat, type CodeLanguage, type DocFormat, type FlowFormat, type RichDocument } from './core/types';
 import { escapeHtml, utf8Encode } from './core/dom';
-import { fileBytes, getHost, readDroppedFile, type OpenedFile, type UpdateStatus } from './platform/host';
+import { fileBytes, getHost, readDroppedFile, type OpenedFile, type RecentEntry, type UpdateStatus } from './platform/host';
 import { IconButton, Divider, cx, Popover, MenuItem } from './ui/components';
 import {
   EMPTY_PROTECTION,
@@ -72,7 +73,8 @@ type OpenDoc =
   /** desktop pro photo editor: a layered document (format: what Save writes without asking) */
   | { kind: 'proimage'; key: number; name: string; doc: ProDocument; format: ImageFormat | 'psd'; handle?: unknown; protection: ProtectionDraft }
   | MediaDoc
-  | { kind: 'studio'; key: number; name: string; project: StudioProject; blobs: Map<string, Blob>; origin: MediaDoc; protection: ProtectionDraft; handle?: undefined }
+  /** origin: the file Studio was opened from (null for a .fstudio project); handle: the project file */
+  | { kind: 'studio'; key: number; name: string; project: StudioProject; blobs: Map<string, Blob>; origin: MediaDoc | null; protection: ProtectionDraft; handle?: unknown }
   | { kind: 'sheet'; key: number; name: string; format: SheetFormat; workbook: IWorkbookData; handle?: unknown; protection: ProtectionDraft };
 
 const PRIMARY_SWITCH: Array<DocFormat | 'image'> = ['docx', 'txt', 'html', 'css', 'js', 'pdf', 'image'];
@@ -217,7 +219,17 @@ export default function App() {
     setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'error' ? 7000 : 3500);
   }, []);
 
-  const markDirty = useCallback(() => setDirty(true), []);
+  /** bumps on every change; a save only marks the file clean if nothing changed meanwhile */
+  const editSeq = useRef(0);
+  const autoSaveKick = useRef<() => void>(() => undefined);
+  const markDirty = useCallback(() => {
+    editSeq.current++;
+    setDirty(true);
+    autoSaveKick.current();
+  }, []);
+  const markClean = (seq: number) => {
+    if (editSeq.current === seq) setDirty(false);
+  };
 
   // desktop app: a newer version downloads in the background; offer to restart into it
   useEffect(() => {
@@ -299,6 +311,13 @@ export default function App() {
     let blob: Blob = file.blob;
     let name = file.name;
     let handle = file.handle;
+    if (handle !== undefined && host.kind === 'web') {
+      // Saving in place rewrites the file this Blob reads from (lazily), which would break
+      // playback and later saves; keep the editing copy in memory. Very large files are
+      // edited from disk and saved with Save as instead.
+      if (blob.size <= 1024 * 1024 * 1024) blob = new Blob([await blob.arrayBuffer()], { type: blob.type });
+      else handle = undefined;
+    }
     let info: MediaInfo | null = null;
     if (!kind.ffmpegOnly) {
       setBusy(`Opening ${file.name}…`);
@@ -421,9 +440,27 @@ export default function App() {
     return true;
   };
 
+  /** Studio projects (.fstudio). Returns false when the file is not one. */
+  const openProject = async (file: OpenedFile): Promise<boolean> => {
+    if (!/\.fstudio$/i.test(file.name)) return false;
+    if (host.kind !== 'desktop') throw new Error('Studio projects (.fstudio) open in the File Editor desktop app.');
+    setBusy(`Opening ${file.name}…`);
+    try {
+      await nextPaint();
+      const { readProjectFile } = await import('./core/studio/project-file');
+      const { project, blobs } = await readProjectFile(await fileBytes(file));
+      setDoc({ kind: 'studio', key: docKey++, name: file.name, project, blobs, origin: null, handle: file.handle, protection: EMPTY_PROTECTION });
+      setDirty(false);
+    } finally {
+      setBusy(null);
+    }
+    return true;
+  };
+
   const openFile = async (file: OpenedFile) => {
     if (!confirmDiscard()) return;
     try {
+      if (await openProject(file)) return;
       if (await openPsd(file)) return;
       if (await openSheet(file)) return;
       if (await openMedia(file)) return;
@@ -479,7 +516,7 @@ export default function App() {
 
   const pickAndOpen = async () => {
     try {
-      const extensions = host.kind === 'desktop' ? [...ALL_OPEN_EXTENSIONS, 'psd'] : ALL_OPEN_EXTENSIONS;
+      const extensions = host.kind === 'desktop' ? [...ALL_OPEN_EXTENSIONS, 'psd', 'fstudio'] : ALL_OPEN_EXTENSIONS;
       const [file] = await host.openFiles({ extensions, description: 'Documents, images, video & audio' });
       if (file) await openFile(file);
     } catch (err) {
@@ -521,7 +558,7 @@ export default function App() {
         handle: d.format === 'psd' ? undefined : d.handle,
         protection: EMPTY_PROTECTION,
       });
-      if (layers > 1 || d.format === 'psd') setDirty(true);
+      if (layers > 1 || d.format === 'psd') markDirty();
     }
   };
 
@@ -547,7 +584,7 @@ export default function App() {
       setDirty(false);
       return;
     }
-    if (to === 'quick' && d.kind === 'studio') {
+    if (to === 'quick' && d.kind === 'studio' && d.origin) {
       if (dirtyRef.current && !window.confirm('Quick edit works on the original file only, so your Studio timeline, effects and mix will be discarded. Export first to keep them. Continue?')) return;
       studioRef.current?.stop();
       setDoc({ ...d.origin, key: docKey++ });
@@ -594,7 +631,7 @@ export default function App() {
         format: 'png',
         protection: EMPTY_PROTECTION,
       });
-      setDirty(true);
+      markDirty();
       setImageStatus({ width: 800, height: 600 });
       return;
     }
@@ -609,7 +646,7 @@ export default function App() {
             ? { ...cur, format: target, name: `${baseName(cur.name)}.${info.ext}`, handle: undefined, protection: info.canProtect ? cur.protection : EMPTY_PROTECTION }
             : cur,
         );
-        setDirty(true);
+        markDirty();
         const active = sheetRef.current?.getActiveSheet();
         if (!info.canProtect && active && active.sheetCount > 1) {
           toast(`${info.label} holds one sheet: saving writes the active sheet only. The other sheets stay here until you close the file.`, 'info');
@@ -666,7 +703,7 @@ export default function App() {
         await nextPaint();
         const bytes = await exportFlow(await richOf(), 'pdf');
         setDoc({ kind: 'pdf', key: docKey++, name: `${title}.pdf`, bytes, protection: EMPTY_PROTECTION });
-        setDirty(true);
+        markDirty();
         setPageCount(null);
       } catch (err) {
         toast(`Could not convert: ${errorText(err)}`);
@@ -704,7 +741,7 @@ export default function App() {
           handle: undefined,
           protection: EMPTY_PROTECTION,
         });
-        setDirty(true);
+        markDirty();
       } catch (err) {
         toast(`Could not switch format: ${errorText(err)}`);
       } finally {
@@ -724,7 +761,7 @@ export default function App() {
           handle: undefined,
         };
       });
-      setDirty(true);
+      markDirty();
       return;
     }
 
@@ -739,7 +776,7 @@ export default function App() {
         initial: await richOf(),
         protection: EMPTY_PROTECTION,
       });
-      setDirty(true);
+      markDirty();
       setStats(null);
     } catch (err) {
       toast(`Could not switch format: ${errorText(err)}`);
@@ -789,19 +826,22 @@ export default function App() {
     return exportFlow({ ...flow, title: baseName(d.name) }, format, { password: format === 'docx' ? pw : undefined });
   };
 
-  const writeOut = async (choice: ExportChoice, handle: unknown | undefined, adopt: boolean) => {
+  const writeOut = async (choice: ExportChoice, handle: unknown | undefined, adopt: boolean, quiet = false) => {
     const d = docRef.current;
     if (!d) return;
-    setBusy('Saving…');
+    const seq = editSeq.current;
+    if (!quiet) setBusy('Saving…');
     try {
       // let "Saving…" paint before building/encrypting the file, which can hold the main
       // thread for seconds on a phone and otherwise looks like the page has frozen
       await nextPaint();
       const bytes = await render(choice.format, choice.protection);
       const info = FORMATS[choice.format];
-      const res = await host.save({ suggestedName: choice.fileName, bytes, mime: info.mime, ext: info.ext, description: info.label, handle });
+      const res = await host.save({ suggestedName: choice.fileName, bytes, mime: info.mime, ext: info.ext, description: info.label, handle, quiet });
       if (!res) return;
-      if (adopt) {
+      if (adopt && quiet) {
+        markClean(seq);
+      } else if (adopt) {
         if (d.kind === 'flow' && isCodeFormat(choice.format)) {
           setDoc({
             kind: 'code',
@@ -847,14 +887,16 @@ export default function App() {
             return cur;
           });
         }
-        setDirty(false);
+        markClean(seq);
       }
+      if (quiet) return;
       const lock = choice.protection.enabled && info.canProtect ? ' (password protected)' : '';
       toast(host.canSaveInPlace || host.kind === 'desktop' ? `Saved ${res.name}${lock}` : `Downloaded ${res.name}${lock}`, 'info');
     } catch (err) {
+      if (quiet) throw err;
       toast(`Could not save: ${errorText(err)}`);
     } finally {
-      setBusy(null);
+      if (!quiet) setBusy(null);
     }
   };
 
@@ -868,10 +910,11 @@ export default function App() {
     return { bytes: await codecs.encodeImage(src, c.format, { quality: c.quality, lossless: c.lossless, background: c.background }), mime: info.mime, ext: info.ext, label: info.label };
   };
 
-  const saveImage = async (c: ImageExportChoice, handle: unknown | undefined, adopt: boolean, pixels?: Pixels) => {
+  const saveImage = async (c: ImageExportChoice, handle: unknown | undefined, adopt: boolean, pixels?: Pixels, quiet = false) => {
     const d = docRef.current;
     const pro = d?.kind === 'proimage' && !pixels ? proImageRef.current : null;
-    setBusy('Saving…');
+    const seq = editSeq.current;
+    if (!quiet) setBusy('Saving…');
     try {
       await nextPaint();
       let out: { bytes: Uint8Array; mime: string; ext: string; label: string };
@@ -883,30 +926,35 @@ export default function App() {
         if (!px) return;
         out = await encodeChoice(px, c, baseName(c.fileName));
       }
-      const res = await host.save({ suggestedName: c.fileName, bytes: out.bytes, mime: out.mime, ext: out.ext, description: out.label, handle });
+      const res = await host.save({ suggestedName: c.fileName, bytes: out.bytes, mime: out.mime, ext: out.ext, description: out.label, handle, quiet });
       if (!res) return;
       if (adopt && d?.kind === 'image' && c.format !== 'pdf' && c.format !== 'psd') {
-        setDoc((cur) => (cur && cur.kind === 'image' ? { ...cur, name: res.name, format: c.format as ImageFormat, handle: res.handle } : cur));
-        setDirty(false);
+        if (!quiet) setDoc((cur) => (cur && cur.kind === 'image' ? { ...cur, name: res.name, format: c.format as ImageFormat, handle: res.handle } : cur));
+        markClean(seq);
       }
       if (adopt && d?.kind === 'proimage' && c.format !== 'pdf') {
         // keep the editor (and its undo history) mounted: same key, new file details
-        setDoc((cur) => (cur && cur.kind === 'proimage' ? { ...cur, name: res.name, format: c.format as ImageFormat | 'psd', handle: res.handle } : cur));
-        if (c.format === 'psd') setDirty(false);
-        else toast('Saved a flattened copy. Save as Photoshop (.psd) to keep the layers.', 'info');
+        if (!quiet) setDoc((cur) => (cur && cur.kind === 'proimage' ? { ...cur, name: res.name, format: c.format as ImageFormat | 'psd', handle: res.handle } : cur));
+        const layers = pro?.getDocument().layers.length ?? 1;
+        if (c.format === 'psd' || layers === 1) markClean(seq);
+        else if (!quiet) toast('Saved a flattened copy. Save as Photoshop (.psd) to keep the layers.', 'info');
       }
+      if (quiet) return;
       toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${res.name} (${(out.bytes.length / 1024).toFixed(0)} KB)`, 'info');
     } catch (err) {
+      if (quiet) throw err;
       toast(`Could not save: ${errorText(err)}`);
     } finally {
-      setBusy(null);
+      if (!quiet) setBusy(null);
     }
   };
 
   // ── video / audio ────────────────────────────────────────────────────────
-  const saveMedia = async (c: MediaExportChoice) => {
+  /** `handle` set: write back to the opened file (Save); otherwise ask where (Save As). */
+  const saveMedia = async (c: MediaExportChoice, handle?: unknown) => {
     const d = docRef.current;
     if (d?.kind !== 'media' || !videoRef.current) return;
+    const seq = editSeq.current;
     const edits = videoRef.current.getEdits();
     const ctrl = new AbortController();
     const info = CONTAINERS[c.container];
@@ -924,9 +972,13 @@ export default function App() {
         throw err;
       }
       setProgress(null);
-      const res = await host.save({ suggestedName: c.fileName, bytes, mime: info.mime, ext: info.ext, description: info.label });
+      const res = await host.save({ suggestedName: c.fileName, bytes, mime: info.mime, ext: info.ext, description: info.label, handle });
       if (!res) return;
-      setDirty(false);
+      // the file now holds the edits; later saves still render from the original in memory
+      if (res.handle !== undefined && (handle !== undefined || res.name.split('.').pop()?.toLowerCase() === info.ext)) {
+        setDoc((cur) => (cur && cur.kind === 'media' ? { ...cur, name: res.name, container: c.container, handle: res.handle } : cur));
+      }
+      markClean(seq);
       toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${res.name} (${(bytes.length / 1024 / 1024).toFixed(1)} MB)`, 'info');
     } catch (err) {
       toast(`Could not save: ${errorText(err)}`);
@@ -935,7 +987,42 @@ export default function App() {
     }
   };
 
+  /** Saves the Studio project file (.fstudio): in place with `handle`, else asks where. */
+  const saveStudioProject = async (handle: unknown | undefined, quiet = false, fileName?: string) => {
+    const d = docRef.current;
+    const studio = studioRef.current;
+    if (d?.kind !== 'studio' || !studio) return;
+    const seq = editSeq.current;
+    if (!quiet) setBusy('Saving project…');
+    try {
+      const [{ writeProjectFile, PROJECT_EXT, PROJECT_MIME }, media] = await Promise.all([import('./core/studio/project-file'), studio.getMedia()]);
+      const bytes = await writeProjectFile(studio.getProject(), media.blobs);
+      const res = await host.save({
+        suggestedName: fileName ?? `${baseName(d.name)}.${PROJECT_EXT}`,
+        bytes,
+        mime: PROJECT_MIME,
+        ext: PROJECT_EXT,
+        description: 'File Editor Studio project',
+        handle,
+        quiet,
+      });
+      if (!res) return;
+      if (!quiet) setDoc((cur) => (cur && cur.kind === 'studio' ? { ...cur, name: res.name, handle: res.handle } : cur));
+      markClean(seq);
+      if (!quiet) toast(`${host.kind === 'desktop' || host.canSaveInPlace ? 'Saved' : 'Downloaded'} ${res.name} (${(bytes.length / 1024 / 1024).toFixed(1)} MB)`, 'info');
+    } catch (err) {
+      if (quiet) throw err;
+      toast(`Could not save the project: ${errorText(err)}`);
+    } finally {
+      if (!quiet) setBusy(null);
+    }
+  };
+
   const saveStudio = async (c: StudioExportChoice) => {
+    if (c.container === 'project') {
+      await saveStudioProject(undefined, false, c.fileName);
+      return;
+    }
     const d = docRef.current;
     const studio = studioRef.current;
     if (d?.kind !== 'studio' || !studio) return;
@@ -948,7 +1035,7 @@ export default function App() {
       const media = await studio.getMedia();
       let result: Awaited<ReturnType<typeof exportStudio>>;
       try {
-        result = await exportStudio(studio.getProject(), media.blobs, media.buffers, c, (phase, progress) => setProgress((cur) => cur && { ...cur, phase, progress }), ctrl.signal);
+        result = await exportStudio(studio.getProject(), media.blobs, media.buffers, { ...c, container: c.container }, (phase, progress) => setProgress((cur) => cur && { ...cur, phase, progress }), ctrl.signal);
       } catch (err) {
         if (err instanceof StudioCancelled || ctrl.signal.aborted) {
           toast('Export cancelled.', 'info');
@@ -959,7 +1046,6 @@ export default function App() {
       setProgress(null);
       const res = await host.save({ suggestedName: c.fileName, bytes: result.bytes, mime: info.mime, ext: info.ext, description: info.label });
       if (!res) return;
-      setDirty(false);
       const lufs = result.loudness !== null && Number.isFinite(result.loudness) ? ` · ${result.loudness.toFixed(1)} LUFS` : '';
       toast(`Exported ${res.name} (${(result.bytes.length / 1024 / 1024).toFixed(1)} MB${lufs})`, 'info');
     } catch (err) {
@@ -970,10 +1056,11 @@ export default function App() {
   };
 
   // ── spreadsheets ─────────────────────────────────────────────────────────
-  const saveSheet = async (c: SheetExportChoice, handle: unknown | undefined, adopt: boolean) => {
+  const saveSheet = async (c: SheetExportChoice, handle: unknown | undefined, adopt: boolean, quiet = false) => {
     const d = docRef.current;
     if (d?.kind !== 'sheet' || !sheetRef.current) return;
-    setBusy('Saving…');
+    const seq = editSeq.current;
+    if (!quiet) setBusy('Saving…');
     try {
       await nextPaint();
       const info = SHEET_FORMATS[c.format];
@@ -995,57 +1082,198 @@ export default function App() {
         bytes = writeDelimited(active.rows, c.format === 'tsv' ? '\t' : ',');
         if (active.sheetCount > 1) note = ` (sheet "${active.name}" only)`;
       }
-      const res = await host.save({ suggestedName: c.fileName, bytes, mime: info.mime, ext: info.ext, description: info.label, handle });
+      const res = await host.save({ suggestedName: c.fileName, bytes, mime: info.mime, ext: info.ext, description: info.label, handle, quiet });
       if (!res) return;
       if (adopt) {
-        setDoc((cur) => (cur && cur.kind === 'sheet' ? { ...cur, name: res.name, format: c.format, handle: res.handle, protection: c.protection } : cur));
-        setDirty(false);
+        if (!quiet) setDoc((cur) => (cur && cur.kind === 'sheet' ? { ...cur, name: res.name, format: c.format, handle: res.handle, protection: c.protection } : cur));
+        markClean(seq);
       }
+      if (quiet) return;
       const lock = c.protection.enabled && info.canProtect ? ' (password protected)' : '';
       toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${res.name}${lock}${note}`, 'info');
     } catch (err) {
+      if (quiet) throw err;
       toast(`Could not save: ${errorText(err)}`);
     } finally {
-      setBusy(null);
+      if (!quiet) setBusy(null);
+    }
+  };
+
+  /**
+   * Writes the open file back to where it came from, in its own format. Returns false when it
+   * has no such place (a new file, a converted one, or a format that can't be written).
+   */
+  const saveInPlace = async (quiet: boolean): Promise<boolean> => {
+    const d = docRef.current;
+    if (!d || d.handle === undefined || (host.kind === 'web' && !host.canSaveInPlace)) return false;
+    const img = { quality: 92, lossless: false, background: '#ffffff', scale: 1 };
+    switch (d.kind) {
+      case 'sheet':
+        await saveSheet({ format: d.format, fileName: d.name, protection: d.protection }, d.handle, true, quiet);
+        return true;
+      case 'studio':
+        await saveStudioProject(d.handle, quiet);
+        return true;
+      case 'media':
+        // re-encodes, so never in the background
+        if (quiet || !CONTAINERS[d.container]) return false;
+        await saveMedia({ fileName: d.name, container: d.container, quality: 4, width: null, height: null, fps: null }, d.handle);
+        return true;
+      case 'proimage': {
+        const layers = proImageRef.current?.getDocument().layers.length ?? 1;
+        // layers are kept only in .psd: flattening into a JPEG/PNG needs an explicit Save As
+        if (d.format !== 'psd' && (layers > 1 || !IMAGE_FORMATS[d.format].canWrite)) return false;
+        await saveImage({ ...img, format: d.format as ImageExportChoice['format'], fileName: d.name }, d.handle, true, undefined, quiet);
+        return true;
+      }
+      case 'image':
+        if (!IMAGE_FORMATS[d.format].canWrite) return false;
+        await saveImage({ ...img, format: d.format as ImageExportChoice['format'], fileName: d.name }, d.handle, true, undefined, quiet);
+        return true;
+      default: {
+        const format: DocFormat = d.kind === 'pdf' ? 'pdf' : d.format;
+        await writeOut({ format, fileName: d.name, protection: d.protection }, d.handle, true, quiet);
+        return true;
+      }
     }
   };
 
   const save = async () => {
     const d = docRef.current;
     if (!d) return;
-    if (d.kind === 'sheet') {
-      const choice = { format: d.format, fileName: d.name, protection: d.protection };
-      if (d.handle && host.canSaveInPlace) await saveSheet(choice, d.handle, true);
-      else if (host.kind === 'web' && !host.canSaveInPlace) await saveSheet(choice, undefined, true);
-      else setExportOpen('save-as');
+    clearTimeout(autoTimer.current);
+    if (d.handle !== undefined && (host.kind === 'desktop' || host.canSaveInPlace)) {
+      // web: the browser asks once per file for permission to change it
+      if (host.kind === 'web' && !(await host.requestWrite(d.handle))) {
+        toast('The browser did not allow saving to this file. Use Save as to save a copy.');
+        return;
+      }
+      if (await saveInPlace(false)) {
+        setAutoStatus(null);
+        return;
+      }
+    }
+    // no file to write back to
+    if (d.kind === 'studio') {
+      await saveStudioProject(undefined);
       return;
     }
-    if (d.kind === 'media' || d.kind === 'studio') {
-      setExportOpen('save-as');
-      return;
-    }
-    if (d.kind === 'proimage') {
-      // Save keeps layers only in .psd; anything else asks (Save As) so layers aren't flattened by surprise
-      if (d.format === 'psd' && d.handle) {
-        await saveImage({ format: 'psd', fileName: d.name, quality: 92, lossless: false, background: '#ffffff', scale: 1 }, d.handle, true);
-      } else setExportOpen('save-as');
-      return;
-    }
-    if (d.kind === 'image') {
-      const f = d.format;
-      if (IMAGE_FORMATS[f].canWrite && (host.canSaveInPlace ? !!d.handle : host.kind === 'web')) {
-        await saveImage({ format: f as ImageExportChoice['format'], fileName: d.name, quality: 92, lossless: false, background: '#ffffff', scale: 1 }, d.handle, true);
-      } else setExportOpen('save-as');
-      return;
-    }
-    const format: DocFormat = d.kind === 'pdf' ? 'pdf' : d.kind === 'flow' || d.kind === 'code' ? d.format : 'docx';
-    if (d.handle && host.canSaveInPlace) {
-      await writeOut({ format, fileName: d.name, protection: d.protection }, d.handle, true);
-    } else if (host.kind === 'web' && !host.canSaveInPlace) {
+    if (host.kind === 'web' && !host.canSaveInPlace) {
       // browsers without the File System Access API: Save = download in the current format
-      await writeOut({ format, fileName: d.name, protection: d.protection }, undefined, true);
-    } else {
-      setExportOpen('save-as');
+      if (d.kind === 'sheet') return saveSheet({ format: d.format, fileName: d.name, protection: d.protection }, undefined, true);
+      if (d.kind === 'image' && IMAGE_FORMATS[d.format].canWrite) {
+        return saveImage({ format: d.format as ImageExportChoice['format'], fileName: d.name, quality: 92, lossless: false, background: '#ffffff', scale: 1 }, undefined, true);
+      }
+      if (d.kind === 'flow' || d.kind === 'code' || d.kind === 'pdf') {
+        return writeOut({ format: d.kind === 'pdf' ? 'pdf' : d.format, fileName: d.name, protection: d.protection }, undefined, true);
+      }
+    }
+    setExportOpen('save-as');
+  };
+
+  // ── auto-save ────────────────────────────────────────────────────────────
+  const [autoSave, setAutoSave] = useState(() => {
+    try {
+      return localStorage.getItem('fe.autosave') !== 'off';
+    } catch {
+      return true;
+    }
+  });
+  const autoSaveRef = useRef(autoSave);
+  autoSaveRef.current = autoSave;
+  const [autoStatus, setAutoStatus] = useState<{ state: 'saving' | 'saved' | 'error' | 'blocked'; text: string } | null>(null);
+  const autoTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const autoBusy = useRef(false);
+  const progressRef = useRef(progress);
+  progressRef.current = progress;
+
+  /** Why the open file can't be saved automatically right now, or null if it can. */
+  const autoSaveBlocker = (d: OpenDoc): string | null => {
+    if (d.kind === 'media') return 'Video and audio are re-encoded when saved, so they are saved when you press Save.';
+    if (host.kind === 'web' && !host.canSaveInPlace) return 'Auto-save needs the desktop app or a browser that can save files in place (Chrome, Edge).';
+    if (d.handle === undefined) return 'Save once to choose a file; after that, changes are saved automatically.';
+    if (d.kind === 'image' && !IMAGE_FORMATS[d.format].canWrite) return `${IMAGE_FORMATS[d.format].label} can't be written. Save as another format to turn on auto-save.`;
+    if (d.kind === 'proimage' && d.format !== 'psd' && (proImageRef.current?.getDocument().layers.length ?? 1) > 1) return 'Save as Photoshop (.psd) to auto-save the layers.';
+    return null;
+  };
+
+  const runAutoSave = async () => {
+    const d = docRef.current;
+    if (!autoSaveRef.current || !d || !dirtyRef.current) return;
+    if (autoBusy.current || progressRef.current) {
+      scheduleAutoSave(1500);
+      return;
+    }
+    const blocker = autoSaveBlocker(d);
+    if (blocker) {
+      setAutoStatus({ state: 'blocked', text: blocker });
+      return;
+    }
+    if (!(await host.canWriteSilently(d.handle))) {
+      setAutoStatus({ state: 'blocked', text: 'Press Save once to let the browser save this file automatically.' });
+      return;
+    }
+    autoBusy.current = true;
+    setAutoStatus({ state: 'saving', text: 'Saving…' });
+    try {
+      const done = await saveInPlace(true);
+      if (docRef.current?.key !== d.key) return;
+      if (done) setAutoStatus({ state: 'saved', text: `Auto-saved ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` });
+      else setAutoStatus(null);
+    } catch (err) {
+      if (docRef.current?.key === d.key) setAutoStatus({ state: 'error', text: `Auto-save failed: ${errorText(err)}` });
+    } finally {
+      autoBusy.current = false;
+    }
+  };
+  const runAutoSaveRef = useRef(runAutoSave);
+  runAutoSaveRef.current = runAutoSave;
+
+  function scheduleAutoSave(ms?: number) {
+    clearTimeout(autoTimer.current);
+    if (!autoSaveRef.current || !docRef.current) return;
+    // Studio projects carry their media, so give edits a little longer to settle
+    const delay = ms ?? (docRef.current.kind === 'studio' ? 4000 : 1500);
+    autoTimer.current = setTimeout(() => void runAutoSaveRef.current(), delay);
+  }
+  autoSaveKick.current = () => scheduleAutoSave();
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('fe.autosave', autoSave ? 'on' : 'off');
+    } catch {
+      /* storage blocked */
+    }
+    host.setAutoSave?.(autoSave);
+    if (!autoSave) {
+      clearTimeout(autoTimer.current);
+      setAutoStatus(null);
+    } else if (dirtyRef.current) scheduleAutoSave(300);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoSave, host]);
+
+  // a new file starts with a clean slate
+  const openKey = doc?.key;
+  useEffect(() => {
+    clearTimeout(autoTimer.current);
+    setAutoStatus(null);
+  }, [openKey]);
+
+  // ── recent files ─────────────────────────────────────────────────────────
+  const [recents, setRecents] = useState<RecentEntry[]>([]);
+  useEffect(() => {
+    const r = host.recent;
+    if (!r) return;
+    const load = () => void r.list().then(setRecents, () => setRecents([]));
+    load();
+    return r.onChange(load);
+  }, [host]);
+  const openRecent = async (id: string) => {
+    try {
+      const file = await host.recent!.open(id);
+      await openFile(file);
+    } catch (err) {
+      toast(errorText(err));
     }
   };
 
@@ -1115,7 +1343,7 @@ export default function App() {
       const { importPdfAsFlow } = await import('./core/formats/pdf-import');
       const flow = await importPdfAsFlow(await pdfBytes(null));
       setDoc({ kind: 'flow', key: docKey++, name: `${baseName(d.name)}.docx`, format: 'docx', initial: flow, protection: EMPTY_PROTECTION });
-      setDirty(true);
+      markDirty();
     } catch (err) {
       toast(`Could not convert: ${errorText(err)}`);
     } finally {
@@ -1128,13 +1356,13 @@ export default function App() {
   const onEditFrame = (pixels: Pixels, t: number) => {
     if (dirtyRef.current && !window.confirm('Open this frame in the image editor? Your unsaved video edits will be lost.')) return;
     setDoc({ kind: 'image', key: docKey++, name: `${frameName(t)}.png`, decoded: { pixels, format: 'png', warnings: [] }, format: 'png', protection: EMPTY_PROTECTION });
-    setDirty(true);
+    markDirty();
   };
 
   const applySecurity = (v: ProtectionDraft) => {
     setDoc((cur) => (cur ? { ...cur, protection: v } : cur));
     setSecurityOpen(false);
-    setDirty(true);
+    markDirty();
     toast(v.enabled ? 'Protection set. Save the document to apply it.' : 'Protection removed. Save the document to apply it.', 'info');
   };
 
@@ -1181,6 +1409,7 @@ export default function App() {
       else if (cmd === 'new-spreadsheet') a.newSpreadsheet();
       else if (cmd === 'open') void a.pickAndOpen();
       else if (cmd === 'license') setLicenseOpen(true);
+      else if (cmd === 'toggle-autosave') setAutoSave((v) => !v);
       else if (!docRef.current) return;
       else if (cmd === 'save') void a.save();
       else if (cmd === 'save-as') a.saveAs();
@@ -1222,11 +1451,14 @@ export default function App() {
       if ((e.target as HTMLElement)?.closest?.('.ProseMirror')) return;
       const file = e.dataTransfer?.files?.[0];
       if (!file) return;
+      // must be requested during the drop event (Chrome/Edge): lets Save write back to the file
+      const item = Array.from(e.dataTransfer?.items ?? []).find((i) => i.kind === 'file') as (DataTransferItem & { getAsFileSystemHandle?(): Promise<FileSystemHandle | null> }) | undefined;
+      const handleP = host.kind === 'web' && host.canSaveInPlace ? item?.getAsFileSystemHandle?.() ?? null : null;
       if (file.type.startsWith('image/') && (docRef.current?.kind === 'flow' || docRef.current?.kind === 'pdf')) {
         toast(docRef.current.kind === 'pdf' ? 'Use the Insert image tool to add images to the PDF, or close the PDF to open the image on its own.' : 'Drop images onto the text to insert them.', 'info');
         return;
       }
-      await actions.current.openFile(await readDroppedFile(file));
+      await actions.current.openFile(await readDroppedFile(file, handleP));
     };
     window.addEventListener('dragenter', onEnter);
     window.addEventListener('dragleave', onLeave);
@@ -1283,6 +1515,26 @@ export default function App() {
         <nav className="topbar-actions" aria-label="File">
           <IconButton label="New" text onClick={newDocument}><FilePlus size={16} /></IconButton>
           <IconButton label="Open" text onClick={pickAndOpen}><FolderOpen size={16} /></IconButton>
+          {host.recent && (
+            <Popover label="Open recent" text align="left" button={<><History size={16} /><span>Recent</span></>}>
+              {(close) => (
+                <div className="format-menu recent-menu" role="menu" aria-label="Recent files">
+                  {recents.length === 0 && <div className="menu-empty">No recent files yet</div>}
+                  {recents.map((r) => (
+                    <MenuItem key={r.id} hint={r.folder || undefined} onClick={() => { close(); void openRecent(r.id); }}>
+                      {r.name}
+                    </MenuItem>
+                  ))}
+                  {recents.length > 0 && (
+                    <>
+                      <div className="menu-sep" role="separator" />
+                      <MenuItem onClick={() => { close(); void host.recent!.clear(); }}>Clear recent files</MenuItem>
+                    </>
+                  )}
+                </div>
+              )}
+            </Popover>
+          )}
           {doc && (
             <>
               <IconButton label={host.canSaveInPlace || host.kind === 'desktop' ? 'Save' : 'Download'} text onClick={save}><Save size={16} /></IconButton>
@@ -1319,7 +1571,7 @@ export default function App() {
       </header>
 
       <main className="main">
-        {!doc && <StartScreen onNew={newDocument} onOpen={pickAndOpen} />}
+        {!doc && <StartScreen onNew={newDocument} onOpen={pickAndOpen} recents={host.recent ? recents : null} onOpenRecent={(id) => void openRecent(id)} />}
         {doc?.kind === 'sheet' && <SheetEditor key={doc.key} ref={sheetRef} initial={doc.workbook} onChange={markDirty} onError={toast} onNotice={(m) => toast(m, 'info')} />}
         {doc?.kind === 'flow' && (
           <RichEditor key={doc.key} ref={richRef} initial={doc.initial} zoom={zoom} onZoom={setZoom} onChange={markDirty} onStats={setStats} onPageCount={setPageCount} onError={toast} />
@@ -1419,7 +1671,7 @@ export default function App() {
               <button type="button" role="radio" aria-checked={doc.kind === 'proimage'} className={doc.kind === 'proimage' ? 'is-active' : ''} onClick={() => void switchPhotoWorkspace('pro')} title="Layers, masks, adjustment layers, selections, brushes, filters, Photoshop files">Pro</button>
             </div>
           )}
-          {host.kind === 'desktop' && (doc.kind === 'media' || doc.kind === 'studio') && (
+          {host.kind === 'desktop' && (doc.kind === 'media' || (doc.kind === 'studio' && doc.origin)) && (
             <div className="workspace-switch" role="radiogroup" aria-label="Video and audio workspace">
               <button type="button" role="radio" aria-checked={doc.kind === 'media'} className={doc.kind === 'media' ? 'is-active' : ''} onClick={() => void switchVideoWorkspace('quick')} title="Trim, crop, rotate, filters and format conversion of one file">Quick edit</button>
               <button type="button" role="radio" aria-checked={doc.kind === 'studio'} className={doc.kind === 'studio' ? 'is-active' : ''} onClick={() => void switchVideoWorkspace('studio')} title="Multi-track timeline, keyframes, titles, compositing, colour grading, green screen, mixing console, loudness and waveform editing">Studio</button>
@@ -1431,7 +1683,19 @@ export default function App() {
           {(doc.kind === 'flow' || doc.kind === 'pdf') && pageCount !== null && <span>{pageCount} {pageCount === 1 ? 'page' : 'pages'}</span>}
           {doc.protection.enabled && <span className="status-lock"><Lock size={12} /> Password protected</span>}
           <span className="spacer" />
-          <span>{dirty ? 'Unsaved changes' : 'All changes saved'}</span>
+          <span className={cx('save-state', autoStatus?.state === 'error' && 'is-error')} title={autoStatus?.text} role="status">
+            {autoStatus?.state === 'saving' ? 'Saving…' : autoStatus?.state === 'error' ? 'Auto-save failed' : dirty ? 'Unsaved changes' : autoStatus?.state === 'saved' ? autoStatus.text : 'All changes saved'}
+          </span>
+          <button
+            type="button"
+            className={cx('autosave-toggle', autoSave && 'is-on', autoSave && autoStatus?.state === 'blocked' && 'is-blocked')}
+            aria-pressed={autoSave}
+            title={autoSave ? (autoStatus?.state === 'blocked' || autoStatus?.state === 'error' ? autoStatus.text : 'Changes are saved to the file automatically. Click to turn off.') : 'Auto-save is off. Click to save changes automatically.'}
+            onClick={() => setAutoSave((v) => !v)}
+          >
+            Auto-save {autoSave ? 'on' : 'off'}
+          </button>
+          {autoSave && autoStatus?.state === 'blocked' && dirty && <span className="autosave-hint">{autoStatus.text}</span>}
           <span className="status-private">Files are processed on this device only</span>
         </footer>
       )}
@@ -1522,7 +1786,7 @@ export default function App() {
               fps={sp.fps}
               loudnessTarget={sp.master.loudnessTarget}
               initialName={baseName(doc.name)}
-              initialContainer={doc.origin.container}
+              initialContainer={doc.origin?.container ?? 'mp4'}
               onClose={() => setExportOpen(null)}
               onSubmit={(c) => {
                 setExportOpen(null);
@@ -1609,7 +1873,7 @@ export default function App() {
   );
 }
 
-function StartScreen({ onNew, onOpen }: { onNew: () => void; onOpen: () => void }) {
+function StartScreen({ onNew, onOpen, recents, onOpenRecent }: { onNew: () => void; onOpen: () => void; recents: RecentEntry[] | null; onOpenRecent: (id: string) => void }) {
   return (
     <div className="start">
       <div className="start-inner">
@@ -1627,6 +1891,21 @@ function StartScreen({ onNew, onOpen }: { onNew: () => void; onOpen: () => void 
             <span>Documents, spreadsheets, photos, video or audio — or drag one onto this window</span>
           </button>
         </div>
+        {recents && recents.length > 0 && (
+          <div className="start-recent">
+            <h2><History size={15} /> Recent files</h2>
+            <ul>
+              {recents.slice(0, 8).map((r) => (
+                <li key={r.id}>
+                  <button type="button" onClick={() => onOpenRecent(r.id)}>
+                    <span className="start-recent-name">{r.name}</span>
+                    {r.folder && <span className="start-recent-folder">{r.folder}</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <div className="start-formats">
           <h2>Supported formats</h2>
           <table>

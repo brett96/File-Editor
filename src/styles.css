@@ -1864,3 +1864,120 @@ body {
   font: inherit;
   cursor: pointer;
 }
+
+/* ── save state, auto-save, recent files ───────────────────────────────── */
+.save-state.is-error {
+  color: var(--danger);
+}
+
+.autosave-toggle {
+  flex: none;
+  height: 20px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.autosave-toggle.is-on {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+
+.autosave-toggle.is-on.is-blocked {
+  color: var(--muted);
+  border-style: dashed;
+}
+
+.autosave-hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.recent-menu {
+  min-width: 260px;
+  max-width: min(420px, calc(100vw - 24px));
+}
+
+.recent-menu .menu-item-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.menu-empty {
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.start-recent {
+  margin-top: 28px;
+}
+
+.start-recent h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  margin: 0 0 8px;
+}
+
+.start-recent ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.start-recent li + li {
+  border-top: 1px solid var(--border);
+}
+
+.start-recent button {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.start-recent button:hover {
+  background: var(--accent-soft);
+}
+
+.start-recent-name {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.start-recent-folder {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .autosave-hint {
+    display: none;
+  }
+}
