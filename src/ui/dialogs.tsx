@@ -94,7 +94,18 @@ export function validateProtection(d: ProtectionDraft, format: DocFormat): strin
   return null;
 }
 
-export function ProtectionFields({ format, value, onChange }: { format: DocFormat; value: ProtectionDraft; onChange: (v: ProtectionDraft) => void }) {
+export function ProtectionFields({
+  format,
+  value,
+  onChange,
+  officeApp = 'Word',
+}: {
+  format: DocFormat;
+  value: ProtectionDraft;
+  onChange: (v: ProtectionDraft) => void;
+  /** Which Office app asks for the password (Office encryption is the same for Word and Excel). */
+  officeApp?: 'Word' | 'Excel';
+}) {
   const set = (patch: Partial<ProtectionDraft>) => onChange({ ...value, ...patch });
   const isPdf = format === 'pdf';
   return (
@@ -151,7 +162,7 @@ export function ProtectionFields({ format, value, onChange }: { format: DocForma
               <p className="dialog-hint">Encrypted with AES-256. Restrictions are honoured by standard PDF readers.</p>
             </>
           )}
-          {format === 'docx' && <p className="dialog-hint">Uses Microsoft Office's standard encryption (AES-256). Word asks for this password when opening.</p>}
+          {format === 'docx' && <p className="dialog-hint">Uses Microsoft Office's standard encryption (AES-256). {officeApp} asks for this password when opening.</p>}
           <p className="dialog-hint dialog-warn">There is no way to recover a forgotten password.</p>
         </div>
       )}

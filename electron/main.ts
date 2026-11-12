@@ -26,7 +26,7 @@ const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 const MAX_FILE_BYTES = 250 * 1024 * 1024;
 /** Video can be much larger than a document. */
 const MAX_MEDIA_BYTES = 4 * 1024 * 1024 * 1024;
-const DOCUMENTS = ['docx', 'docm', 'dotx', 'doc', 'dot', 'pdf', 'odt', 'rtf', 'md', 'markdown', 'html', 'htm', 'txt'];
+const DOCUMENTS = ['docx', 'docm', 'dotx', 'doc', 'dot', 'pdf', 'odt', 'rtf', 'md', 'markdown', 'html', 'htm', 'txt', 'xlsx', 'xlsm', 'xltx', 'csv', 'tsv', 'tab'];
 const IMAGES = ['png', 'jpg', 'jpeg', 'jfif', 'gif', 'webp', 'avif', 'heic', 'heif', 'jxl', 'bmp', 'tif', 'tiff', 'ico', 'svg'];
 const MEDIA = [
   'mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', 'wmv', 'asf', 'flv', 'mpg', 'mpeg', 'vob', '3gp', '3g2', 'ogv', 'ts', 'mts', 'm2ts',
@@ -252,6 +252,7 @@ function buildMenu() {
       label: 'File',
       submenu: [
         { label: 'New', accelerator: 'CmdOrCtrl+N', click: () => send('new') },
+        { label: 'New Spreadsheet', accelerator: 'CmdOrCtrl+Shift+N', click: () => send('new-spreadsheet') },
         { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: () => send('open') },
         { type: 'separator' },
         { label: 'Save', accelerator: 'CmdOrCtrl+S', click: () => send('save') },

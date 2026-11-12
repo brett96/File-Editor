@@ -3,7 +3,7 @@
   "productName": "File Editor",
   "version": "0.1.1",
   "private": true,
-  "description": "Create, edit, convert and password-protect documents (DOCX, PDF, ODT, RTF, Markdown, HTML, TXT) on the web or desktop.",
+  "description": "Create, edit, convert and password-protect documents (DOCX, PDF, ODT, RTF, Markdown, HTML, TXT) and spreadsheets (XLSX, CSV, TSV) on the web or desktop.",
   "author": "File Editor",
   "type": "module",
   "main": "dist-electron/main.cjs",
@@ -62,10 +62,16 @@
     "@tiptap/react": "^3.33.1",
     "@tiptap/starter-kit": "^3.33.1",
     "@types/node": "^26.6.6",
+    "@types/papaparse": "^5.5.2",
     "@types/pdfmake": "^0.3.3",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@types/turndown": "^5.0.6",
+    "@univerjs/preset-sheets-core": "^1.4.0",
+    "@univerjs/preset-sheets-filter": "^1.4.0",
+    "@univerjs/preset-sheets-find-replace": "^1.4.0",
+    "@univerjs/preset-sheets-sort": "^1.4.0",
+    "@univerjs/presets": "^1.4.0",
     "@vitejs/plugin-react": "^6.3.0",
     "cfb": "^1.2.2",
     "codemirror": "^6.0.2",
@@ -75,6 +81,7 @@
     "electron": "^45.3.0",
     "electron-builder": "^26.18.0",
     "esbuild": "^0.28.2",
+    "exceljs": "^4.4.0",
     "gifenc": "^1.0.3",
     "heic-to": "^1.6.7",
     "html-to-pdfmake": "^2.5.36",
@@ -84,10 +91,12 @@
     "marked": "^18.2.0",
     "mediabunny": "^1.65.2",
     "officecrypto-tool": "^0.0.19",
+    "papaparse": "^5.7.1",
     "pdfjs-dist": "^6.5.438",
     "pdfmake": "^0.3.14",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
+    "rxjs": "^7.8.2",
     "turndown": "^7.2.5",
     "turndown-plugin-gfm": "^1.0.2",
     "typescript": "^7.0.2",
@@ -188,6 +197,34 @@
         "description": "Plain text",
         "role": "Editor",
         "mimeType": "text/plain"
+      },
+      {
+        "ext": [
+          "xlsx",
+          "xlsm",
+          "xltx"
+        ],
+        "name": "Excel Workbook",
+        "description": "Excel workbook",
+        "role": "Editor",
+        "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+      },
+      {
+        "ext": "csv",
+        "name": "CSV File",
+        "description": "Comma-separated values",
+        "role": "Editor",
+        "mimeType": "text/csv"
+      },
+      {
+        "ext": [
+          "tsv",
+          "tab"
+        ],
+        "name": "TSV File",
+        "description": "Tab-separated values",
+        "role": "Editor",
+        "mimeType": "text/tab-separated-values"
       },
       {
         "ext": [
