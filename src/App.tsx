@@ -1106,7 +1106,7 @@ export default function App() {
 
       <main className="main">
         {!doc && <StartScreen onNew={newDocument} onNewSheet={newSpreadsheet} onOpen={pickAndOpen} />}
-        {doc?.kind === 'sheet' && <SheetEditor key={doc.key} ref={sheetRef} initial={doc.workbook} onChange={markDirty} onError={toast} />}
+        {doc?.kind === 'sheet' && <SheetEditor key={doc.key} ref={sheetRef} initial={doc.workbook} onChange={markDirty} onError={toast} onNotice={(m) => toast(m, 'info')} />}
         {doc?.kind === 'flow' && (
           <RichEditor key={doc.key} ref={richRef} initial={doc.initial} zoom={zoom} onZoom={setZoom} onChange={markDirty} onStats={setStats} onPageCount={setPageCount} onError={toast} />
         )}

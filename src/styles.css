@@ -1328,6 +1328,11 @@ body {
   inset: 0;
 }
 
+/* the grid handles touch itself (src/ui/sheet/touch.ts): no browser panning or page zoom */
+.sheet-host canvas {
+  touch-action: none;
+}
+
 .sheet-loading {
   position: absolute;
   inset: 0;
