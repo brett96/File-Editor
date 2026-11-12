@@ -1,4 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
+import { useTabActive } from '../tab-active';
 import {
   ArrowDown,
   ArrowUp,
@@ -435,8 +436,10 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
   };
 
   // ── keyboard ──────────────────────────────────────────────────────────────
+  const tabActive0 = useTabActive();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!tabActive0.current) return;
       const target = e.target as HTMLElement;
       if (target instanceof Element && target.closest('input, textarea, select, [contenteditable="true"], .modal')) return;
       const mod = e.ctrlKey || e.metaKey;
@@ -1008,8 +1011,10 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
   };
 
   // Ctrl/⌘+F find, Ctrl/⌘+H replace
+  const tabActive1 = useTabActive();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!tabActive1.current) return;
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const k = e.key.toLowerCase();
       if (k === 'f' || k === 'h') {

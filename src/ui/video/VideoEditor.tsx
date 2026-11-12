@@ -1,4 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
+import { useTabActive } from '../tab-active';
 import {
   Camera,
   ChevronLeft,
@@ -322,8 +323,10 @@ export const VideoEditor = forwardRef<VideoEditorHandle, Props>(function VideoEd
   };
 
   // ── keyboard ─────────────────────────────────────────────────────────────
+  const tabActive0 = useTabActive();
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
+      if (!tabActive0.current) return;
       const t = ev.target as HTMLElement;
       if (t instanceof Element && t.closest('input, textarea, select, .modal')) return;
       const mod = ev.ctrlKey || ev.metaKey;

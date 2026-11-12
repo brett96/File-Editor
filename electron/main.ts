@@ -334,6 +334,15 @@ function buildMenu() {
                   click: () => void deliverOpen(r.path),
                 })),
                 { type: 'separator' },
+                {
+                  label: 'Remove from List',
+                  submenu: recents.map((r): MenuItemConstructorOptions => ({
+                    label: basename(r.path).replace(/&/g, '&&'),
+                    sublabel: dirname(r.path),
+                    toolTip: r.path,
+                    click: () => removeRecent(r.path),
+                  })),
+                },
                 { label: 'Clear Recently Opened', click: () => clearRecents() },
               ]
             : [{ label: 'No recent files', enabled: false }],
@@ -361,7 +370,7 @@ function buildMenu() {
     {
       role: 'help',
       submenu: [
-        { label: 'Enter License Key…', click: () => send('license') },
+        { label: licensed ? 'View License Info…' : 'Enter License Key…', click: () => send('license') },
         { label: 'Check for Updates…', click: () => void checkForUpdates(true) },
         {
           label: 'Show Update Log',
@@ -391,6 +400,18 @@ function buildMenu() {
     },
   ];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+/** Help menu says "View License Info…" once this computer holds an active license. */
+let licensed = false;
+
+async function refreshLicenseMenu() {
+  const state = await getLicenseState().catch(() => null);
+  const now = state?.status === 'active';
+  if (now !== licensed) {
+    licensed = now;
+    if (app.isReady()) buildMenu();
+  }
 }
 
 // ── IPC ────────────────────────────────────────────────────────────────────
@@ -473,6 +494,12 @@ function registerIpc() {
     clearRecents();
   });
 
+  ipcMain.handle('recent-remove', (e, id: unknown) => {
+    assertSender(e);
+    const r = recents.find((x) => x.id === id);
+    if (r) removeRecent(r.path);
+  });
+
   ipcMain.on('set-autosave', (e, value: unknown) => {
     try {
       assertSender(e);
@@ -493,7 +520,9 @@ function registerIpc() {
 
   ipcMain.handle('license-activate', async (e, key: unknown) => {
     assertSender(e);
-    return activateLicense(typeof key === 'string' ? key.slice(0, 100) : '');
+    const res = await activateLicense(typeof key === 'string' ? key.slice(0, 100) : '');
+    void refreshLicenseMenu();
+    return res;
   });
 
   ipcMain.on('set-dirty', (e, value: boolean) => {
@@ -721,7 +750,14 @@ app.whenReady().then(async () => {
   if (app.isPackaged) void startAutoUpdates();
 
   // daily license check-in (refund / revoke); does nothing offline or without a license
-  setTimeout(() => void refreshLicenseStatus().catch(() => undefined), 15_000);
+  void refreshLicenseMenu();
+  setTimeout(
+    () =>
+      void refreshLicenseStatus()
+        .catch(() => undefined)
+        .then(refreshLicenseMenu),
+    15_000,
+  );
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

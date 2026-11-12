@@ -18,6 +18,7 @@
  * The document model and pixel maths are in src/core/pro-image; compositing in ./render.
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useTabActive } from '../tab-active';
 import {
   Brush as BrushIcon,
   Circle,
@@ -915,8 +916,11 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
   };
 
   // keyboard
+  const tabActive0 = useTabActive();
+  const tabActive1 = useTabActive();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!tabActive0.current) return;
       const t = e.target as HTMLElement;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
       if (dialog) return;
@@ -985,6 +989,7 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
+      if (!tabActive1.current) return;
       if (e.key === ' ') spaceDown.current = false;
     };
     window.addEventListener('keydown', onKey);
@@ -996,8 +1001,10 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
   });
 
   // paste images from other apps (system clipboard)
+  const tabActive2 = useTabActive();
   useEffect(() => {
     const onPaste = async (e: ClipboardEvent) => {
+      if (!tabActive2.current) return;
       const t = e.target as HTMLElement;
       if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA')) return;
       const file = [...(e.clipboardData?.files ?? [])].find((f) => f.type.startsWith('image/'));

@@ -5,6 +5,7 @@
  * and a destructive waveform editor. Preview and export share one compositor and one mix.
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
+import { useTabActive } from '../tab-active';
 import {
   Film,
   Magnet,
@@ -651,8 +652,11 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
     else if (e.key === '=' || e.key === '+') setPps((v) => Math.min(800, v * 1.4));
     else if (e.key === '-') setPps((v) => Math.max(2, v / 1.4));
   };
+  const tabActive0 = useTabActive();
   useEffect(() => {
-    const h = (e: KeyboardEvent) => keyHandler.current(e);
+    const h = (e: KeyboardEvent) => {
+      if (tabActive0.current) keyHandler.current(e);
+    };
     window.addEventListener('keydown', h);
     return () => window.removeEventListener('keydown', h);
   }, []);

@@ -1,4 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
+import { useTabActive } from '../tab-active';
 import {
   ArrowUpRight,
   Circle,
@@ -487,8 +488,10 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
   };
 
   // ── keyboard ─────────────────────────────────────────────────────────────
+  const tabActive0 = useTabActive();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!tabActive0.current) return;
       const t = e.target as HTMLElement;
       if (t instanceof Element && t.closest('input, textarea, select, .modal')) return;
       const mod = e.ctrlKey || e.metaKey;

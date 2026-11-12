@@ -40,6 +40,8 @@ export interface RecentFiles {
   /** Re-opens a recent file (asks the browser for permission if needed). */
   open(id: string): Promise<OpenedFile>;
   clear(): Promise<void>;
+  /** Takes one file off the list (the file itself is not touched). */
+  remove(id: string): Promise<void>;
   /** Called when the list changes (another open, a save, a clear). */
   onChange(callback: () => void): () => void;
 }
@@ -100,6 +102,7 @@ export interface DesktopBridge {
     list(): Promise<RecentEntry[]>;
     open(id: string): Promise<{ name: string; bytes: Uint8Array; token: string }>;
     clear(): Promise<void>;
+    remove(id: string): Promise<void>;
     onChange(callback: () => void): () => void;
   };
   setAutoSave?(on: boolean): void;
@@ -274,6 +277,10 @@ function webRecent(): RecentFiles {
       await recentTx('readwrite', (s) => s.clear());
       recentListeners.forEach((l) => l());
     },
+    async remove(id) {
+      await recentTx('readwrite', (s) => s.delete(id));
+      recentListeners.forEach((l) => l());
+    },
     onChange(cb) {
       recentListeners.add(cb);
       return () => recentListeners.delete(cb);
@@ -378,6 +385,7 @@ function createDesktopHost(bridge: DesktopBridge): FileHost {
             return { name: f.name, blob: new Blob([f.bytes as BlobPart]), handle: f.token };
           },
           clear: () => bridge.recent!.clear(),
+          remove: (id) => bridge.recent!.remove(id),
           onChange: (cb) => bridge.recent!.onChange(cb),
         }
       : null,

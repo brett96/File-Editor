@@ -1,5 +1,5 @@
 /**
- * Help → Enter License Key… (desktop app only). Shows this computer's license, or a form to
+ * Help → Enter License Key… / View License Info… (desktop app only). Shows this computer's license, or a form to
  * activate one. Activation runs in the main process (electron/license.ts); nothing in the app
  * is locked without a license.
  */
@@ -66,7 +66,7 @@ export function LicenseDialog({ onClose, onActivated }: { onClose: () => void; o
 
   return (
     <Modal
-      title={active ? 'License' : 'Enter License Key'}
+      title={active ? 'License Info' : 'Enter License Key'}
       width={480}
       onClose={onClose}
       footer={

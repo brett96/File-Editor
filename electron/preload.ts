@@ -47,6 +47,7 @@ const bridge = {
     list: (): Promise<{ id: string; name: string; folder: string }[]> => ipcRenderer.invoke('recent-list'),
     open: (id: string): Promise<FilePayload> => ipcRenderer.invoke('recent-open', id),
     clear: (): Promise<void> => ipcRenderer.invoke('recent-clear'),
+    remove: (id: string): Promise<void> => ipcRenderer.invoke('recent-remove', id),
     onChange: (callback: () => void) => {
       const listener = () => callback();
       ipcRenderer.on('recent-changed', listener);

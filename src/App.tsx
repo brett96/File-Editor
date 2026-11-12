@@ -1,5 +1,10 @@
 import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { TabActiveContext } from './ui/tab-active';
 import {
+  FileCode,
+  Plus,
+  X,
   FileDown,
   FilePlus,
   Film,
@@ -135,8 +140,8 @@ const ZOOMS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5
  * Zoom at which the widest page fills the editor's scroll area. Pages are measured from the
  * DOM (PDF pages and the document sheet both size themselves in CSS px at the current zoom).
  */
-function fitWidthZoom(current: number): number {
-  const ws = document.querySelector<HTMLElement>('.editor-root .workspace');
+function fitWidthZoom(current: number, root: ParentNode | null): number {
+  const ws = (root ?? document).querySelector<HTMLElement>('.editor-root .workspace');
   if (!ws) return 1;
   const cs = getComputedStyle(ws);
   const avail = ws.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
@@ -151,13 +156,13 @@ let docKey = 1;
 
 const BLANK: RichDocument = { html: '<p></p>', title: 'Untitled' };
 
-/** Resolves after the browser has painted pending UI (e.g. a busy indicator). */
 /** "1.4 MB/s" for the update download. */
 function formatSpeed(bytesPerSecond: number): string {
   const mb = bytesPerSecond / (1024 * 1024);
   return mb >= 1 ? `${mb.toFixed(1)} MB/s` : `${Math.max(1, Math.round(bytesPerSecond / 1024))} KB/s`;
 }
 
+/** Resolves after the browser has painted pending UI (e.g. a busy indicator). */
 function nextPaint(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
 }
@@ -169,7 +174,49 @@ function errorText(err: unknown): string {
   return 'Something went wrong.';
 }
 
-export default function App() {
+// ── tabs ─────────────────────────────────────────────────────────────────
+/** What a new tab starts with. */
+type TabStart = { kind: 'open'; file: OpenedFile } | { kind: 'new' } | { kind: 'new-sheet' };
+
+/** What the tab bar and window title show for a tab. */
+interface TabInfo {
+  name: string;
+  dirty: boolean;
+  locked: boolean;
+  kind: OpenDoc['kind'] | null;
+}
+
+/** Commands the app shell (menus, shortcuts) sends to the active tab. */
+interface TabApi {
+  save(): Promise<void>;
+  saveAs(): void;
+  print(): Promise<void>;
+  protect(): void;
+  /** stops playback etc. when the tab goes to the background */
+  pause(): void;
+}
+
+interface TabProps {
+  id: number;
+  active: boolean;
+  start: TabStart;
+  toast: (text: string, kind?: Toast['kind']) => void;
+  autoSave: boolean;
+  onToggleAutoSave: () => void;
+  /** where the active tab puts its toolbar buttons (Save, Print, zoom…) in the top bar */
+  actionsSlot: HTMLElement | null;
+  onInfo: (id: number, info: TabInfo) => void;
+  /** the file couldn't be opened (or the password prompt was cancelled): close this tab */
+  onEmpty: (id: number) => void;
+  register: (id: number, api: TabApi | null) => void;
+}
+
+/**
+ * One open file: its editor, status bar, save logic and dialogs. Every tab stays mounted while
+ * it is open (inactive tabs are hidden), so switching tabs keeps undo history, selection and
+ * scroll position.
+ */
+function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSave, actionsSlot, onInfo, onEmpty, register }: TabProps) {
   const host = getHost();
   const [doc, setDoc] = useState<OpenDoc | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -177,18 +224,12 @@ export default function App() {
   const zoomRef = useRef(zoom);
   zoomRef.current = zoom;
   const [busy, setBusy] = useState<string | null>(null);
-  const [toasts, setToasts] = useState<Toast[]>([]);
   const [askPw, setAskPw] = useState<PasswordAsk | null>(null);
   const [exportOpen, setExportOpen] = useState<null | 'save-as' | 'export'>(null);
   const [securityOpen, setSecurityOpen] = useState(false);
-  const [licenseOpen, setLicenseOpen] = useState(false);
   const [stats, setStats] = useState<{ words: number; characters: number } | null>(null);
   const [pageCount, setPageCount] = useState<number | null>(null);
-  const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
-  const [update, setUpdate] = useState<UpdateStatus | null>(null);
-  /** the update state the user closed the banner on (it comes back for a new state or a manual check) */
-  const [updateDismissed, setUpdateDismissed] = useState<UpdateStatus['state'] | null>(null);
   const [frameExport, setFrameExport] = useState<{ pixels: Pixels; name: string } | null>(null);
   const [imageStatus, setImageStatus] = useState<{ width: number; height: number } | null>(null);
   const richRef = useRef<RichEditorHandle>(null);
@@ -203,30 +244,27 @@ export default function App() {
   docRef.current = doc;
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const paneRef = useRef<HTMLDivElement>(null);
 
   // On phone-sized screens, open PDFs and documents at "fit width" instead of 100 % (a Letter
   // page is 816 px wide, about twice a phone). PDF pages appear asynchronously, so wait for one.
   const docKind = doc?.kind;
   const docKeyValue = doc?.key;
   useEffect(() => {
-    if ((docKind !== 'pdf' && docKind !== 'flow') || window.innerWidth >= 900) return;
+    if ((docKind !== 'pdf' && docKind !== 'flow') || window.innerWidth >= 900 || !activeRef.current) return;
     let tries = 0;
     const timer = setInterval(() => {
       tries++;
-      const ready = document.querySelector(docKind === 'pdf' ? '.editor-root .pdf-page' : '.editor-root .page-sheet');
+      const ready = paneRef.current?.querySelector(docKind === 'pdf' ? '.editor-root .pdf-page' : '.editor-root .page-sheet');
       if (ready || tries > 40) {
         clearInterval(timer);
-        if (ready) setZoom(fitWidthZoom(zoomRef.current));
+        if (ready) setZoom(fitWidthZoom(zoomRef.current, paneRef.current));
       }
     }, 100);
     return () => clearInterval(timer);
   }, [docKind, docKeyValue]);
-
-  const toast = useCallback((text: string, kind: Toast['kind'] = 'error') => {
-    const id = Date.now() + Math.random();
-    setToasts((t) => [...t, { id, kind, text }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'error' ? 7000 : 3500);
-  }, []);
 
   /** bumps on every change; a save only marks the file clean if nothing changed meanwhile */
   const editSeq = useRef(0);
@@ -240,45 +278,38 @@ export default function App() {
     if (editSeq.current === seq) setDirty(false);
   };
 
-  // desktop app: a newer version downloads in the background (with progress); offer to restart
-  // into it. Help → Check for Updates also reports "checking", "up to date" and errors.
+  // ── report name / unsaved state to the tab bar and window title ──────────
+  const docName = doc?.name ?? '';
+  const docLocked = !!doc?.protection.enabled;
   useEffect(() => {
-    const off = window.desktop?.onUpdateStatus?.((st) => {
-      if (st.manual) setUpdateDismissed(null);
-      if (st.state === 'none') {
-        if (st.manual) toast(`You're up to date — File Editor ${st.version ?? ''} is the latest version.`, 'info');
-        setUpdate(null);
-        return;
-      }
-      // background checks stay quiet until there is something to download; their errors are only logged
-      if ((st.state === 'checking' || st.state === 'error') && !st.manual) {
-        setUpdate((cur) => (cur?.state === 'ready' ? cur : null));
-        return;
-      }
-      setUpdate(st);
-    });
-    return () => off?.();
-  }, [toast]);
+    // while the file is still opening, the tab keeps the name it was created with
+    if (!docName) return;
+    onInfo(tabId, { name: docName, dirty, locked: docLocked, kind: docKind ?? null });
+  }, [onInfo, tabId, docName, dirty, docLocked, docKind]);
 
-  // ── window title / dirty tracking ────────────────────────────────────────
+  // a tab sent to the background stops playing (Studio, the video editor, previews)
   useEffect(() => {
-    const title = doc ? `${dirty ? '• ' : ''}${doc.name} — File Editor` : 'File Editor';
-    host.setTitle?.(title);
-    host.setDirty?.(dirty);
-  }, [doc, dirty, host]);
+    if (active) return;
+    studioRef.current?.stop();
+    paneRef.current?.querySelectorAll('video, audio').forEach((m) => (m as HTMLMediaElement).pause());
+  }, [active]);
 
+  // ── open what the tab was created for (once; StrictMode runs effects twice) ──
+  const started = useRef(false);
   useEffect(() => {
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (dirtyRef.current && host.kind === 'web') {
-        e.preventDefault();
-        e.returnValue = '';
-      }
-    };
-    window.addEventListener('beforeunload', onBeforeUnload);
-    return () => window.removeEventListener('beforeunload', onBeforeUnload);
-  }, [host]);
-
-  const confirmDiscard = () => !dirtyRef.current || window.confirm('You have unsaved changes. Discard them?');
+    if (started.current) return;
+    started.current = true;
+    void (async () => {
+      if (start.kind === 'new') return newDocument();
+      if (start.kind === 'new-sheet') return newSpreadsheet();
+      await openFile(start.file);
+      // let React apply the opened document before looking for it
+      await new Promise((r) => setTimeout(r, 0));
+      // the file couldn't be opened (an error was shown) or the password prompt was cancelled
+      if (!docRef.current) onEmpty(tabId);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── passwords ────────────────────────────────────────────────────────────
   const requestPassword = (fileName: string, message: string, incorrect: boolean) =>
@@ -478,7 +509,6 @@ export default function App() {
   };
 
   const openFile = async (file: OpenedFile) => {
-    if (!confirmDiscard()) return;
     try {
       if (await openProject(file)) return;
       if (await openPsd(file)) return;
@@ -534,18 +564,7 @@ export default function App() {
     }
   };
 
-  const pickAndOpen = async () => {
-    try {
-      const extensions = host.kind === 'desktop' ? [...ALL_OPEN_EXTENSIONS, 'psd', 'fstudio'] : ALL_OPEN_EXTENSIONS;
-      const [file] = await host.openFiles({ extensions, description: 'Documents, images, video & audio' });
-      if (file) await openFile(file);
-    } catch (err) {
-      toast(errorText(err));
-    }
-  };
-
   const newDocument = () => {
-    if (!confirmDiscard()) return;
     setDoc({ kind: 'flow', key: docKey++, name: 'Untitled.docx', format: 'docx', initial: { ...BLANK }, protection: EMPTY_PROTECTION });
     setDirty(false);
     setStats(null);
@@ -613,7 +632,6 @@ export default function App() {
   };
 
   const newSpreadsheet = () => {
-    if (!confirmDiscard()) return;
     setDoc({ kind: 'sheet', key: docKey++, name: 'Untitled.xlsx', format: 'xlsx', workbook: blankWorkbook('Untitled'), protection: EMPTY_PROTECTION });
     setDirty(false);
   };
@@ -1191,14 +1209,7 @@ export default function App() {
     setExportOpen('save-as');
   };
 
-  // ── auto-save ────────────────────────────────────────────────────────────
-  const [autoSave, setAutoSave] = useState(() => {
-    try {
-      return localStorage.getItem('fe.autosave') !== 'off';
-    } catch {
-      return true;
-    }
-  });
+  // ── auto-save (the on/off setting is app-wide; see App) ──────────────────
   const autoSaveRef = useRef(autoSave);
   autoSaveRef.current = autoSave;
   const [autoStatus, setAutoStatus] = useState<{ state: 'saving' | 'saved' | 'error' | 'blocked'; text: string } | null>(null);
@@ -1259,18 +1270,15 @@ export default function App() {
   autoSaveKick.current = () => scheduleAutoSave();
 
   useEffect(() => {
-    try {
-      localStorage.setItem('fe.autosave', autoSave ? 'on' : 'off');
-    } catch {
-      /* storage blocked */
-    }
-    host.setAutoSave?.(autoSave);
     if (!autoSave) {
       clearTimeout(autoTimer.current);
       setAutoStatus(null);
     } else if (dirtyRef.current) scheduleAutoSave(300);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoSave, host]);
+  }, [autoSave]);
+
+  // closing the tab stops a pending auto-save
+  useEffect(() => () => clearTimeout(autoTimer.current), []);
 
   // a new file starts with a clean slate
   const openKey = doc?.key;
@@ -1278,24 +1286,6 @@ export default function App() {
     clearTimeout(autoTimer.current);
     setAutoStatus(null);
   }, [openKey]);
-
-  // ── recent files ─────────────────────────────────────────────────────────
-  const [recents, setRecents] = useState<RecentEntry[]>([]);
-  useEffect(() => {
-    const r = host.recent;
-    if (!r) return;
-    const load = () => void r.list().then(setRecents, () => setRecents([]));
-    load();
-    return r.onChange(load);
-  }, [host]);
-  const openRecent = async (id: string) => {
-    try {
-      const file = await host.recent!.open(id);
-      await openFile(file);
-    } catch (err) {
-      toast(errorText(err));
-    }
-  };
 
   const print = async () => {
     const d = docRef.current;
@@ -1386,29 +1376,40 @@ export default function App() {
     toast(v.enabled ? 'Protection set. Save the document to apply it.' : 'Protection removed. Save the document to apply it.', 'info');
   };
 
-  // ── shortcuts, OS file-open events, native menu ──────────────────────────
-  const actions = useRef({ save, pickAndOpen, newDocument, newSpreadsheet, print, saveAs: () => setExportOpen('save-as'), protect: () => setSecurityOpen(true), openFile });
-  actions.current = { save, pickAndOpen, newDocument, newSpreadsheet, print, saveAs: () => setExportOpen('save-as'), protect: () => setSecurityOpen(true), openFile };
+  // ── commands from the app shell (menus, shortcuts) ───────────────────────
+  const actions = useRef<TabApi>(null!);
+  actions.current = {
+    save,
+    saveAs: () => setExportOpen('save-as'),
+    print,
+    protect: () => setSecurityOpen(true),
+    pause: () => studioRef.current?.stop(),
+  };
+  useEffect(() => {
+    // stable wrappers, so the shell always reaches the latest closures
+    register(tabId, {
+      save: () => actions.current.save(),
+      saveAs: () => actions.current.saveAs(),
+      print: () => actions.current.print(),
+      protect: () => actions.current.protect(),
+      pause: () => actions.current.pause(),
+    });
+    return () => register(tabId, null);
+  }, [register, tabId]);
 
+  // this tab's shortcuts (Ctrl+O / Ctrl+N / tab switching are the shell's)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      if (!activeRef.current || !docRef.current || !(e.ctrlKey || e.metaKey) || e.altKey) return;
       const k = e.key.toLowerCase();
       if (k === 's') {
         e.preventDefault();
-        if (!docRef.current) return;
         if (e.shiftKey) actions.current.saveAs();
         else void actions.current.save();
-      } else if (k === 'o') {
-        e.preventDefault();
-        void actions.current.pickAndOpen();
-      } else if (k === 'p' && docRef.current) {
+      } else if (k === 'p') {
         e.preventDefault();
         void actions.current.print();
-      } else if (k === 'n' && e.shiftKey === false && host.kind === 'desktop') {
-        e.preventDefault();
-        actions.current.newDocument();
-      } else if (docRef.current?.kind === 'sheet') {
+      } else if (docRef.current.kind === 'sheet') {
         // the spreadsheet has its own zoom (bottom right) and shortcuts
       } else if (k === '=' || k === '+') {
         e.preventDefault();
@@ -1422,74 +1423,7 @@ export default function App() {
       }
     };
     window.addEventListener('keydown', onKey);
-    const offOpen = host.onOpenRequest((f) => void actions.current.openFile(f));
-    const offMenu = host.onMenuCommand((cmd) => {
-      const a = actions.current;
-      if (cmd === 'new') a.newDocument();
-      else if (cmd === 'new-spreadsheet') a.newSpreadsheet();
-      else if (cmd === 'open') void a.pickAndOpen();
-      else if (cmd === 'license') setLicenseOpen(true);
-      else if (cmd === 'toggle-autosave') setAutoSave((v) => !v);
-      else if (!docRef.current) return;
-      else if (cmd === 'save') void a.save();
-      else if (cmd === 'save-as') a.saveAs();
-      else if (cmd === 'print') void a.print();
-      else if (cmd === 'protect') a.protect();
-    });
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      offOpen();
-      offMenu();
-    };
-  }, [host]);
-
-  // ── drag & drop documents onto the window ────────────────────────────────
-  useEffect(() => {
-    let depth = 0;
-    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
-    const isDocDrop = (e: DragEvent) => hasFiles(e) && !(e.target as HTMLElement)?.closest?.('.ProseMirror');
-    const onEnter = (e: DragEvent) => {
-      if (!isDocDrop(e)) return;
-      depth++;
-      setDragging(true);
-    };
-    const onLeave = (e: DragEvent) => {
-      if (!hasFiles(e)) return;
-      depth = Math.max(0, depth - 1);
-      if (!depth) setDragging(false);
-    };
-    const onOver = (e: DragEvent) => {
-      if (hasFiles(e)) e.preventDefault();
-    };
-    const onDrop = async (e: DragEvent) => {
-      depth = 0;
-      setDragging(false);
-      if (!hasFiles(e)) return;
-      // never let the browser navigate to a dropped file (that would lose unsaved work)
-      e.preventDefault();
-      // drops on the text are handled by the editor itself (images are embedded)
-      if ((e.target as HTMLElement)?.closest?.('.ProseMirror')) return;
-      const file = e.dataTransfer?.files?.[0];
-      if (!file) return;
-      // must be requested during the drop event (Chrome/Edge): lets Save write back to the file
-      const item = Array.from(e.dataTransfer?.items ?? []).find((i) => i.kind === 'file') as (DataTransferItem & { getAsFileSystemHandle?(): Promise<FileSystemHandle | null> }) | undefined;
-      const handleP = host.kind === 'web' && host.canSaveInPlace ? item?.getAsFileSystemHandle?.() ?? null : null;
-      if (file.type.startsWith('image/') && (docRef.current?.kind === 'flow' || docRef.current?.kind === 'pdf')) {
-        toast(docRef.current.kind === 'pdf' ? 'Use the Insert image tool to add images to the PDF, or close the PDF to open the image on its own.' : 'Drop images onto the text to insert them.', 'info');
-        return;
-      }
-      await actions.current.openFile(await readDroppedFile(file, handleP));
-    };
-    window.addEventListener('dragenter', onEnter);
-    window.addEventListener('dragleave', onLeave);
-    window.addEventListener('dragover', onOver);
-    window.addEventListener('drop', onDrop);
-    return () => {
-      window.removeEventListener('dragenter', onEnter);
-      window.removeEventListener('dragleave', onLeave);
-      window.removeEventListener('dragover', onOver);
-      window.removeEventListener('drop', onDrop);
-    };
+    return () => window.removeEventListener('keydown', onKey);
   }, []);
 
   const format: DocFormat | null = doc
@@ -1518,80 +1452,44 @@ export default function App() {
           : 'Audio'
         : '';
 
-  return (
-    <div className={cx('app', `host-${host.kind}`)}>
-      <header className="topbar">
-        <div className="brand" aria-label="File Editor">
-          <FileText size={18} />
-          <span>File Editor</span>
-        </div>
-        {doc && (
-          <div className="doc-name" title={doc.name}>
-            {doc.protection.enabled && <Lock size={13} aria-label="Password protected" />}
-            <span>{doc.name}</span>
-            {dirty && <span className="dirty-dot" aria-label="Unsaved changes" />}
-          </div>
-        )}
-        <nav className="topbar-actions" aria-label="File">
-          <IconButton label="New" text onClick={newDocument}><FilePlus size={16} /></IconButton>
-          <IconButton label="Open" text onClick={pickAndOpen}><FolderOpen size={16} /></IconButton>
-          {host.recent && (
-            <Popover label="Open recent" text align="left" button={<><History size={16} /><span>Recent</span></>}>
-              {(close) => (
-                <div className="format-menu recent-menu" role="menu" aria-label="Recent files">
-                  {recents.length === 0 && <div className="menu-empty">No recent files yet</div>}
-                  {recents.map((r) => (
-                    <MenuItem key={r.id} hint={r.folder || undefined} onClick={() => { close(); void openRecent(r.id); }}>
-                      {r.name}
-                    </MenuItem>
-                  ))}
-                  {recents.length > 0 && (
-                    <>
-                      <div className="menu-sep" role="separator" />
-                      <MenuItem onClick={() => { close(); void host.recent!.clear(); }}>Clear recent files</MenuItem>
-                    </>
-                  )}
-                </div>
-              )}
-            </Popover>
-          )}
-          {doc && (
-            <>
-              <IconButton label={host.canSaveInPlace || host.kind === 'desktop' ? 'Save' : 'Download'} text onClick={save}><Save size={16} /></IconButton>
-              <IconButton label="Save as / Convert" text onClick={() => setExportOpen('save-as')}><FileDown size={16} /></IconButton>
-              {!isMediaDoc && (
-                <IconButton label="Protect" text active={doc.protection.enabled} onClick={() => setSecurityOpen(true)}>
-                  {doc.protection.enabled ? <ShieldCheck size={16} /> : <LockOpen size={16} />}
-                </IconButton>
-              )}
-              {doc.kind !== 'media' && doc.kind !== 'studio' && <IconButton label="Print" onClick={print}><Printer size={16} /></IconButton>}
-              {doc.kind === 'pdf' && (
-                <IconButton label="Convert PDF to editable document" onClick={convertPdfToFlow}><Wand2 size={16} /></IconButton>
-              )}
-              {!isMediaDoc && doc.kind !== 'code' && doc.kind !== 'sheet' && (
-                <>
-                  <Divider />
-                  <IconButton label="Zoom out (Ctrl -)" onClick={() => setZoom((z) => [...ZOOMS].reverse().find((v) => v < z - 0.001) ?? z)}><ZoomOut size={16} /></IconButton>
-                  <select
-                    className="tb-select zoom-select"
-                    aria-label="Zoom"
-                    value={String(zoom)}
-                    onChange={(e) => setZoom(e.target.value === 'fit' ? fitWidthZoom(zoom) : parseFloat(e.target.value))}
-                  >
-                    <option value="fit">Fit width</option>
-                    {!ZOOMS.includes(zoom) && <option value={String(zoom)}>{Math.round(zoom * 100)}%</option>}
-                    {ZOOMS.map((z) => <option key={z} value={String(z)}>{Math.round(z * 100)}%</option>)}
-                  </select>
-                  <IconButton label="Zoom in (Ctrl +)" onClick={() => setZoom((z) => ZOOMS.find((v) => v > z + 0.001) ?? z)}><ZoomIn size={16} /></IconButton>
-                </>
-              )}
-            </>
-          )}
-        </nav>
-      </header>
+  const docActions = doc && (
+    <>
+      <IconButton label={host.canSaveInPlace || host.kind === 'desktop' ? 'Save' : 'Download'} text onClick={save}><Save size={16} /></IconButton>
+      <IconButton label="Save as / Convert" text onClick={() => setExportOpen('save-as')}><FileDown size={16} /></IconButton>
+      {!isMediaDoc && (
+        <IconButton label="Protect" text active={doc.protection.enabled} onClick={() => setSecurityOpen(true)}>
+          {doc.protection.enabled ? <ShieldCheck size={16} /> : <LockOpen size={16} />}
+        </IconButton>
+      )}
+      {doc.kind !== 'media' && doc.kind !== 'studio' && <IconButton label="Print" onClick={print}><Printer size={16} /></IconButton>}
+      {doc.kind === 'pdf' && (
+        <IconButton label="Convert PDF to editable document" onClick={convertPdfToFlow}><Wand2 size={16} /></IconButton>
+      )}
+      {!isMediaDoc && doc.kind !== 'code' && doc.kind !== 'sheet' && (
+        <>
+          <Divider />
+          <IconButton label="Zoom out (Ctrl -)" onClick={() => setZoom((z) => [...ZOOMS].reverse().find((v) => v < z - 0.001) ?? z)}><ZoomOut size={16} /></IconButton>
+          <select
+            className="tb-select zoom-select"
+            aria-label="Zoom"
+            value={String(zoom)}
+            onChange={(e) => setZoom(e.target.value === 'fit' ? fitWidthZoom(zoom, paneRef.current) : parseFloat(e.target.value))}
+          >
+            <option value="fit">Fit width</option>
+            {!ZOOMS.includes(zoom) && <option value={String(zoom)}>{Math.round(zoom * 100)}%</option>}
+            {ZOOMS.map((z) => <option key={z} value={String(z)}>{Math.round(z * 100)}%</option>)}
+          </select>
+          <IconButton label="Zoom in (Ctrl +)" onClick={() => setZoom((z) => ZOOMS.find((v) => v > z + 0.001) ?? z)}><ZoomIn size={16} /></IconButton>
+        </>
+      )}
+    </>
+  );
 
+  return (
+    <div className="tab-pane" ref={paneRef} hidden={!active}>
+      <TabActiveContext.Provider value={activeRef}>
+      {active && actionsSlot && docActions && createPortal(docActions, actionsSlot)}
       <main className="main">
-        {!doc && <StartScreen onNew={newDocument} onOpen={pickAndOpen} recents={host.recent ? recents : null} onOpenRecent={(id) => void openRecent(id)} />}
         {doc?.kind === 'sheet' && <SheetEditor key={doc.key} ref={sheetRef} initial={doc.workbook} onChange={markDirty} onError={toast} onNotice={(m) => toast(m, 'info')} />}
         {doc?.kind === 'flow' && (
           <RichEditor key={doc.key} ref={richRef} initial={doc.initial} zoom={zoom} onZoom={setZoom} onChange={markDirty} onStats={setStats} onPageCount={setPageCount} onError={toast} />
@@ -1711,7 +1609,7 @@ export default function App() {
             className={cx('autosave-toggle', autoSave && 'is-on', autoSave && autoStatus?.state === 'blocked' && 'is-blocked')}
             aria-pressed={autoSave}
             title={autoSave ? (autoStatus?.state === 'blocked' || autoStatus?.state === 'error' ? autoStatus.text : 'Changes are saved to the file automatically. Click to turn off.') : 'Auto-save is off. Click to save changes automatically.'}
-            onClick={() => setAutoSave((v) => !v)}
+            onClick={onToggleAutoSave}
           >
             Auto-save {autoSave ? 'on' : 'off'}
           </button>
@@ -1720,83 +1618,11 @@ export default function App() {
         </footer>
       )}
 
-      {dragging && (
-        <div className="drop-overlay" aria-hidden="true">
-          <Upload size={36} />
-          <p>Drop to open</p>
-        </div>
-      )}
       {busy && (
         <div className="busy" role="status">
           <span className="spinner" /> {busy}
         </div>
       )}
-      {update && update.state !== 'ready' && updateDismissed !== update.state && (
-        <div className={cx('update-banner', update.state === 'error' && 'update-error')} role={update.state === 'error' ? 'alert' : 'status'}>
-          {update.state === 'checking' && (
-            <>
-              <span className="spinner" />
-              <span>Checking for updates…</span>
-            </>
-          )}
-          {(update.state === 'available' || update.state === 'downloading') && (
-            <>
-              <Download size={16} />
-              <div className="update-progress">
-                <span>
-                  Downloading version {update.version ?? 'update'}… {update.percent ?? 0}%
-                  {update.speed ? <span className="update-speed"> · {formatSpeed(update.speed)}</span> : null}
-                </span>
-                <progress max={100} value={update.percent ?? 0} aria-label="Update download progress" />
-              </div>
-            </>
-          )}
-          {update.state === 'error' && (
-            <>
-              <AlertTriangle size={16} />
-              <span className="update-message">Couldn't update: {update.message ?? 'unknown error'}</span>
-              <button type="button" className="btn btn-primary btn-sm" onClick={() => window.desktop?.checkForUpdates?.()}>
-                Retry
-              </button>
-            </>
-          )}
-          <button
-            type="button"
-            className="btn btn-text"
-            onClick={() => setUpdateDismissed(update.state)}
-            title={update.state === 'downloading' || update.state === 'available' ? 'The download continues in the background' : undefined}
-          >
-            {update.state === 'error' ? 'Close' : 'Hide'}
-          </button>
-        </div>
-      )}
-      {update?.state === 'ready' && updateDismissed !== 'ready' && (
-        <div className="update-banner" role="status">
-          <RefreshCw size={16} />
-          <span>Version {update.version} is ready to install.</span>
-          <button
-            type="button"
-            className="btn btn-primary btn-sm"
-            onClick={() => {
-              if (dirtyRef.current && !window.confirm('Restart now? Your unsaved changes will be lost.')) return;
-              window.desktop?.installUpdate?.();
-            }}
-          >
-            Restart now
-          </button>
-          <button type="button" className="btn btn-text" onClick={() => setUpdateDismissed('ready')} title="It will install the next time you close the app">
-            Later
-          </button>
-        </div>
-      )}
-      <div className="toasts" aria-live="polite">
-        {toasts.map((t) => (
-          <div key={t.id} className={cx('toast', `toast-${t.kind}`)} onClick={() => setToasts((all) => all.filter((x) => x.id !== t.id))}>
-            {t.text}
-          </div>
-        ))}
-      </div>
-
       {askPw && (
         <PasswordModal
           fileName={askPw.fileName}
@@ -1927,12 +1753,529 @@ export default function App() {
       {securityOpen && doc && format && (doc.kind === 'flow' || doc.kind === 'code' || doc.kind === 'pdf') && (
         <SecurityModal format={format} initial={doc.protection} onClose={() => setSecurityOpen(false)} onApply={applySecurity} />
       )}
+      </TabActiveContext.Provider>
+    </div>
+  );
+}
+
+// ── the app shell: tabs, home screen, menus, drag & drop, updates ────────
+interface TabEntry {
+  id: number;
+  start: TabStart;
+  info: TabInfo;
+}
+
+let tabSeq = 1;
+
+function tabIcon(kind: TabInfo['kind']) {
+  switch (kind) {
+    case 'sheet':
+      return <SheetIcon size={14} />;
+    case 'image':
+    case 'proimage':
+      return <ImageIcon size={14} />;
+    case 'media':
+    case 'studio':
+      return <Film size={14} />;
+    case 'code':
+      return <FileCode size={14} />;
+    default:
+      return <FileText size={14} />;
+  }
+}
+
+const startName = (start: TabStart) => (start.kind === 'open' ? start.file.name : start.kind === 'new-sheet' ? 'Untitled.xlsx' : 'Untitled.docx');
+
+export default function App() {
+  const host = getHost();
+  const [tabs, setTabs] = useState<TabEntry[]>([]);
+  /** the tab on screen; null shows the home screen (open tabs stay open behind it) */
+  const [activeId, setActiveId] = useState<number | null>(null);
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const apis = useRef(new Map<number, TabApi>());
+  const [actionsSlot, setActionsSlot] = useState<HTMLElement | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [licenseOpen, setLicenseOpen] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  /** the update state the user closed the banner on (it comes back for a new state or a manual check) */
+  const [updateDismissed, setUpdateDismissed] = useState<UpdateStatus['state'] | null>(null);
+  const activeTab = tabs.find((t) => t.id === activeId) ?? null;
+  const anyDirty = tabs.some((t) => t.info.dirty);
+  const anyDirtyRef = useRef(anyDirty);
+  anyDirtyRef.current = anyDirty;
+
+  const toast = useCallback((text: string, kind: Toast['kind'] = 'error') => {
+    const id = Date.now() + Math.random();
+    setToasts((t) => [...t, { id, kind, text }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'error' ? 7000 : 3500);
+  }, []);
+
+  // ── tabs ──────────────────────────────────────────────────────────────────
+  const activate = (id: number | null) => {
+    const cur = activeIdRef.current;
+    if (cur !== null && cur !== id) apis.current.get(cur)?.pause();
+    setActiveId(id);
+  };
+
+  const openTab = (start: TabStart) => {
+    const id = tabSeq++;
+    setTabs((ts) => [...ts, { id, start, info: { name: startName(start), dirty: false, locked: false, kind: null } }]);
+    activate(id);
+  };
+
+  const closeTab = useCallback((id: number, force = false) => {
+    const all = tabsRef.current;
+    const i = all.findIndex((t) => t.id === id);
+    if (i < 0) return;
+    const t = all[i];
+    if (!force && t.info.dirty && !window.confirm(`Close ${t.info.name}? Your unsaved changes will be lost.`)) return;
+    const rest = all.filter((x) => x.id !== id);
+    tabsRef.current = rest;
+    setTabs(rest);
+    if (activeIdRef.current === id) setActiveId((rest[i] ?? rest[i - 1])?.id ?? null);
+  }, []);
+
+  const onInfo = useCallback((id: number, info: TabInfo) => {
+    setTabs((ts) => ts.map((t) => (t.id === id ? { ...t, info } : t)));
+  }, []);
+  const onEmpty = useCallback((id: number) => closeTab(id, true), [closeTab]);
+  const register = useCallback((id: number, api: TabApi | null) => {
+    if (api) apis.current.set(id, api);
+    else apis.current.delete(id);
+  }, []);
+
+  const openFile = (file: OpenedFile) => openTab({ kind: 'open', file });
+  const newDocument = () => openTab({ kind: 'new' });
+  const newSpreadsheet = () => openTab({ kind: 'new-sheet' });
+
+  const pickAndOpen = async () => {
+    try {
+      const extensions = host.kind === 'desktop' ? [...ALL_OPEN_EXTENSIONS, 'psd', 'fstudio'] : ALL_OPEN_EXTENSIONS;
+      const files = await host.openFiles({ extensions, multiple: true, description: 'Documents, images, video & audio' });
+      files.forEach(openFile);
+    } catch (err) {
+      toast(errorText(err));
+    }
+  };
+
+  // ── window title / unsaved changes ───────────────────────────────────────
+  const activeInfo = activeTab?.info;
+  useEffect(() => {
+    host.setTitle?.(activeInfo ? `${activeInfo.dirty ? '• ' : ''}${activeInfo.name} — File Editor` : 'File Editor');
+  }, [activeInfo, host]);
+
+  useEffect(() => {
+    // desktop: the window asks before closing with unsaved changes in any tab
+    host.setDirty?.(anyDirty);
+  }, [anyDirty, host]);
+
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (anyDirtyRef.current && host.kind === 'web') {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [host]);
+
+  // ── auto-save setting (each tab saves its own file) ──────────────────────
+  const [autoSave, setAutoSave] = useState(() => {
+    try {
+      return localStorage.getItem('fe.autosave') !== 'off';
+    } catch {
+      return true;
+    }
+  });
+  const toggleAutoSave = useCallback(() => setAutoSave((v) => !v), []);
+  useEffect(() => {
+    try {
+      localStorage.setItem('fe.autosave', autoSave ? 'on' : 'off');
+    } catch {
+      /* storage blocked */
+    }
+    host.setAutoSave?.(autoSave);
+  }, [autoSave, host]);
+
+  // ── recent files ─────────────────────────────────────────────────────────
+  const [recents, setRecents] = useState<RecentEntry[]>([]);
+  useEffect(() => {
+    const r = host.recent;
+    if (!r) return;
+    const load = () => void r.list().then(setRecents, () => setRecents([]));
+    load();
+    return r.onChange(load);
+  }, [host]);
+  const openRecent = async (id: string) => {
+    try {
+      openFile(await host.recent!.open(id));
+    } catch (err) {
+      toast(errorText(err));
+    }
+  };
+  const removeRecent = (id: string) => {
+    setRecents((rs) => rs.filter((r) => r.id !== id));
+    void host.recent?.remove(id).catch(() => undefined);
+  };
+
+  // ── desktop updates: a newer version downloads in the background (with progress); offer to
+  // restart into it. Help → Check for Updates also reports "checking", "up to date" and errors.
+  useEffect(() => {
+    const off = window.desktop?.onUpdateStatus?.((st) => {
+      if (st.manual) setUpdateDismissed(null);
+      if (st.state === 'none') {
+        if (st.manual) toast(`You're up to date — File Editor ${st.version ?? ''} is the latest version.`, 'info');
+        setUpdate(null);
+        return;
+      }
+      // background checks stay quiet until there is something to download; their errors are only logged
+      if ((st.state === 'checking' || st.state === 'error') && !st.manual) {
+        setUpdate((cur) => (cur?.state === 'ready' ? cur : null));
+        return;
+      }
+      setUpdate(st);
+    });
+    return () => off?.();
+  }, [toast]);
+
+  // ── shortcuts, OS file-open events, native menu ──────────────────────────
+  const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, openFile, closeTab, activate });
+  shell.current = { pickAndOpen, newDocument, newSpreadsheet, openFile, closeTab, activate };
+
+  useEffect(() => {
+    const cycle = (step: number) => {
+      const ts = tabsRef.current;
+      if (!ts.length) return;
+      const i = ts.findIndex((t) => t.id === activeIdRef.current);
+      const next = i < 0 ? (step > 0 ? 0 : ts.length - 1) : (i + step + ts.length) % ts.length;
+      shell.current.activate(ts[next].id);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === 'o') {
+        e.preventDefault();
+        void shell.current.pickAndOpen();
+      } else if (k === 'n' && !e.shiftKey && host.kind === 'desktop') {
+        e.preventDefault();
+        shell.current.newDocument();
+      } else if (host.kind === 'desktop' && k === 'w' && !e.shiftKey) {
+        // browsers keep Ctrl+W (it closes the browser tab), so only the desktop app takes it
+        e.preventDefault();
+        if (activeIdRef.current !== null) shell.current.closeTab(activeIdRef.current);
+      } else if (host.kind === 'desktop' && k === 'tab') {
+        e.preventDefault();
+        cycle(e.shiftKey ? -1 : 1);
+      } else if (host.kind === 'desktop' && (k === 'pagedown' || k === 'pageup')) {
+        e.preventDefault();
+        cycle(k === 'pagedown' ? 1 : -1);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    const offOpen = host.onOpenRequest((f) => shell.current.openFile(f));
+    const offMenu = host.onMenuCommand((cmd) => {
+      const s = shell.current;
+      if (cmd === 'new') s.newDocument();
+      else if (cmd === 'new-spreadsheet') s.newSpreadsheet();
+      else if (cmd === 'open') void s.pickAndOpen();
+      else if (cmd === 'license') setLicenseOpen(true);
+      else if (cmd === 'toggle-autosave') setAutoSave((v) => !v);
+      else {
+        const api = activeIdRef.current !== null ? apis.current.get(activeIdRef.current) : undefined;
+        if (!api) return;
+        if (cmd === 'save') void api.save();
+        else if (cmd === 'save-as') api.saveAs();
+        else if (cmd === 'print') void api.print();
+        else if (cmd === 'protect') api.protect();
+      }
+    });
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      offOpen();
+      offMenu();
+    };
+  }, [host]);
+
+  // ── drag & drop files onto the window: each opens in its own tab ─────────
+  useEffect(() => {
+    let depth = 0;
+    const hasFiles = (e: DragEvent) => Array.from(e.dataTransfer?.types ?? []).includes('Files');
+    const isDocDrop = (e: DragEvent) => hasFiles(e) && !(e.target as HTMLElement)?.closest?.('.ProseMirror');
+    const onEnter = (e: DragEvent) => {
+      if (!isDocDrop(e)) return;
+      depth++;
+      setDragging(true);
+    };
+    const onLeave = (e: DragEvent) => {
+      if (!hasFiles(e)) return;
+      depth = Math.max(0, depth - 1);
+      if (!depth) setDragging(false);
+    };
+    const onOver = (e: DragEvent) => {
+      if (hasFiles(e)) e.preventDefault();
+    };
+    const onDrop = async (e: DragEvent) => {
+      depth = 0;
+      setDragging(false);
+      if (!hasFiles(e)) return;
+      // never let the browser navigate to a dropped file (that would lose unsaved work)
+      e.preventDefault();
+      // drops on the text are handled by the editor itself (images are embedded)
+      if ((e.target as HTMLElement)?.closest?.('.ProseMirror')) return;
+      // file handles must be requested during the drop event (Chrome/Edge): they let Save write back
+      type HandleItem = DataTransferItem & { getAsFileSystemHandle?(): Promise<FileSystemHandle | null> };
+      const items = Array.from(e.dataTransfer?.items ?? []).filter((i) => i.kind === 'file') as HandleItem[];
+      const dropped = items.length
+        ? items.map((item) => ({ file: item.getAsFile(), handleP: host.kind === 'web' && host.canSaveInPlace ? (item.getAsFileSystemHandle?.() ?? null) : null }))
+        : Array.from(e.dataTransfer?.files ?? []).map((file) => ({ file, handleP: null }));
+      for (const { file, handleP } of dropped) {
+        if (file) shell.current.openFile(await readDroppedFile(file, handleP));
+      }
+    };
+    window.addEventListener('dragenter', onEnter);
+    window.addEventListener('dragleave', onLeave);
+    window.addEventListener('dragover', onOver);
+    window.addEventListener('drop', onDrop);
+    return () => {
+      window.removeEventListener('dragenter', onEnter);
+      window.removeEventListener('dragleave', onLeave);
+      window.removeEventListener('dragover', onOver);
+      window.removeEventListener('drop', onDrop);
+    };
+  }, [host]);
+
+  return (
+    <div className={cx('app', `host-${host.kind}`)}>
+      <header className="topbar">
+        <button
+          type="button"
+          className={cx('brand', activeId === null && 'is-home')}
+          onClick={() => activate(null)}
+          title={tabs.length ? 'Home (your open files stay open)' : 'Home'}
+          aria-label="File Editor home"
+        >
+          <FileText size={18} />
+          <span>File Editor</span>
+        </button>
+        <nav className="topbar-actions" aria-label="File">
+          <IconButton label="New" text onClick={newDocument}><FilePlus size={16} /></IconButton>
+          <IconButton label="Open" text onClick={pickAndOpen}><FolderOpen size={16} /></IconButton>
+          {host.recent && (
+            <Popover label="Open recent" text align="left" button={<><History size={16} /><span>Recent</span></>}>
+              {(close) => (
+                <div className="format-menu recent-menu" role="menu" aria-label="Recent files">
+                  {recents.length === 0 && <div className="menu-empty">No recent files yet</div>}
+                  {recents.map((r) => (
+                    <div key={r.id} className="recent-row">
+                      <MenuItem hint={r.folder || undefined} onClick={() => { close(); void openRecent(r.id); }}>
+                        {r.name}
+                      </MenuItem>
+                      <button
+                        type="button"
+                        className="recent-remove"
+                        title="Remove from recent files"
+                        aria-label={`Remove ${r.name} from recent files`}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => removeRecent(r.id)}
+                      >
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ))}
+                  {recents.length > 0 && (
+                    <>
+                      <div className="menu-sep" role="separator" />
+                      <MenuItem onClick={() => { close(); void host.recent!.clear(); }}>Clear recent files</MenuItem>
+                    </>
+                  )}
+                </div>
+              )}
+            </Popover>
+          )}
+          {/* the active tab's own buttons (Save, Print, zoom…) are rendered here */}
+          <span className="topbar-doc-actions" ref={setActionsSlot} />
+        </nav>
+      </header>
+
+      {tabs.length > 0 && (
+        <div className="tabbar" role="tablist" aria-label="Open files">
+          {tabs.map((t) => (
+            <div
+              key={t.id}
+              role="tab"
+              tabIndex={0}
+              aria-selected={t.id === activeId}
+              className={cx('tab', t.id === activeId && 'is-active', t.info.dirty && 'is-dirty')}
+              title={t.info.name}
+              onClick={() => activate(t.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  activate(t.id);
+                }
+              }}
+              onMouseDown={(e) => {
+                // middle-click closes (and must not start the browser's auto-scroll)
+                if (e.button === 1) e.preventDefault();
+              }}
+              onAuxClick={(e) => {
+                if (e.button === 1) {
+                  e.preventDefault();
+                  closeTab(t.id);
+                }
+              }}
+            >
+              <span className="tab-icon">{tabIcon(t.info.kind)}</span>
+              {t.info.locked && <Lock size={12} aria-label="Password protected" />}
+              <span className="tab-name">{t.info.name}</span>
+              <button
+                type="button"
+                className="tab-close"
+                aria-label={`Close ${t.info.name}`}
+                title={t.info.dirty ? 'Unsaved changes. Close' : 'Close'}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeTab(t.id);
+                }}
+              >
+                <span className="tab-dirty" aria-hidden />
+                <X size={13} />
+              </button>
+            </div>
+          ))}
+          <button type="button" className="tab-new" title="New document" aria-label="New document" onClick={newDocument}>
+            <Plus size={15} />
+          </button>
+        </div>
+      )}
+
+      {activeId === null && (
+        <main className="main">
+          <StartScreen
+            onNew={newDocument}
+            onOpen={pickAndOpen}
+            recents={host.recent ? recents : null}
+            onOpenRecent={(id) => void openRecent(id)}
+            onRemoveRecent={removeRecent}
+            openTabs={tabs.map((t) => ({ id: t.id, name: t.info.name, dirty: t.info.dirty, kind: t.info.kind }))}
+            onShowTab={activate}
+          />
+        </main>
+      )}
+      {tabs.map((t) => (
+        <DocumentTab
+          key={t.id}
+          id={t.id}
+          active={t.id === activeId}
+          start={t.start}
+          toast={toast}
+          autoSave={autoSave}
+          onToggleAutoSave={toggleAutoSave}
+          actionsSlot={actionsSlot}
+          onInfo={onInfo}
+          onEmpty={onEmpty}
+          register={register}
+        />
+      ))}
+
+      {dragging && (
+        <div className="drop-overlay" aria-hidden="true">
+          <Upload size={36} />
+          <p>Drop to open</p>
+        </div>
+      )}
+      {update && update.state !== 'ready' && updateDismissed !== update.state && (
+        <div className={cx('update-banner', update.state === 'error' && 'update-error')} role={update.state === 'error' ? 'alert' : 'status'}>
+          {update.state === 'checking' && (
+            <>
+              <span className="spinner" />
+              <span>Checking for updates…</span>
+            </>
+          )}
+          {(update.state === 'available' || update.state === 'downloading') && (
+            <>
+              <Download size={16} />
+              <div className="update-progress">
+                <span>
+                  Downloading version {update.version ?? 'update'}… {update.percent ?? 0}%
+                  {update.speed ? <span className="update-speed"> · {formatSpeed(update.speed)}</span> : null}
+                </span>
+                <progress max={100} value={update.percent ?? 0} aria-label="Update download progress" />
+              </div>
+            </>
+          )}
+          {update.state === 'error' && (
+            <>
+              <AlertTriangle size={16} />
+              <span className="update-message">Couldn't update: {update.message ?? 'unknown error'}</span>
+              <button type="button" className="btn btn-primary btn-sm" onClick={() => window.desktop?.checkForUpdates?.()}>
+                Retry
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            className="btn btn-text"
+            onClick={() => setUpdateDismissed(update.state)}
+            title={update.state === 'downloading' || update.state === 'available' ? 'The download continues in the background' : undefined}
+          >
+            {update.state === 'error' ? 'Close' : 'Hide'}
+          </button>
+        </div>
+      )}
+      {update?.state === 'ready' && updateDismissed !== 'ready' && (
+        <div className="update-banner" role="status">
+          <RefreshCw size={16} />
+          <span>Version {update.version} is ready to install.</span>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={() => {
+              if (anyDirtyRef.current && !window.confirm('Restart now? Unsaved changes in your open files will be lost.')) return;
+              window.desktop?.installUpdate?.();
+            }}
+          >
+            Restart now
+          </button>
+          <button type="button" className="btn btn-text" onClick={() => setUpdateDismissed('ready')} title="It will install the next time you close the app">
+            Later
+          </button>
+        </div>
+      )}
+      <div className="toasts" aria-live="polite">
+        {toasts.map((t) => (
+          <div key={t.id} className={cx('toast', `toast-${t.kind}`)} onClick={() => setToasts((all) => all.filter((x) => x.id !== t.id))}>
+            {t.text}
+          </div>
+        ))}
+      </div>
       {licenseOpen && host.kind === 'desktop' && <LicenseDialog onClose={() => setLicenseOpen(false)} />}
     </div>
   );
 }
 
-function StartScreen({ onNew, onOpen, recents, onOpenRecent }: { onNew: () => void; onOpen: () => void; recents: RecentEntry[] | null; onOpenRecent: (id: string) => void }) {
+function StartScreen({
+  onNew,
+  onOpen,
+  recents,
+  onOpenRecent,
+  onRemoveRecent,
+  openTabs,
+  onShowTab,
+}: {
+  onNew: () => void;
+  onOpen: () => void;
+  recents: RecentEntry[] | null;
+  onOpenRecent: (id: string) => void;
+  onRemoveRecent: (id: string) => void;
+  openTabs: { id: number; name: string; dirty: boolean; kind: TabInfo['kind'] }[];
+  onShowTab: (id: number) => void;
+}) {
   return (
     <div className="start">
       <div className="start-inner">
@@ -1950,6 +2293,22 @@ function StartScreen({ onNew, onOpen, recents, onOpenRecent }: { onNew: () => vo
             <span>Documents, spreadsheets, photos, video or audio — or drag one onto this window</span>
           </button>
         </div>
+        {openTabs.length > 0 && (
+          <div className="start-recent start-open">
+            <h2><FileText size={15} /> Open files</h2>
+            <ul>
+              {openTabs.map((t) => (
+                <li key={t.id}>
+                  <button type="button" onClick={() => onShowTab(t.id)}>
+                    <span className="start-recent-icon">{tabIcon(t.kind)}</span>
+                    <span className="start-recent-name">{t.name}</span>
+                    {t.dirty && <span className="start-recent-folder">Unsaved changes</span>}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         {recents && recents.length > 0 && (
           <div className="start-recent">
             <h2><History size={15} /> Recent files</h2>
@@ -1959,6 +2318,15 @@ function StartScreen({ onNew, onOpen, recents, onOpenRecent }: { onNew: () => vo
                   <button type="button" onClick={() => onOpenRecent(r.id)}>
                     <span className="start-recent-name">{r.name}</span>
                     {r.folder && <span className="start-recent-folder">{r.folder}</span>}
+                  </button>
+                  <button
+                    type="button"
+                    className="recent-remove"
+                    title="Remove from recent files"
+                    aria-label={`Remove ${r.name} from recent files`}
+                    onClick={() => onRemoveRecent(r.id)}
+                  >
+                    <X size={14} />
                   </button>
                 </li>
               ))}

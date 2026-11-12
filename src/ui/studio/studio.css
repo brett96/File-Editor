@@ -505,7 +505,7 @@
 }
 
 .mx-strip {
-  flex: 0 0 168px;
+  flex: 0 0 184px;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -513,11 +513,25 @@
   background: var(--st-panel);
   border: 1px solid var(--st-border);
   border-radius: 6px;
+  /* only the effects scroll; pan, fader and mute / solo stay in view */
+  overflow: hidden;
+  min-height: 0;
+}
+
+.mx-fx {
+  flex: 1 1 0;
+  min-height: 90px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-x: hidden;
   overflow-y: auto;
+  scrollbar-width: thin;
+  padding-right: 2px;
 }
 
 .mx-master {
-  flex-basis: 200px;
+  flex-basis: 210px;
   border-color: #4b5568;
 }
 
@@ -531,8 +545,10 @@
 .mx-section {
   border: 1px solid var(--st-border);
   border-radius: 4px;
-  padding: 2px 6px 4px;
+  padding: 2px 8px 6px;
   margin: 0;
+  /* a fieldset is as wide as its content by default; let it fit the strip */
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -552,32 +568,151 @@
   margin-top: 4px;
 }
 
+/* one parameter: label + editable value, then a full-width slider */
 .mx-knob {
-  display: grid;
-  grid-template-columns: 52px minmax(0, 1fr) 54px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 2px 0;
+}
+
+.mx-knob-head {
+  display: flex;
   align-items: center;
-  gap: 4px;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--st-muted);
+}
+
+.mx-knob-head label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mx-value {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  flex: none;
+}
+
+.mx-value input {
+  width: 46px;
+  padding: 1px 3px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--st-text);
+  font: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.mx-value input:hover {
+  border-color: var(--st-border);
+}
+
+.mx-value input:focus {
+  outline: none;
+  border-color: var(--st-accent);
+  background: var(--st-bg);
+}
+
+.mx-unit {
+  min-width: 14px;
   font-size: 10px;
   color: var(--st-muted);
 }
 
-.mx-knob input {
-  min-width: 0;
-  accent-color: var(--st-accent);
+/* horizontal slider: thin track, filled from the start (or the centre for ± controls) */
+.mx-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  --lo: 0%;
+  --hi: 0%;
+  --track: linear-gradient(
+    to right,
+    var(--st-panel-2) var(--lo),
+    var(--st-accent) var(--lo),
+    var(--st-accent) var(--hi),
+    var(--st-panel-2) var(--hi)
+  );
 }
 
-.mx-knob output {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  color: var(--st-text);
+.mx-range::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 4%);
+}
+
+.mx-range::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track);
+}
+
+.mx-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: #f4f5f7;
+  border: 2px solid var(--st-accent);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 50%);
+  transition: transform 0.1s;
+}
+
+.mx-range::-moz-range-thumb {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #f4f5f7;
+  border: 2px solid var(--st-accent);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 50%);
+}
+
+.mx-range:hover::-webkit-slider-thumb,
+.mx-range:active::-webkit-slider-thumb {
+  transform: scale(1.2);
+}
+
+.mx-range:focus {
+  outline: none;
+}
+
+.mx-range:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgb(59 130 246 / 45%);
+}
+
+.mx-section.is-off .mx-range {
+  opacity: 0.5;
+}
+
+/* pan sits between the effects and the fader */
+.mx-pan {
+  padding: 2px 2px 0;
 }
 
 .mx-bottom {
   display: flex;
-  gap: 8px;
+  gap: 6px;
   align-items: stretch;
-  min-height: 110px;
-  flex: 1;
+  /* the fader keeps a usable length; the effects list above scrolls when space is short */
+  flex: 1 1 0;
+  min-height: 120px;
+  max-height: 260px;
 }
 
 .mx-meter {
@@ -610,28 +745,129 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: space-between;
   gap: 4px;
+  min-width: 0;
 }
 
-.mx-fader input {
+.mx-fader-body {
+  position: relative;
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 0;
+  padding: 4px 0;
+}
+
+/* dB marks beside the fader, lined up with the travel of the cap */
+.mx-scale {
+  position: relative;
+  width: 24px;
+  margin: 7px 0;
+  font-size: 9px;
+  color: var(--st-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.mx-scale span {
+  position: absolute;
+  right: 0;
+  transform: translateY(50%);
+  line-height: 1;
+}
+
+.mx-scale span.is-zero {
+  color: var(--st-text);
+  font-weight: 600;
+}
+
+.mx-fader input[type='range'] {
+  -webkit-appearance: none;
+  appearance: none;
   writing-mode: vertical-lr;
   direction: rtl;
-  flex: 1;
-  width: 24px;
-  min-height: 80px;
-  accent-color: var(--st-accent);
+  width: 28px;
+  align-self: stretch;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+  --fill: 0%;
 }
 
-.mx-fader output {
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
+.mx-fader input[type='range']::-webkit-slider-runnable-track {
+  width: 6px;
+  border-radius: 3px;
+  background: linear-gradient(to top, var(--st-accent) var(--fill), #0d0e11 var(--fill));
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 6%);
+}
+
+.mx-fader input[type='range']::-moz-range-track {
+  width: 6px;
+  border-radius: 3px;
+  background: linear-gradient(to top, var(--st-accent) var(--fill), #0d0e11 var(--fill));
+}
+
+/* the fader cap: a ridged handle, like a console fader */
+.mx-fader input[type='range']::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 26px;
+  height: 14px;
+  margin-left: -10px;
+  border-radius: 3px;
+  border: 1px solid #0d0e11;
+  background:
+    linear-gradient(#f4f5f7, #f4f5f7) center / 70% 2px no-repeat,
+    linear-gradient(#cfd2d8, #9fa4ae);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 55%);
+}
+
+.mx-fader input[type='range']::-moz-range-thumb {
+  width: 24px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid #0d0e11;
+  background:
+    linear-gradient(#f4f5f7, #f4f5f7) center / 70% 2px no-repeat,
+    linear-gradient(#cfd2d8, #9fa4ae);
+  box-shadow: 0 2px 4px rgb(0 0 0 / 55%);
+}
+
+.mx-fader input[type='range']:focus {
+  outline: none;
+}
+
+.mx-fader input[type='range']:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 3px rgb(59 130 246 / 45%);
+}
+
+.mx-fader .mx-value input {
+  width: 42px;
+  text-align: center;
+}
+
+.mx-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  text-align: left;
+}
+
+.mx-track-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-left: 2px;
 }
 
 .mx-ms {
   display: flex;
-  justify-content: center;
-  gap: 6px;
+  flex: none;
+  gap: 4px;
 }
 
 /* ── waveform editor (in a light modal) ──────────────────────────────── */

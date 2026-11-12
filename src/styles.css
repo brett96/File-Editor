@@ -1981,3 +1981,259 @@ body {
     display: none;
   }
 }
+
+/* ── tabs: one per open file ─────────────────────────────────────────── */
+.tab-pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.tab-pane[hidden] {
+  display: none;
+}
+
+/* the logo / name goes back to the home screen; open files stay open */
+button.brand {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-weight: 600;
+  padding: 4px 8px;
+  margin-left: -8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+button.brand:hover {
+  background: var(--accent-soft);
+}
+
+button.brand:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.topbar-doc-actions {
+  display: contents;
+}
+
+.tabbar {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 4px 8px 0;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  flex: none;
+}
+
+.tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 1 220px;
+  min-width: 110px;
+  height: 32px;
+  padding: 0 4px 0 10px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 7px 7px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.tab:hover {
+  background: color-mix(in srgb, var(--surface) 60%, transparent);
+  color: var(--text);
+}
+
+.tab.is-active {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+  /* covers the tab bar's bottom border, so the tab joins its page */
+  margin-bottom: -1px;
+  height: 33px;
+}
+
+.tab.is-active::before {
+  content: '';
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  top: -1px;
+  height: 2px;
+  border-radius: 0 0 2px 2px;
+  background: var(--accent);
+}
+
+.tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.tab-icon {
+  display: inline-flex;
+  flex: none;
+  color: var(--accent);
+}
+
+.tab-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tab-close {
+  position: relative;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tab-close:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+  color: var(--text);
+}
+
+/* the close button shows a dot while the file has unsaved changes (an × on hover) */
+.tab-dirty {
+  display: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.tab.is-dirty .tab-dirty {
+  display: block;
+}
+
+.tab.is-dirty .tab-close svg {
+  display: none;
+}
+
+.tab.is-dirty .tab-close:hover .tab-dirty,
+.tab.is-dirty .tab-close:focus-visible .tab-dirty {
+  display: none;
+}
+
+.tab.is-dirty .tab-close:hover svg,
+.tab.is-dirty .tab-close:focus-visible svg {
+  display: block;
+}
+
+.tab-new {
+  flex: none;
+  align-self: center;
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-left: 2px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tab-new:hover {
+  background: var(--surface);
+  color: var(--text);
+}
+
+@media (max-width: 720px) {
+  .tab {
+    flex-basis: 160px;
+    min-width: 96px;
+  }
+}
+
+/* ── recent files: remove one from the list ──────────────────────────── */
+.recent-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.recent-row .menu-item {
+  flex: 1;
+  min-width: 0;
+}
+
+.recent-remove {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  opacity: 0.55;
+}
+
+.recent-row:hover .recent-remove,
+.start-recent li:hover .recent-remove,
+.recent-remove:focus-visible {
+  opacity: 1;
+}
+
+.recent-remove:hover {
+  background: var(--danger-soft);
+  color: var(--danger);
+  opacity: 1;
+}
+
+.start-recent li {
+  display: flex;
+  align-items: center;
+}
+
+.start-recent li > button:first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.start-recent li > .recent-remove {
+  width: 30px;
+  height: 30px;
+  margin-right: 8px;
+  padding: 0;
+}
+
+.start-recent li > .recent-remove:hover {
+  background: var(--danger-soft);
+}
+
+.start-recent-icon {
+  display: inline-flex;
+  align-self: center;
+  color: var(--accent);
+}
+
+@media (pointer: coarse) {
+  .recent-remove {
+    opacity: 1;
+  }
+}

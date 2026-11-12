@@ -1,4 +1,5 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { useTabActive } from '../tab-active';
 import { EditorContent, useEditor, useEditorState, type Editor } from '@tiptap/react';
 import {
   AArrowDown,
@@ -813,10 +814,12 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
   };
 
   // entering header / footer editing puts the cursor there; Esc leaves
+  const tabActive0 = useTabActive();
   useEffect(() => {
     if (!hfEdit) return;
     (hfEdit === 'header' ? headerEditor : footerEditor)?.commands.focus('end');
     const onKey = (e: KeyboardEvent) => {
+      if (!tabActive0.current) return;
       if (e.key === 'Escape') {
         setHfEdit(null);
         editor?.commands.focus();
@@ -827,6 +830,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
   }, [hfEdit, headerEditor, footerEditor, editor]);
 
   // format painter: the next selection made with the mouse (or a click in a word) takes the format
+  const tabActive1 = useTabActive();
   useEffect(() => {
     if (!active || !painter) return;
     const editor = active;
@@ -839,6 +843,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
       }, 0);
     };
     const onKey = (e: KeyboardEvent) => {
+      if (!tabActive1.current) return;
       if (e.key === 'Escape') setPainter(null);
     };
     dom.addEventListener('mouseup', onUp);
@@ -852,8 +857,10 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
   // Ctrl/Cmd+K opens the link dialog; Ctrl/Cmd+F find; Ctrl/Cmd+H find & replace;
   // Ctrl+Shift+8 shows formatting marks and Ctrl+] / Ctrl+[ grow / shrink the font, as in Word.
   // Runs in the capture phase so these win over the editor's own bindings (Ctrl+Shift+8 = bullets).
+  const tabActive2 = useTabActive();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!tabActive2.current) return;
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const k = e.key.toLowerCase();
       if (e.shiftKey && (e.code === 'Digit8' || k === '*')) {
