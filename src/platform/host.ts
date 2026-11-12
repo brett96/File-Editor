@@ -21,6 +21,27 @@ export interface SaveRequest {
   description: string;
   /** Write straight to this handle (no dialog) when possible. */
   handle?: unknown;
+  /**
+   * Auto-save: write to `handle` or fail. Never shows a dialog, asks for permission or falls
+   * back to a download.
+   */
+  quiet?: boolean;
+}
+
+export interface RecentEntry {
+  id: string;
+  name: string;
+  /** the folder's name on desktop; empty on the web (browsers don't reveal it) */
+  folder: string;
+}
+
+export interface RecentFiles {
+  list(): Promise<RecentEntry[]>;
+  /** Re-opens a recent file (asks the browser for permission if needed). */
+  open(id: string): Promise<OpenedFile>;
+  clear(): Promise<void>;
+  /** Called when the list changes (another open, a save, a clear). */
+  onChange(callback: () => void): () => void;
 }
 
 export interface SaveResult {
@@ -40,6 +61,14 @@ export interface FileHost {
   onMenuCommand(callback: (command: string) => void): () => void;
   setDirty?(dirty: boolean): void;
   setTitle?(title: string): void;
+  /** Recently opened files, or null where the platform can't reopen files (older browsers). */
+  recent: RecentFiles | null;
+  /** Whether `handle` can be written without asking the user (auto-save). */
+  canWriteSilently(handle: unknown): Promise<boolean>;
+  /** Asks for write access to `handle` (web; needs a click). Resolves true when granted. */
+  requestWrite(handle: unknown): Promise<boolean>;
+  /** Keeps the desktop File menu's Auto Save checkbox in step. */
+  setAutoSave?(on: boolean): void;
 }
 
 /** License state reported by the desktop app's main process (electron/license.ts). */
@@ -65,6 +94,15 @@ export interface DesktopBridge {
   installUpdate?(): void;
   setDirty(dirty: boolean): void;
   setTitle(title: string): void;
+  recent?: {
+    list(): Promise<RecentEntry[]>;
+    open(id: string): Promise<{ name: string; bytes: Uint8Array; token: string }>;
+    clear(): Promise<void>;
+    onChange(callback: () => void): () => void;
+  };
+  setAutoSave?(on: boolean): void;
+  /** Resolves a file dropped on the window to a token so Save writes back to it. */
+  openDropped?(file: File): Promise<{ name: string; bytes: Uint8Array; token: string } | null>;
   /** Desktop license activation (see electron/license.ts). */
   license: {
     get(): Promise<LicenseState>;
@@ -131,11 +169,128 @@ function download(bytes: Uint8Array, name: string, mime: string): void {
   setTimeout(() => a.remove(), 0);
 }
 
+// ── web: recent files are FileSystemFileHandles kept in IndexedDB ─────────────
+type PermissionHandle = FileSystemFileHandle & {
+  queryPermission?(d: { mode: 'read' | 'readwrite' }): Promise<PermissionState>;
+  requestPermission?(d: { mode: 'read' | 'readwrite' }): Promise<PermissionState>;
+};
+
+interface StoredRecent {
+  id: string;
+  name: string;
+  handle: FileSystemFileHandle;
+  openedAt: number;
+}
+
+const RECENT_MAX = 12;
+const recentListeners = new Set<() => void>();
+
+function idb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open('file-editor', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('recent', { keyPath: 'id' });
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function recentTx<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequest<T> | void): Promise<T | undefined> {
+  const db = await idb();
+  try {
+    return await new Promise<T | undefined>((resolve, reject) => {
+      const tx = db.transaction('recent', mode);
+      const req = fn(tx.objectStore('recent'));
+      let result: T | undefined;
+      if (req) req.onsuccess = () => (result = req.result);
+      tx.oncomplete = () => resolve(result);
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error);
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function storedRecents(): Promise<StoredRecent[]> {
+  const all = ((await recentTx<StoredRecent[]>('readonly', (s) => s.getAll() as IDBRequest<StoredRecent[]>)) ?? []).filter((r) => r?.handle);
+  return all.sort((a, b) => b.openedAt - a.openedAt);
+}
+
+/** Adds (or moves to the top) a file the user opened or saved through a FileSystemFileHandle. */
+export async function rememberRecent(handle: unknown): Promise<void> {
+  if (!(typeof FileSystemFileHandle !== 'undefined' && handle instanceof FileSystemFileHandle) || typeof indexedDB === 'undefined') return;
+  try {
+    const all = await storedRecents();
+    let same: StoredRecent | undefined;
+    for (const r of all) if (await r.handle.isSameEntry(handle).catch(() => false)) same = r;
+    const entry: StoredRecent = { id: same?.id ?? `r${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`, name: handle.name, handle, openedAt: Date.now() };
+    const drop = all.filter((r) => r.id !== entry.id).slice(RECENT_MAX - 1);
+    await recentTx('readwrite', (s) => {
+      s.put(entry);
+      for (const d of drop) s.delete(d.id);
+    });
+    recentListeners.forEach((l) => l());
+  } catch {
+    /* private mode, storage blocked: recents are a convenience */
+  }
+}
+
+function webRecent(): RecentFiles {
+  return {
+    async list() {
+      return (await storedRecents()).map((r) => ({ id: r.id, name: r.name, folder: '' }));
+    },
+    async open(id) {
+      const r = (await storedRecents()).find((x) => x.id === id);
+      if (!r) throw new Error('That file is no longer in the recent list.');
+      const h = r.handle as PermissionHandle;
+      // read+write in one prompt, so Save and auto-save then work without asking again
+      let perm = (await h.queryPermission?.({ mode: 'readwrite' })) ?? 'granted';
+      if (perm !== 'granted') perm = (await h.requestPermission?.({ mode: 'readwrite' }).catch(() => 'denied' as PermissionState)) ?? 'denied';
+      if (perm !== 'granted') {
+        const read = (await h.queryPermission?.({ mode: 'read' })) ?? 'denied';
+        if (read !== 'granted') throw new Error(`The browser did not allow access to ${r.name}.`);
+      }
+      let file: File;
+      try {
+        file = await h.getFile();
+      } catch {
+        await recentTx('readwrite', (s) => s.delete(id));
+        recentListeners.forEach((l) => l());
+        throw new Error(`${r.name} can't be found any more (it was moved, renamed or deleted).`);
+      }
+      void rememberRecent(h);
+      return { name: file.name, blob: file, handle: h };
+    },
+    async clear() {
+      await recentTx('readwrite', (s) => s.clear());
+      recentListeners.forEach((l) => l());
+    },
+    onChange(cb) {
+      recentListeners.add(cb);
+      return () => recentListeners.delete(cb);
+    },
+  };
+}
+
 function createWebHost(): FileHost {
   const fsAccess = typeof window.showOpenFilePicker === 'function' && typeof window.showSaveFilePicker === 'function' && window.isSecureContext;
   return {
     kind: 'web',
     canSaveInPlace: fsAccess,
+    recent: fsAccess && typeof indexedDB !== 'undefined' ? webRecent() : null,
+    async canWriteSilently(handle) {
+      if (!fsAccess || !(handle instanceof FileSystemFileHandle)) return false;
+      const h = handle as PermissionHandle;
+      return ((await h.queryPermission?.({ mode: 'readwrite' }).catch(() => 'denied')) ?? 'granted') === 'granted';
+    },
+    async requestWrite(handle) {
+      if (!fsAccess || !(handle instanceof FileSystemFileHandle)) return false;
+      const h = handle as PermissionHandle;
+      const now = (await h.queryPermission?.({ mode: 'readwrite' })) ?? 'granted';
+      if (now === 'granted') return true;
+      return ((await h.requestPermission?.({ mode: 'readwrite' }).catch(() => 'denied')) ?? 'denied') === 'granted';
+    },
     async openFiles({ extensions, multiple = false, description = 'Documents' }) {
       if (fsAccess) {
         try {
@@ -146,6 +301,7 @@ function createWebHost(): FileHost {
           return Promise.all(
             handles.map(async (handle) => {
               const file = await handle.getFile();
+              void rememberRecent(handle);
               return { name: file.name, blob: file, handle };
             }),
           );
@@ -164,6 +320,10 @@ function createWebHost(): FileHost {
         await writable.close();
         return { name: handle.name, handle };
       };
+      if (req.quiet) {
+        if (!fsAccess || !(req.handle instanceof FileSystemFileHandle)) throw new Error('This file has no location to save to.');
+        return write(req.handle);
+      }
       if (fsAccess) {
         try {
           if (req.handle) return await write(req.handle as FileSystemFileHandle);
@@ -171,7 +331,9 @@ function createWebHost(): FileHost {
             suggestedName: req.suggestedName,
             types: [{ description: req.description, accept: { [req.mime]: ['.' + req.ext] } }],
           });
-          return await write(handle);
+          const res = await write(handle);
+          void rememberRecent(handle);
+          return res;
         } catch (err) {
           if (isAbort(err)) return null;
           // e.g. permission revoked — fall back to a download
@@ -200,7 +362,22 @@ function createDesktopHost(bridge: DesktopBridge): FileHost {
       const files = await bridge.openFiles({ extensions, multiple, description });
       return files.map((f) => ({ name: f.name, blob: new Blob([f.bytes as BlobPart]), handle: f.token }));
     },
+    recent: bridge.recent
+      ? {
+          list: () => bridge.recent!.list(),
+          open: async (id) => {
+            const f = await bridge.recent!.open(id);
+            return { name: f.name, blob: new Blob([f.bytes as BlobPart]), handle: f.token };
+          },
+          clear: () => bridge.recent!.clear(),
+          onChange: (cb) => bridge.recent!.onChange(cb),
+        }
+      : null,
+    canWriteSilently: async (handle) => typeof handle === 'string',
+    requestWrite: async (handle) => typeof handle === 'string',
+    setAutoSave: (on) => bridge.setAutoSave?.(on),
     async save(req) {
+      if (req.quiet && typeof req.handle !== 'string') throw new Error('This file has no location to save to.');
       const res = typeof req.handle === 'string'
         ? await bridge.saveFile(req.handle, req.bytes)
         : await bridge.saveFileAs({ suggestedName: req.suggestedName, ext: req.ext, description: req.description }, req.bytes);
@@ -222,8 +399,21 @@ export function getHost(): FileHost {
   return host;
 }
 
-/** Reads a File (drag-and-drop / paste) into an OpenedFile. */
-export async function readDroppedFile(file: File): Promise<OpenedFile> {
+/**
+ * Reads a File (drag-and-drop / paste) into an OpenedFile. `handle` is the promise from
+ * DataTransferItem.getAsFileSystemHandle() (Chrome/Edge), which must be requested during the
+ * drop event; with it, Save writes back to the dropped file.
+ */
+export async function readDroppedFile(file: File, handle?: Promise<FileSystemHandle | null> | null): Promise<OpenedFile> {
+  // desktop: the preload resolves a real dropped file to a writable token (page code can't
+  // fabricate one: a File built in script has no path)
+  const dropped = await window.desktop?.openDropped?.(file).catch(() => null);
+  if (dropped) return { name: dropped.name, blob: new Blob([dropped.bytes as BlobPart]), handle: dropped.token };
+  const h = await handle?.catch(() => null);
+  if (h && h.kind === 'file' && typeof window.showSaveFilePicker === 'function') {
+    void rememberRecent(h);
+    return { name: file.name, blob: file, handle: h };
+  }
   return { name: file.name, blob: file };
 }
 

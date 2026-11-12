@@ -6,7 +6,8 @@ import { Field, Modal } from '../components';
 
 export interface StudioExportChoice {
   fileName: string;
-  container: ContainerFormat;
+  /** 'project': save the editable Studio project (.fstudio) instead of rendering */
+  container: ContainerFormat | 'project';
   quality: QualityLevel;
   width?: number;
   height?: number;
@@ -40,12 +41,13 @@ export function StudioExportModal({
   onClose: () => void;
 }) {
   const allowed = [...(hasVideo ? VIDEO : []), ...AUDIO];
-  const [container, setContainer] = useState<ContainerFormat>(allowed.includes(initialContainer) ? initialContainer : allowed[0]);
+  const [container, setContainer] = useState<ContainerFormat | 'project'>(allowed.includes(initialContainer) ? initialContainer : allowed[0]);
   const [name, setName] = useState(initialName);
   const [quality, setQuality] = useState<QualityLevel>(4);
   const [outH, setOutH] = useState<number>(height);
   const [outFps, setOutFps] = useState<number>(fps);
-  const c = CONTAINERS[container];
+  const isProject = container === 'project';
+  const c = isProject ? { ext: 'fstudio', kind: 'project' as const, label: 'Studio project' } : CONTAINERS[container];
   const isVideo = c.kind === 'video';
   const outW = Math.round(((width / height) * outH) / 2) * 2;
 
@@ -62,14 +64,14 @@ export function StudioExportModal({
 
   return (
     <Modal
-      title="Export Studio project"
+      title="Save as / Export"
       width={520}
       onClose={onClose}
       footer={
         <>
           <span className="spacer" />
           <button type="button" className="btn btn-text" onClick={onClose}>Cancel</button>
-          <button type="submit" form="studio-export" className="btn btn-primary">Export</button>
+          <button type="submit" form="studio-export" className="btn btn-primary">{isProject ? 'Save' : 'Export'}</button>
         </>
       }
     >
@@ -82,12 +84,19 @@ export function StudioExportModal({
             </div>
           </Field>
           <Field label="Format">
-            <select className="input" value={container} onChange={(e) => setContainer(e.target.value as ContainerFormat)} aria-label="Format">
+            <select className="input" value={container} onChange={(e) => setContainer(e.target.value as ContainerFormat | 'project')} aria-label="Format">
+              <optgroup label="Editable project">
+                <option value="project">Studio project (.fstudio)</option>
+              </optgroup>
               {hasVideo && <optgroup label="Video">{VIDEO.map((f) => <option key={f} value={f}>{CONTAINERS[f].label}</option>)}</optgroup>}
               <optgroup label={hasVideo ? 'Sound only (mixdown)' : 'Audio'}>{AUDIO.map((f) => <option key={f} value={f}>{CONTAINERS[f].label}</option>)}</optgroup>
             </select>
           </Field>
         </div>
+        {isProject ? (
+          <p className="dialog-hint">Saves the timeline, effects, keyframes and mix with a copy of every media file it uses, so it can be reopened and edited later (also on another computer). Save (Ctrl+S) and auto-save then write to this file.</p>
+        ) : (
+        <>
         <div className="grid-2">
           <Field label="Quality">
             <select className="input" value={quality} onChange={(e) => setQuality(Number(e.target.value) as QualityLevel)} disabled={container === 'wav' || container === 'flac'}>
@@ -117,6 +126,8 @@ export function StudioExportModal({
             ? `The mix is normalized to ${loudnessTarget} LUFS integrated loudness, then peak-limited.`
             : 'Loudness normalization is off (set a target in the Mixer → Master).'}
         </p>
+        </>
+        )}
       </form>
     </Modal>
   );

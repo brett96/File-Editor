@@ -15,7 +15,7 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell, type MenuItemConstructorOptions } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { readFile, stat, writeFile } from 'node:fs/promises';
-import { basename, extname, join, normalize, relative, resolve, sep } from 'node:path';
+import { basename, dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { activateLicense, getLicenseState, refreshLicenseStatus } from './license';
 
@@ -32,7 +32,9 @@ const MEDIA = [
   'mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', 'wmv', 'asf', 'flv', 'mpg', 'mpeg', 'vob', '3gp', '3g2', 'ogv', 'ts', 'mts', 'm2ts',
   'mp3', 'm4a', 'wav', 'flac', 'ogg', 'oga', 'opus', 'aac', 'wma', 'aiff', 'aif', 'amr',
 ];
-const OPENABLE = [...DOCUMENTS, ...IMAGES, ...MEDIA];
+/** Studio project files (a zip of the timeline + its media), so as large as media */
+const PROJECTS = ['fstudio'];
+const OPENABLE = [...DOCUMENTS, ...IMAGES, ...MEDIA, ...PROJECTS];
 
 const CSP = [
   "default-src 'self'",
@@ -55,6 +57,8 @@ protocol.registerSchemesAsPrivileged([
 
 let mainWindow: BrowserWindow | null = null;
 let dirty = false;
+/** mirrors the renderer's Auto Save setting for the File menu checkbox */
+let autoSave = true;
 let rendererReady = false;
 const pendingOpen: string[] = [];
 
@@ -71,12 +75,75 @@ function grant(path: string): string {
 async function readGranted(path: string): Promise<{ name: string; bytes: Uint8Array; token: string }> {
   const info = await stat(path);
   if (!info.isFile()) throw new Error('Not a file.');
-  const isMedia = MEDIA.includes(extname(path).slice(1).toLowerCase());
+  const ext = extname(path).slice(1).toLowerCase();
+  const isMedia = MEDIA.includes(ext) || PROJECTS.includes(ext);
   const limit = isMedia ? MAX_MEDIA_BYTES : MAX_FILE_BYTES;
   if (info.size > limit) throw new Error(`This file is too large to open (limit ${isMedia ? '4 GB' : '250 MB'}).`);
   const bytes = new Uint8Array(await readFile(path));
+  addRecent(path);
   return { name: basename(path), bytes, token: grant(path) };
 }
+
+// ── recent files ───────────────────────────────────────────────────────────
+// Kept in userData/recent-files.json. The renderer only ever sees an id, the file name and
+// its folder's name; the path stays in this process like every other granted file.
+const RECENT_MAX = 12;
+interface Recent {
+  id: string;
+  path: string;
+  openedAt: number;
+}
+let recents: Recent[] = [];
+const recentStore = () => join(app.getPath('userData'), 'recent-files.json');
+
+async function loadRecents() {
+  try {
+    const raw = JSON.parse(await readFile(recentStore(), 'utf8')) as unknown;
+    recents = Array.isArray(raw)
+      ? raw
+          .filter((r): r is { path: string; openedAt?: number } => typeof r?.path === 'string' && OPENABLE.includes(extname(r.path).slice(1).toLowerCase()))
+          .slice(0, RECENT_MAX)
+          .map((r) => ({ id: randomUUID(), path: r.path, openedAt: Number(r.openedAt) || 0 }))
+      : [];
+  } catch {
+    recents = [];
+  }
+}
+
+function recentsChanged() {
+  void writeFile(recentStore(), JSON.stringify(recents.map(({ path, openedAt }) => ({ path, openedAt })))).catch(() => undefined);
+  if (app.isReady()) buildMenu();
+  mainWindow?.webContents.send('recent-changed');
+}
+
+function addRecent(path: string) {
+  const old = recents.find((r) => r.path === path);
+  recents = [{ id: old?.id ?? randomUUID(), path, openedAt: Date.now() }, ...recents.filter((r) => r.path !== path)].slice(0, RECENT_MAX);
+  try {
+    app.addRecentDocument(path); // Windows jump list / macOS Dock & File ▸ Open Recent
+  } catch {
+    /* not supported */
+  }
+  recentsChanged();
+}
+
+function removeRecent(path: string) {
+  recents = recents.filter((r) => r.path !== path);
+  recentsChanged();
+}
+
+function clearRecents() {
+  recents = [];
+  try {
+    app.clearRecentDocuments();
+  } catch {
+    /* not supported */
+  }
+  recentsChanged();
+}
+
+/** Renderer-safe view of the list: no paths. */
+const recentList = () => recents.map((r) => ({ id: r.id, name: basename(r.path), folder: basename(dirname(r.path)) }));
 
 // ── single instance + OS "open with" ───────────────────────────────────────
 if (!app.requestSingleInstanceLock()) {
@@ -99,7 +166,9 @@ async function deliverOpen(path: string) {
     const file = await readGranted(path);
     mainWindow.webContents.send('open-file', file);
   } catch (err) {
-    dialog.showErrorBox('Could not open file', `${path}\n\n${(err as Error).message}`);
+    const missing = (err as NodeJS.ErrnoException).code === 'ENOENT';
+    if (missing) removeRecent(path);
+    dialog.showErrorBox('Could not open file', `${path}\n\n${missing ? 'The file no longer exists (it was moved, renamed or deleted).' : (err as Error).message}`);
   }
 }
 
@@ -254,9 +323,25 @@ function buildMenu() {
         { label: 'New', accelerator: 'CmdOrCtrl+N', click: () => send('new') },
         { label: 'New Spreadsheet', accelerator: 'CmdOrCtrl+Shift+N', click: () => send('new-spreadsheet') },
         { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: () => send('open') },
+        {
+          label: 'Open Recent',
+          submenu: recents.length
+            ? [
+                ...recents.map((r, i): MenuItemConstructorOptions => ({
+                  label: `${i < 9 ? `&${i + 1}  ` : ''}${basename(r.path).replace(/&/g, '&&')}`,
+                  sublabel: dirname(r.path),
+                  toolTip: r.path,
+                  click: () => void deliverOpen(r.path),
+                })),
+                { type: 'separator' },
+                { label: 'Clear Recently Opened', click: () => clearRecents() },
+              ]
+            : [{ label: 'No recent files', enabled: false }],
+        },
         { type: 'separator' },
         { label: 'Save', accelerator: 'CmdOrCtrl+S', click: () => send('save') },
         { label: 'Save As / Convert…', accelerator: 'CmdOrCtrl+Shift+S', click: () => send('save-as') },
+        { label: 'Auto Save', type: 'checkbox', checked: autoSave, click: () => send('toggle-autosave') },
         { label: 'Password Protection…', click: () => send('protect') },
         { type: 'separator' },
         { label: 'Print…', accelerator: 'CmdOrCtrl+P', click: () => send('print') },
@@ -340,7 +425,54 @@ function registerIpc() {
     });
     if (res.canceled || !res.filePath) return null;
     await writeFile(res.filePath, toBytes(data));
+    addRecent(res.filePath);
     return { name: basename(res.filePath), token: grant(res.filePath) };
+  });
+
+  // a file dropped on the window (path resolved by the preload from the real File object)
+  ipcMain.handle('open-dropped', async (e, path: unknown) => {
+    assertSender(e);
+    if (typeof path !== 'string' || !path) return null;
+    const full = resolve(path);
+    if (!OPENABLE.includes(extname(full).slice(1).toLowerCase())) return null;
+    return readGranted(full);
+  });
+
+  ipcMain.handle('recent-list', (e) => {
+    assertSender(e);
+    return recentList();
+  });
+
+  ipcMain.handle('recent-open', async (e, id: unknown) => {
+    assertSender(e);
+    const r = recents.find((x) => x.id === id);
+    if (!r) throw new Error('That file is no longer in the recent list.');
+    try {
+      return await readGranted(r.path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        removeRecent(r.path);
+        throw new Error(`${basename(r.path)} no longer exists (it was moved, renamed or deleted).`);
+      }
+      throw err;
+    }
+  });
+
+  ipcMain.handle('recent-clear', (e) => {
+    assertSender(e);
+    clearRecents();
+  });
+
+  ipcMain.on('set-autosave', (e, value: unknown) => {
+    try {
+      assertSender(e);
+      if (autoSave !== !!value) {
+        autoSave = !!value;
+        buildMenu();
+      }
+    } catch {
+      /* ignore */
+    }
   });
 
   // license: activation talks to the license server from this process only (see license.ts)
@@ -432,6 +564,7 @@ app.whenReady().then(async () => {
 
   registerAppProtocol();
   registerIpc();
+  await loadRecents();
   buildMenu();
   pendingOpen.push(...filesFromArgv(process.argv));
   createWindow();
