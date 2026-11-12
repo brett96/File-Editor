@@ -9,10 +9,15 @@ import {
   BorderStyle,
   Document,
   ExternalHyperlink,
+  Footer,
+  Header,
   HeadingLevel,
+  HeightRule,
+  HorizontalPositionRelativeFrom,
   ImageRun,
   InternalHyperlink,
   LevelFormat,
+  LineRuleType,
   Packer,
   PageBreak,
   PageOrientation,
@@ -21,10 +26,14 @@ import {
   Tab,
   Table,
   TableCell,
+  TableLayoutType,
   TableRow,
   TextRun,
+  TextWrappingType,
   UnderlineType,
+  VerticalAlignTable,
   VerticalMergeType,
+  VerticalPositionRelativeFrom,
   WidthType,
   type ILevelsOptions,
   type IParagraphOptions,
@@ -33,8 +42,16 @@ import {
   type NumberingDefinition,
   type ParagraphChild,
 } from 'docx';
-import { cssColorToHex, cssLengthToPt, imageSize, parseDataUrl, parseHtml, parseStyle, primaryFontFamily } from '../dom';
-import { DEFAULT_PAGE_SETUP, PAGE_SIZES, type Exporter, type PageSetup } from '../types';
+import JSZip from 'jszip';
+import { cssBorderSide, cssColorToHex, cssLengthToPt, imageSize, parseDataUrl, parseHtml, parseStyle, primaryFontFamily } from '../dom';
+import { CSS_LINE_PER_WORD_LINE, DEFAULT_HF_DISTANCE, DEFAULT_PAGE_SETUP, PAGE_SIZES, type Exporter, type PageSetup } from '../types';
+import { unpackDrawingMl, type DrawingMlPayload } from './drawingml-render';
+
+/** Tiny transparent PNG used as a placeholder while DrawingML shapes are reinjected. */
+const PLACEHOLDER_PNG = Uint8Array.from(
+  atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='),
+  (c) => c.charCodeAt(0),
+);
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 type Align = (typeof AlignmentType)[keyof typeof AlignmentType];
@@ -48,6 +65,8 @@ const CODE_BLOCK_STYLE = 'CodeBlock';
 const INLINE_CODE_STYLE = 'InlineCode';
 const INDENT_STEP = 720; // twips per list / quote level
 const CELL_PADDING = 230; // twips taken by the default left+right cell margins (+ borders)
+const EMU_PER_PX = 9525;
+const TWIPS_PER_PX = 15;
 const MAX_LEVEL = 8;
 
 // ── inline formatting ────────────────────────────────────────────────────────
@@ -196,6 +215,16 @@ interface BlockCtx {
   /** Available text width in twips. */
   width: number;
   inCell: boolean;
+  /** In a header / footer: floating images are positioned from the page corner. */
+  pageAnchored?: boolean;
+}
+
+interface ShapeArt {
+  payload: DrawingMlPayload;
+  /** Display size in EMUs (may differ from the original payload after resize). */
+  cx: number;
+  cy: number;
+  behind: boolean;
 }
 
 interface State {
@@ -206,6 +235,8 @@ interface State {
   /** Text-area height in twips (images are scaled to fit). */
   textHeight: number;
   imageCount: number;
+  /** DrawingML payloads to reinject after packing (indexed by ShapeArt:N). */
+  shapeArts: ShapeArt[];
 }
 
 // ── inline content ───────────────────────────────────────────────────────────
@@ -287,42 +318,88 @@ class InlineBuilder {
   }
 
   private image(el: Element, fmt: RunFmt): void {
-    const data = parseDataUrl(el.getAttribute('src') ?? '');
-    if (!data || !data.bytes.length) return;
-    const type = sniffImageType(data.bytes);
-    if (!type) return;
-    let intrinsic: { width: number; height: number } | null = null;
-    try {
-      intrinsic = imageSize(data.bytes);
-    } catch {
-      intrinsic = null;
-    }
-    if (intrinsic && !(intrinsic.width > 0 && intrinsic.height > 0)) intrinsic = null;
     const style = parseStyle(el);
+    const floatX = parseFloat(el.getAttribute('data-float-x') ?? '');
+    const floatY = parseFloat(el.getAttribute('data-float-y') ?? '');
+    const floating = Number.isFinite(floatX) && Number.isFinite(floatY);
     let w = pxLength(el.getAttribute('width')) ?? pxLength(style['width']);
     let h = pxLength(el.getAttribute('height')) ?? pxLength(style['height']);
+    const drawingml = el.getAttribute('data-drawingml');
+    const payload = drawingml ? unpackDrawingMl(drawingml) : null;
+
+    const data = parseDataUrl(el.getAttribute('src') ?? '');
+    let type = data ? sniffImageType(data.bytes) : null;
+    let bytes = data?.bytes;
+    let intrinsic: { width: number; height: number } | null = null;
+    if (bytes && type) {
+      try {
+        intrinsic = imageSize(bytes);
+      } catch {
+        intrinsic = null;
+      }
+      if (intrinsic && !(intrinsic.width > 0 && intrinsic.height > 0)) intrinsic = null;
+    }
+
+    // SVG (or DrawingML art): use a PNG placeholder; reinject native shapes after packing
+    if (payload || (data?.mime.includes('svg') && floating)) {
+      type = 'png';
+      bytes = PLACEHOLDER_PNG;
+      if (!w) w = payload ? payload.cx / EMU_PER_PX : 100;
+      if (!h) h = payload ? payload.cy / EMU_PER_PX : 100;
+    }
+
+    if (!type || !bytes?.length) return;
     if (w && !h) h = intrinsic ? (w * intrinsic.height) / intrinsic.width : null;
     else if (h && !w) w = intrinsic ? (h * intrinsic.width) / intrinsic.height : null;
     else if (!w && !h && intrinsic) {
       w = intrinsic.width;
       h = intrinsic.height;
     }
-    if (!w || !h) return; // size unknown → cannot be placed
-    // 1 px = 15 twips. Scale down (never up) to fit the available text area.
+    if (!w || !h) return;
     const maxW = Math.max(16, this.bc.width / 15);
     const maxH = Math.max(16, this.st.textHeight / 15);
-    const scale = Math.min(1, maxW / w, maxH / h);
+    const scale = floating ? 1 : Math.min(1, maxW / w, maxH / h);
     const width = Math.max(1, Math.round(w * scale));
     const height = Math.max(1, Math.round(h * scale));
     const alt = el.getAttribute('alt') ?? '';
     const n = ++this.st.imageCount;
+    const ink = el.getAttribute('data-ink') === 'true';
+    const behind = el.getAttribute('data-behind') === 'true';
+    let name = `${ink ? 'Ink' : 'Picture'} ${n}`;
+    if (payload) {
+      name = `ShapeArt:${this.st.shapeArts.length}`;
+      this.st.shapeArts.push({
+        payload,
+        cx: Math.round(width * EMU_PER_PX),
+        cy: Math.round(height * EMU_PER_PX),
+        behind,
+      });
+    }
     try {
       this.target.push(
         new ImageRun({
           type,
-          data: data.bytes,
+          data: bytes,
           transformation: { width, height },
-          altText: { name: `Picture ${n}`, description: alt, title: el.getAttribute('title') ?? '' },
+          altText: { name, description: alt, title: el.getAttribute('title') ?? '' },
+          ...(floating
+            ? {
+                floating: {
+                  horizontalPosition: {
+                    relative: this.bc.pageAnchored ? HorizontalPositionRelativeFrom.PAGE : HorizontalPositionRelativeFrom.COLUMN,
+                    offset: Math.round(floatX * EMU_PER_PX),
+                  },
+                  verticalPosition: {
+                    relative: this.bc.pageAnchored ? VerticalPositionRelativeFrom.PAGE : VerticalPositionRelativeFrom.PARAGRAPH,
+                    offset: Math.round(floatY * EMU_PER_PX),
+                  },
+                  wrap: { type: TextWrappingType.NONE },
+                  allowOverlap: true,
+                  layoutInCell: true,
+                  behindDocument: behind,
+                },
+              }
+            : {}),
         }),
       );
       this.trailingSpace = false;
@@ -403,7 +480,36 @@ function paraOptions(bc: BlockCtx, st: State, el: Element | null, kind: 'text' |
   } else if (bc.quoteDepth > 0) {
     left += INDENT_STEP * bc.quoteDepth;
   }
-  if (left > 0 && !numbered) o.indent = { left };
+  // paragraph spacing, line height, indents and shading (see the HTML contract)
+  const style = el ? parseStyle(el) : {};
+  const spacing: Mutable<NonNullable<IParagraphOptions['spacing']>> = {};
+  const lh = style['line-height'];
+  if (lh) {
+    if (/^\d+(\.\d+)?$/.test(lh)) {
+      spacing.line = Math.max(24, Math.round((parseFloat(lh) / CSS_LINE_PER_WORD_LINE) * 240));
+      spacing.lineRule = LineRuleType.AUTO;
+    } else {
+      const ptVal = cssLengthToPt(lh);
+      if (ptVal && ptVal > 0) {
+        spacing.line = Math.round(ptVal * 20);
+        spacing.lineRule = LineRuleType.AT_LEAST;
+      }
+    }
+  }
+  const before = cssLengthToPt(style['margin-top']);
+  const after = cssLengthToPt(style['margin-bottom']);
+  if (before !== null && before >= 0) spacing.before = Math.round(before * 20);
+  if (after !== null && after >= 0) spacing.after = Math.round(after * 20);
+  if (Object.keys(spacing).length && kind !== 'code') o.spacing = spacing;
+  const marginLeft = cssLengthToPt(style['margin-left']);
+  if (marginLeft && marginLeft > 0 && !numbered) left += Math.round(marginLeft * 20);
+  const textIndent = cssLengthToPt(style['text-indent']);
+  const first = textIndent ? Math.round(textIndent * 20) : 0;
+  if ((left > 0 || first) && !numbered) {
+    o.indent = { ...(left > 0 ? { left } : {}), ...(first > 0 ? { firstLine: first } : first < 0 ? { hanging: -first } : {}) };
+  }
+  const shade = kind !== 'code' ? cssColorToHex(style['background-color']) : null;
+  if (shade) o.shading = { type: ShadingType.CLEAR, color: 'auto', fill: shade.toUpperCase() };
   if (st.pendingPageBreak && !bc.inCell) {
     o.pageBreakBefore = true;
     st.pendingPageBreak = false;
@@ -712,8 +818,24 @@ function convertTable(table: Element, bc: BlockCtx, st: State): Table | null {
   const numCols = Math.max(...grid.map((row) => row.length));
   if (!numCols) return null;
 
-  const total = Math.max(numCols * 200, bc.width);
-  const colWidth = Math.floor(total / numCols);
+  // column widths: from the cells' colwidth (px per spanned column), the rest share what is left
+  const colPx: (number | undefined)[] = [];
+  for (const row of grid) {
+    for (const gc of row) {
+      if (!gc) continue;
+      const widths = (gc.el.getAttribute('colwidth') ?? '').split(',').map((v) => parseFloat(v));
+      if (widths.length !== gc.colspan || !widths.every((v) => v > 0)) continue;
+      widths.forEach((v, i) => (colPx[gc.col + i] ??= v));
+    }
+  }
+  const known = colPx.reduce<number>((n, v) => n + (v ? v * TWIPS_PER_PX : 0), 0);
+  const missing = Array.from({ length: numCols }, (_, i) => i).filter((i) => !colPx[i]).length;
+  const share = missing ? Math.max(200, Math.floor((bc.width - known) / missing)) : 0;
+  let columns = Array.from({ length: numCols }, (_, i) => (colPx[i] ? Math.round(colPx[i]! * TWIPS_PER_PX) : share));
+  const sum = columns.reduce((a, b) => a + b, 0);
+  if (sum > bc.width * 1.02) columns = columns.map((w) => Math.max(20, Math.floor((w * bc.width) / sum))); // keep it on the page
+  const fixed = missing === 0;
+  const spanWidth = (col: number, span: number) => columns.slice(col, col + span).reduce((a, b) => a + b, 0);
   let headerRun = true;
   const rows = trs.map((_, r) => {
     const cells: TableCell[] = [];
@@ -722,23 +844,35 @@ function convertTable(table: Element, bc: BlockCtx, st: State): Table | null {
     for (let c = 0; c < numCols; ) {
       const gc = grid[r][c];
       if (!gc) {
-        cells.push(new TableCell({ children: [new Paragraph({})], width: { size: colWidth, type: WidthType.DXA } }));
+        cells.push(new TableCell({ children: [new Paragraph({})], width: { size: columns[c], type: WidthType.DXA } }));
         allHeader = false;
         c++;
         continue;
       }
-      const width = colWidth * gc.colspan;
+      const width = spanWidth(c, gc.colspan);
       const opts: Mutable<ITableCellOptions> = {
         children: [],
         width: { size: width, type: WidthType.DXA },
       };
+      const cellStyle = parseStyle(gc.el);
+      const borders = cellBorders(gc.el);
+      if (borders) opts.borders = borders;
+      // cell margins (padding) in twips
+      const pst = (gc.el as HTMLElement).style;
+      if (pst?.paddingTop || pst?.paddingLeft) {
+        const tw = (v: string) => Math.max(0, Math.round((cssLengthToPt(v || '0') ?? 0) * 20));
+        opts.margins = { top: tw(pst.paddingTop), right: tw(pst.paddingRight), bottom: tw(pst.paddingBottom), left: tw(pst.paddingLeft) };
+      }
+      const va = cellStyle['vertical-align'];
+      if (va === 'middle') opts.verticalAlign = VerticalAlignTable.CENTER;
+      else if (va === 'bottom') opts.verticalAlign = VerticalAlignTable.BOTTOM;
       if (gc.colspan > 1) opts.columnSpan = gc.colspan;
       if (gc.row === r) {
         const isHeader = gc.el.tagName.toLowerCase() === 'th';
         if (!isHeader) allHeader = false;
         real++;
         if (gc.rowspan > 1) opts.verticalMerge = VerticalMergeType.RESTART;
-        const bg = cssColorToHex(parseStyle(gc.el)['background-color']);
+        const bg = cssColorToHex(parseStyle(gc.el)['background-color'] ?? (gc.el as HTMLElement).style?.backgroundColor);
         if (bg) opts.shading = { type: ShadingType.CLEAR, color: 'auto', fill: bg.toUpperCase() };
         const content: Block[] = [];
         const cellCtx: BlockCtx = {
@@ -760,14 +894,43 @@ function convertTable(table: Element, bc: BlockCtx, st: State): Table | null {
       c += gc.colspan;
     }
     headerRun = headerRun && allHeader && real > 0;
-    return new TableRow({ children: cells, ...(headerRun ? { tableHeader: true } : {}) });
+    const rowHeight = pxLength(parseStyle(trs[r])['height']);
+    return new TableRow({
+      children: cells,
+      ...(headerRun ? { tableHeader: true } : {}),
+      ...(rowHeight ? { height: { value: Math.round(rowHeight * TWIPS_PER_PX), rule: HeightRule.ATLEAST } } : {}),
+    });
   });
 
   return new Table({
     rows,
-    width: { size: colWidth * numCols, type: WidthType.DXA },
-    columnWidths: Array.from({ length: numCols }, () => colWidth),
+    width: { size: columns.reduce((a, b) => a + b, 0), type: WidthType.DXA },
+    columnWidths: columns,
+    ...(fixed ? { layout: TableLayoutType.FIXED } : {}),
   });
+}
+
+type CellBorder = { style: (typeof BorderStyle)[keyof typeof BorderStyle]; size: number; color: string };
+
+/** A cell's CSS borders as Word cell borders; null when the cell sets none. */
+function cellBorders(el: Element): { top?: CellBorder; right?: CellBorder; bottom?: CellBorder; left?: CellBorder } | null {
+  const out: { top?: CellBorder; right?: CellBorder; bottom?: CellBorder; left?: CellBorder } = {};
+  let any = false;
+  for (const side of ['top', 'right', 'bottom', 'left'] as const) {
+    const b = cssBorderSide(el, side);
+    if (!b) continue;
+    any = true;
+    if (b.style === 'none') {
+      out[side] = { style: BorderStyle.NONE, size: 0, color: 'auto' };
+      continue;
+    }
+    const kind = b.style;
+    const wordStyle = kind === 'dashed' ? BorderStyle.DASHED : kind === 'dotted' ? BorderStyle.DOTTED : kind === 'double' ? BorderStyle.DOUBLE : BorderStyle.SINGLE;
+    // Word sizes borders in eighths of a point (a double border's size is one of its lines)
+    const eighths = Math.max(2, Math.min(96, Math.round(b.widthPx * 0.75 * 8 * (kind === 'double' ? 1 / 3 : 1))));
+    out[side] = { style: wordStyle, size: eighths, color: b.color.toUpperCase() };
+  }
+  return any ? out : null;
 }
 
 /**
@@ -800,6 +963,10 @@ function normalisePageSetup(setup: PageSetup | undefined): PageSetup {
       bottom: num(m.bottom, 72),
       left: num(m.left, 72),
     },
+    headerDistance: num(s.headerDistance, DEFAULT_HF_DISTANCE),
+    footerDistance: num(s.footerDistance, DEFAULT_HF_DISTANCE),
+    differentFirstPage: s.differentFirstPage || undefined,
+    differentOddEven: s.differentOddEven || undefined,
   };
 }
 
@@ -832,6 +999,7 @@ export const exportDocx: Exporter = async (doc) => {
     pendingPageBreak: false,
     textHeight: Math.max(1440, pageH - margin.top - margin.bottom),
     imageCount: 0,
+    shapeArts: [],
   };
   const root: BlockCtx = {
     quoteDepth: 0,
@@ -846,10 +1014,27 @@ export const exportDocx: Exporter = async (doc) => {
   flushPageBreak(st, blocks);
   const children = blocks.length ? finishBlocksTopLevel(blocks) : [new Paragraph({})];
 
+  // header / footer: same conversion; their floating images are placed from the page corner
+  const part = (html: string | undefined): Block[] | null => {
+    if (!html || !html.trim()) return null;
+    const out: Block[] = [];
+    convertChildren(parseHtml(html), { ...root, pageAnchored: true, inCell: true }, st, out);
+    return finishBlocks(out);
+  };
+  const headerDefault = part(doc.header);
+  const footerDefault = part(doc.footer);
+  const headerFirst = part(doc.headerFirst);
+  const footerFirst = part(doc.footerFirst);
+  const headerEven = part(doc.headerEven);
+  const footerEven = part(doc.footerEven);
+  const titlePage = !!(setup.differentFirstPage || headerFirst || footerFirst);
+  const evenOdd = !!(setup.differentOddEven || headerEven || footerEven);
+
   const file = new Document({
     title: doc.title || undefined,
     creator: 'File Editor',
     lastModifiedBy: 'File Editor',
+    evenAndOddHeaderAndFooters: evenOdd || undefined,
     styles: {
       default: {
         document: {
@@ -903,6 +1088,7 @@ export const exportDocx: Exporter = async (doc) => {
     sections: [
       {
         properties: {
+          titlePage: titlePage || undefined,
           page: {
             size: {
               // docx swaps width/height itself for landscape, so always pass portrait values
@@ -910,16 +1096,172 @@ export const exportDocx: Exporter = async (doc) => {
               height: twips(portrait.height),
               orientation: landscape ? PageOrientation.LANDSCAPE : PageOrientation.PORTRAIT,
             },
-            margin: { ...margin, header: 708, footer: 708, gutter: 0 },
+            margin: {
+              ...margin,
+              header: twips(setup.headerDistance ?? DEFAULT_HF_DISTANCE),
+              footer: twips(setup.footerDistance ?? DEFAULT_HF_DISTANCE),
+              gutter: 0,
+            },
           },
         },
+        ...((headerDefault || headerFirst || headerEven)
+          ? {
+              headers: {
+                ...(headerDefault ? { default: new Header({ children: headerDefault }) } : {}),
+                ...(headerFirst ? { first: new Header({ children: headerFirst }) } : {}),
+                ...(headerEven ? { even: new Header({ children: headerEven }) } : {}),
+              },
+            }
+          : {}),
+        ...((footerDefault || footerFirst || footerEven)
+          ? {
+              footers: {
+                ...(footerDefault ? { default: new Footer({ children: footerDefault }) } : {}),
+                ...(footerFirst ? { first: new Footer({ children: footerFirst }) } : {}),
+                ...(footerEven ? { even: new Footer({ children: footerEven }) } : {}),
+              },
+            }
+          : {}),
         children,
       },
     ],
   });
 
-  return new Uint8Array(await Packer.toArrayBuffer(file));
+  const packed = new Uint8Array(await Packer.toArrayBuffer(file));
+  return st.shapeArts.length ? reinjectDrawingMl(packed, st.shapeArts) : packed;
 };
+
+const REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships';
+const IMG_REL = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image';
+
+function mimeExt(mime: string): { ext: string; contentType: string } {
+  if (/jpeg|jpg/i.test(mime)) return { ext: 'jpeg', contentType: 'image/jpeg' };
+  if (/gif/i.test(mime)) return { ext: 'gif', contentType: 'image/gif' };
+  if (/bmp/i.test(mime)) return { ext: 'bmp', contentType: 'image/bmp' };
+  if (/webp/i.test(mime)) return { ext: 'webp', contentType: 'image/webp' };
+  return { ext: 'png', contentType: 'image/png' };
+}
+
+/**
+ * Replaces placeholder pictures marked ShapeArt:N with the original DrawingML graphicData,
+ * remapping blip relationships and scaling extents to the (possibly resized) frame.
+ */
+async function reinjectDrawingMl(bytes: Uint8Array, arts: ShapeArt[]): Promise<Uint8Array> {
+  const zip = await JSZip.loadAsync(bytes);
+  const xmlFiles = Object.keys(zip.files).filter((p) => /word\/(document|header\d+|footer\d+)\.xml$/i.test(p));
+  for (const path of xmlFiles) {
+    const file = zip.file(path);
+    if (!file) continue;
+    let xml = await file.async('string');
+    let changed = false;
+    const slash = path.lastIndexOf('/');
+    const dir = slash >= 0 ? path.slice(0, slash) : '';
+    const base = path.slice(slash + 1);
+    const relsPath = `${dir}/_rels/${base}.rels`;
+    let relsXml = (await zip.file(relsPath)?.async('string')) ?? `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="${REL_NS}"></Relationships>`;
+    let nextRid = 1;
+    const used = new Set<string>();
+    for (const m of relsXml.matchAll(/\bId="(rId\d+)"/g)) used.add(m[1]);
+    const allocRid = (): string => {
+      while (used.has(`rId${nextRid}`)) nextRid++;
+      const id = `rId${nextRid++}`;
+      used.add(id);
+      return id;
+    };
+
+    xml = xml.replace(/<w:drawing\b[\s\S]*?<\/w:drawing>/g, (drawing) => {
+      const name = /<wp:docPr\b[^>]*\bname="ShapeArt:(\d+)"/.exec(drawing);
+      if (!name) return drawing;
+      const art = arts[Number(name[1])];
+      if (!art) return drawing;
+      try {
+        let inner = art.payload.graphicData;
+        // Remap each original rId to a new relationship and write the media bytes
+        const ridMap = new Map<string, string>();
+        for (const [oldId, dataUrl] of Object.entries(art.payload.media)) {
+          const parsed = parseDataUrl(dataUrl);
+          if (!parsed) continue;
+          const { ext, contentType } = mimeExt(parsed.mime);
+          const newId = allocRid();
+          ridMap.set(oldId, newId);
+          const mediaName = `shapeArt_${name[1]}_${oldId}.${ext}`;
+          const mediaPath = `${dir}/media/${mediaName}`;
+          zip.file(mediaPath, parsed.bytes);
+          void contentType;
+          const target = `media/${mediaName}`;
+          if (!relsXml.includes(`Id="${newId}"`)) {
+            relsXml = relsXml.replace(
+              '</Relationships>',
+              `<Relationship Id="${newId}" Type="${IMG_REL}" Target="${target}"/></Relationships>`,
+            );
+          }
+        }
+        for (const [oldId, newId] of ridMap) {
+          inner = inner.replace(new RegExp(`(r:(?:embed|link)=")(${oldId})(")`, 'g'), `$1${newId}$3`);
+        }
+        // Scale child transforms when the frame was resized in the editor
+        const sx = art.payload.cx > 0 ? art.cx / art.payload.cx : 1;
+        const sy = art.payload.cy > 0 ? art.cy / art.payload.cy : 1;
+        if (Math.abs(sx - 1) > 0.001 || Math.abs(sy - 1) > 0.001) {
+          inner = inner.replace(/\b(cx|cy)="(-?\d+)"/g, (m, attr: string, val: string) => {
+            const n = parseInt(val, 10);
+            if (!Number.isFinite(n)) return m;
+            const k = attr === 'cy' ? sy : sx;
+            return `${attr}="${Math.round(n * k)}"`;
+          });
+        }
+        const uri = art.payload.uri || 'http://schemas.microsoft.com/office/word/2010/wordprocessingShape';
+        const graphicData = `<a:graphicData uri="${uri}">${inner}</a:graphicData>`;
+        // Swap graphicData inside the drawing; update extent
+        let next = drawing.replace(/<a:graphicData\b[\s\S]*?<\/a:graphicData>/, graphicData);
+        next = next.replace(/<wp:extent\b[^>]*\/?>/, `<wp:extent cx="${art.cx}" cy="${art.cy}"/>`);
+        next = next.replace(/<wp:docPr\b([^>]*)\bname="ShapeArt:\d+"/, `<wp:docPr$1name="Group ${name[1]}"`);
+        changed = true;
+        return next;
+      } catch {
+        return drawing;
+      }
+    });
+
+    if (changed) {
+      // Ensure WordprocessingShape / Group namespaces exist on the part root
+      if (xml.includes('wps:') && !/xmlns:wps=/.test(xml)) {
+        xml = xml.replace(
+          /<(w:hdr|w:ftr|w:document)\b/,
+          '<$1 xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape"',
+        );
+      }
+      if (xml.includes('wpg:') && !/xmlns:wpg=/.test(xml)) {
+        xml = xml.replace(
+          /<(w:hdr|w:ftr|w:document)\b/,
+          '<$1 xmlns:wpg="http://schemas.microsoft.com/office/word/2010/wordprocessingGroup"',
+        );
+      }
+      zip.file(path, xml);
+      zip.file(relsPath, relsXml);
+    }
+  }
+
+  // Register media content types for any shapeArt_* files
+  const ctFile = zip.file('[Content_Types].xml');
+  if (ctFile) {
+    let ct = await ctFile.async('string');
+    const ensure = (ext: string, type: string) => {
+      if (!ct.includes(`Extension="${ext}"`)) {
+        ct = ct.replace('</Types>', `<Default Extension="${ext}" ContentType="${type}"/></Types>`);
+      }
+    };
+    ensure('png', 'image/png');
+    ensure('jpeg', 'image/jpeg');
+    ensure('jpg', 'image/jpeg');
+    ensure('gif', 'image/gif');
+    ensure('bmp', 'image/bmp');
+    ensure('webp', 'image/webp');
+    zip.file('[Content_Types].xml', ct);
+  }
+
+  return zip.generateAsync({ type: 'uint8array' });
+}
 
 /** Like finishBlocks, but the body may end with a table. */
 function finishBlocksTopLevel(blocks: Block[]): Block[] {

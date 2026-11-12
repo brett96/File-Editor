@@ -20,18 +20,58 @@ const DROP_WITH_CONTENT = new Set([
 
 const ALLOWED_ATTRS: Record<string, string[]> = {
   a: ['href'],
-  img: ['src', 'alt', 'width', 'height'],
-  td: ['colspan', 'rowspan'],
-  th: ['colspan', 'rowspan'],
+  img: ['src', 'alt', 'width', 'height', 'data-float-x', 'data-float-y', 'data-ink', 'data-behind', 'data-drawingml'],
+  td: ['colspan', 'rowspan', 'colwidth'],
+  th: ['colspan', 'rowspan', 'colwidth'],
   div: ['data-page-break'],
   mark: ['data-color'],
   ol: ['start'],
 };
 
-const ALLOWED_STYLE_PROPS = new Set(['color', 'background-color', 'font-family', 'font-size', 'text-align']);
+const ALLOWED_STYLE_PROPS = new Set([
+  'color', 'background-color', 'font-family', 'font-size', 'text-align',
+  // paragraphs
+  'line-height', 'margin-top', 'margin-bottom', 'margin-left', 'text-indent',
+  // table cells / rows
+  'border-top', 'border-right', 'border-bottom', 'border-left', 'vertical-align', 'height', 'padding',
+]);
+
+const BLOCKS = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
+const CELLS = new Set(['td', 'th']);
+const LENGTH = /^-?\d+(\.\d+)?(pt|px|em|in|cm|mm)?$/i;
+const BORDER = /^(none|\d+(\.\d+)?(px|pt) (solid|dashed|dotted|double) (#[0-9a-f]{3,8}|rgba?\([\d\s.,%]+\)|[a-z]+))$/i;
+
+/** Where each style property may appear, and what its value must look like. */
+function styleAllowed(prop: string, value: string, tag: string): boolean {
+  switch (prop) {
+    case 'text-align':
+      return /^(left|right|center|justify)$/i.test(value);
+    case 'background-color':
+      return tag === 'mark' || tag === 'span' || BLOCKS.has(tag) || CELLS.has(tag);
+    case 'line-height':
+    case 'margin-top':
+    case 'margin-bottom':
+    case 'margin-left':
+    case 'text-indent':
+      return BLOCKS.has(tag) && LENGTH.test(value);
+    case 'border-top':
+    case 'border-right':
+    case 'border-bottom':
+    case 'border-left':
+      return CELLS.has(tag) && BORDER.test(value);
+    case 'vertical-align':
+      return CELLS.has(tag) && /^(top|middle|bottom)$/i.test(value);
+    case 'height':
+      return tag === 'tr' && LENGTH.test(value);
+    case 'padding':
+      return CELLS.has(tag) && value.split(/\s+/).length <= 4 && value.split(/\s+/).every((v) => LENGTH.test(v));
+    default:
+      return true;
+  }
+}
 
 const SAFE_HREF = /^(https?:|mailto:|tel:|#)/i;
-const SAFE_IMG = /^data:image\/(png|jpe?g|gif|bmp|webp);base64,/i;
+const SAFE_IMG = /^data:image\/(png|jpe?g|gif|bmp|webp|svg\+xml);base64,/i;
 
 function cleanStyle(raw: string | null, tag: string): string {
   if (!raw) return '';
@@ -43,8 +83,7 @@ function cleanStyle(raw: string | null, tag: string): string {
     const value = part.slice(i + 1).trim();
     if (!ALLOWED_STYLE_PROPS.has(prop) || !value) continue;
     if (/url\s*\(|expression\s*\(|[<>\\]/i.test(value)) continue;
-    if (prop === 'text-align' && !/^(left|right|center|justify)$/i.test(value)) continue;
-    if (prop === 'background-color' && tag !== 'mark' && tag !== 'span') continue;
+    if (!styleAllowed(prop, value, tag)) continue;
     out.push(`${prop}: ${value}`);
   }
   return out.join('; ');
@@ -93,7 +132,18 @@ function sanitizeNode(node: Node, doc: Document): void {
       if (!SAFE_HREF.test(href)) {
         el.removeAttribute('href');
       }
+    } else if (tag === 'td' || tag === 'th') {
+      const w = el.getAttribute('colwidth');
+      if (w !== null && !/^\d+(,\d+)*$/.test(w)) el.removeAttribute('colwidth');
     } else if (tag === 'img') {
+      for (const a of ['data-float-x', 'data-float-y']) {
+        const v = el.getAttribute(a);
+        if (v !== null && !/^-?\d+(\.\d+)?$/.test(v)) el.removeAttribute(a);
+      }
+      if (el.hasAttribute('data-float-x') !== el.hasAttribute('data-float-y')) {
+        el.removeAttribute('data-float-x');
+        el.removeAttribute('data-float-y');
+      }
       const src = (el.getAttribute('src') ?? '').trim();
       if (!SAFE_IMG.test(src)) {
         // Remote / unsupported images are dropped: documents stay self-contained and nothing is fetched.

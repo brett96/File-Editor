@@ -415,11 +415,13 @@ describe('docx import of hand-written OOXML', () => {
 
     const h1s = b.querySelectorAll('h1');
     expect(Array.from(h1s).map((h) => h.textContent)).toEqual(['Doc Title', 'Dutch heading']);
-    expect(b.querySelector('h1 span')).toBeNull(); // size from heading style is not repeated
+    // heading sizes that differ from the editor's own heading look are kept
+    expect((h1s[0].querySelector('span') as HTMLElement).style.fontSize).toBe('28pt');
+    expect((h1s[1].querySelector('span') as HTMLElement).style.fontSize).toBe('16pt');
     expect(b.querySelector('h3')!.textContent).toBe('Outline heading');
 
     // jc=both, complex HYPERLINK field, rel link, anchor link
-    const links = b.querySelector('p[style="text-align:justify"]')!;
+    const links = b.querySelector('p[style^="text-align:justify"]')!;
     expect(links).not.toBeNull();
     const anchors = Array.from(links.querySelectorAll('a'));
     expect(anchors.map((a) => a.getAttribute('href'))).toEqual([
@@ -427,7 +429,7 @@ describe('docx import of hand-written OOXML', () => {
       'https://rel.example/a',
       '#sec2',
     ]);
-    expect(anchors[0].innerHTML).toBe('<strong>field link</strong>');
+    expect(anchors[0].querySelector('strong')!.textContent).toBe('field link');
     expect(links.textContent).toBe('See field link and rel link and anchor.');
     expect(links.textContent).not.toContain('HYPERLINK');
 
@@ -440,7 +442,12 @@ describe('docx import of hand-written OOXML', () => {
     expect(marks[0].getAttribute('data-color')).toBe('#ffff00');
     expect(marks[1].textContent).toBe('sh');
     expect(marks[1].getAttribute('data-color')).toBe('#00ff00');
-    expect(rev.querySelector('span')).toBeNull(); // default font/size/auto colour → no spans
+    // the document's own default font/size (Cambria 12pt) differs from the editor's, so it is kept;
+    // automatic colour never produces a colour
+    const span = rev.querySelector('span') as HTMLElement;
+    expect(span.style.fontFamily).toBe('Cambria');
+    expect(span.style.fontSize).toBe('12pt');
+    expect(rev.querySelector('span[style*="color"]')).toBeNull();
     expect(rev.querySelector('em')!.textContent).toBe(' styled');
     expect(rev.textContent).toContain('    a<b&c•‑x');
     expect(rev.innerHTML).toContain('a&lt;b&amp;c');
@@ -487,7 +494,7 @@ describe('docx import of hand-written OOXML', () => {
 
     // text box content follows as its own paragraph; unknown elements skipped
     expect(Array.from(b.querySelectorAll('p')).some((p) => p.textContent === 'In a text box')).toBe(true);
-    expect(blocks[blocks.length - 1].outerHTML).toBe('<p>Last</p>');
+    expect(blocks[blocks.length - 1].textContent).toBe('Last');
   });
 
   it('throws a clear error without word/document.xml', async () => {
@@ -501,7 +508,8 @@ describe('docx import of hand-written OOXML', () => {
       'word/document.xml': `<w:document ${W_NS}><w:body><w:p><w:r><w:t>Only text</w:t></w:r></w:p></w:body></w:document>`,
     });
     const out = await importDocx(bytes);
-    expect(out.html).toBe('<p>Only text</p>');
+    // no styles part: Word's own defaults apply (Times New Roman 10pt, single spacing, no gap)
+    expect(out.html).toBe('<p style="margin-bottom:0pt; line-height:1.22"><span style="font-family:Times New Roman; font-size:10pt">Only text</span></p>');
     expect(out.pageSetup!.size).toBe('letter');
     expect(out.title).toBeUndefined();
   });

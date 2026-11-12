@@ -45,6 +45,7 @@ import { newId } from '../../core/pdf/types';
 import { getHost } from '../../platform/host';
 import { ColorPicker, Divider, IconButton, Select, cx } from '../components';
 import { IMAGE_EXTENSIONS, loadImageFile } from '../image-utils';
+import { usePinchZoom } from '../usePinchZoom';
 import { ALL_HANDLES, CORNER_HANDLES, HANDLE_CURSOR, HANDLE_POS, mapPoint, resizeBox, type Box, type Handle } from '../resize';
 
 export interface ImageEditorHandle {
@@ -336,8 +337,12 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
   const [busy, setBusy] = useState(false);
   const [draftRect, setDraftRect] = useState<Rect | null>(null);
   const gesture = useRef<Gesture | null>(null);
-  const stageRef = useRef<HTMLDivElement>(null);
-  const viewRef = useRef<HTMLDivElement>(null);
+  /** Last press on an object, for double-click / double-tap detection (see startObj). */
+  const lastPress = useRef<{ id: string; t: number } | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const viewRef = useRef<HTMLDivElement | null>(null);
+  const [viewEl, setViewEl] = useState<HTMLDivElement | null>(null);
+  const [stageEl, setStageEl] = useState<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pixelsRef = useRef(pixels);
   pixelsRef.current = pixels;
@@ -347,6 +352,8 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
   const W = pixels.width;
   const H = pixels.height;
   const scale = zoomMode === 'fit' ? fitScale : zoomMode;
+  // pinch / Ctrl+wheel zoom of the picture only (never the toolbars)
+  usePinchZoom(viewEl, stageEl, scale, (z) => setZoomMode(z), { min: 0.05, max: 8 });
 
   useImperativeHandle(ref, () => ({ getPixels: () => bake(pixelsRef.current, objectsRef.current) }), []);
 
@@ -681,7 +688,15 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
       onChange();
       return;
     }
-    if (g.kind === 'move' || g.kind === 'resize') onChange();
+    if (g.kind === 'move' || g.kind === 'resize') {
+      if (objectsRef.current.find((x) => x.id === g.id) === g.orig) {
+        // a click that didn't move anything: drop the undo step it reserved
+        past.current.pop();
+        bump((n) => n + 1);
+        return;
+      }
+      onChange();
+    }
   };
 
   const startObj = (e: RPointerEvent, o: ImgObject, kind: 'move' | 'resize', handle: Handle = 'se') => {
@@ -690,6 +705,16 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
     e.preventDefault();
     setSelected(o.id);
     if (editing === o.id) return;
+    // Double-click / double-tap a caption to edit it again. Detected here because the pointer
+    // capture below retargets the browser's own dblclick to the stage.
+    const now = performance.now();
+    const again = kind === 'move' && lastPress.current?.id === o.id && now - lastPress.current.t < 450;
+    lastPress.current = kind === 'move' ? { id: o.id, t: now } : null;
+    if (o.type === 'text' && again) {
+      lastPress.current = null;
+      setEditing(o.id);
+      return;
+    }
     setEditing(null);
     stageRef.current?.setPointerCapture(e.pointerId);
     snapshot();
@@ -826,10 +851,19 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
       </div>
 
       <div className="image-body">
-        <div className={cx('workspace image-view', `tool-${tool}`)} ref={viewRef}>
+        <div
+          className={cx('workspace image-view zoom-scroll', `tool-${tool}`)}
+          ref={(el) => {
+            viewRef.current = el;
+            setViewEl(el);
+          }}
+        >
           <div
             className="img-stage"
-            ref={stageRef}
+            ref={(el) => {
+              stageRef.current = el;
+              setStageEl(el);
+            }}
             style={{ width: W * s, height: H * s }}
             onPointerDown={onStageDown}
             onPointerMove={onStageMove}
@@ -843,7 +877,7 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
               </defs>
               {objects.map((o) => {
                 if (o.id === editing) return null;
-                const common = { onPointerDown: (e: RPointerEvent) => startObj(e, o, 'move'), className: 'img-obj' };
+                const common = { onPointerDown: (e: RPointerEvent) => startObj(e, o, 'move'), className: o.id === selected ? 'img-obj is-selected' : 'img-obj' };
                 switch (o.type) {
                   case 'text':
                     return (

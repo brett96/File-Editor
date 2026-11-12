@@ -8,7 +8,8 @@
  */
 import JSZip from 'jszip';
 import { cssLengthToPt, decodeText, escapeHtml, parseXml, toDataUrl } from '../dom';
-import { DEFAULT_PAGE_SETUP, PAGE_SIZES, type Importer, type PageSetup, type PageSize, type RichDocument } from '../types';
+import { packDrawingMl, readThemeColors, renderGraphic, renderGraphicSvg, type RenderEnv, type ThemeColors } from './drawingml-render';
+import { CSS_LINE_PER_WORD_LINE, DEFAULT_HF_DISTANCE, DEFAULT_PAGE_SETUP, PAGE_SIZES, type Importer, type PageSetup, type PageSize, type RichDocument } from '../types';
 
 // ── XML helpers ──────────────────────────────────────────────────────────────
 
@@ -143,8 +144,18 @@ interface ParaProps {
   ilvl?: number;
   outlineLvl?: number;
   indLeft?: number;
+  /** First-line indent in twips; negative = hanging. */
+  indFirst?: number;
   pageBreakBefore?: boolean;
   border?: boolean;
+  /** Space before / after in twips. */
+  before?: number;
+  after?: number;
+  /** Line spacing: 240ths of a line ("auto") or twips ("exact" / "atLeast"). */
+  line?: number;
+  lineRule?: 'auto' | 'exact' | 'atLeast';
+  /** Paragraph shading "rrggbb"; null = none. */
+  shade?: string | null;
 }
 
 interface ThemeFonts {
@@ -211,12 +222,11 @@ function parseRPr(rPr: Element | null, theme: ThemeFonts): RunProps {
       }
       case 'rFonts': {
         const themed = attr(el, 'asciiTheme') ?? attr(el, 'hAnsiTheme');
+        // eastAsia / cs fonts only apply to those scripts, never to Latin text
         const font =
           attr(el, 'ascii') ??
           attr(el, 'hAnsi') ??
-          (themed ? (/^major/i.test(themed) ? theme.major : theme.minor) : undefined) ??
-          attr(el, 'cs') ??
-          attr(el, 'eastAsia');
+          (themed ? (/^major/i.test(themed) ? theme.major : theme.minor) : undefined);
         if (font) p.font = font;
         break;
       }
@@ -259,6 +269,28 @@ function parsePPr(pPr: Element | null): ParaProps {
       case 'ind': {
         const left = intAttr(el, 'left') ?? intAttr(el, 'start');
         if (left !== null) p.indLeft = left;
+        const hanging = intAttr(el, 'hanging');
+        const first = intAttr(el, 'firstLine');
+        if (hanging !== null) p.indFirst = -hanging;
+        else if (first !== null) p.indFirst = first;
+        break;
+      }
+      case 'spacing': {
+        const before = intAttr(el, 'before');
+        const after = intAttr(el, 'after');
+        const line = intAttr(el, 'line');
+        if (before !== null && attr(el, 'beforeAutospacing') !== '1') p.before = before;
+        if (after !== null && attr(el, 'afterAutospacing') !== '1') p.after = after;
+        if (line !== null && line > 0) {
+          p.line = line;
+          const rule = attr(el, 'lineRule');
+          p.lineRule = rule === 'exact' || rule === 'atLeast' ? rule : 'auto';
+        }
+        break;
+      }
+      case 'shd': {
+        const fill = hexColor(attr(el, 'fill'));
+        p.shade = fill ?? null;
         break;
       }
       case 'pageBreakBefore':
@@ -296,6 +328,8 @@ interface StyleDef {
   basedOn: string | null;
   rPr: RunProps;
   pPr: ParaProps;
+  /** Table styles: the style's own w:tblPr. */
+  tblPr: Element | null;
 }
 
 interface ResolvedStyle {
@@ -318,12 +352,16 @@ class StyleSheet {
   private readonly defs = new Map<string, StyleDef>();
   private readonly cache = new Map<string, ResolvedStyle>();
   defaultParaId: string | null = null;
+  defaultTableId: string | null = null;
   docRPr: RunProps = {};
+  docPPr: ParaProps = {};
 
   constructor(doc: Document | null, theme: ThemeFonts) {
     const root = doc?.documentElement;
     if (!root) return;
-    this.docRPr = parseRPr(kid(kid(kid(root, 'docDefaults'), 'rPrDefault'), 'rPr'), theme);
+    const defaults = kid(root, 'docDefaults');
+    this.docRPr = parseRPr(kid(kid(defaults, 'rPrDefault'), 'rPr'), theme);
+    this.docPPr = parsePPr(kid(kid(defaults, 'pPrDefault'), 'pPr'));
     for (const s of kids(root, 'style')) {
       const id = attr(s, 'styleId');
       if (!id) continue;
@@ -334,10 +372,40 @@ class StyleSheet {
         basedOn: val(s, 'basedOn'),
         rPr: parseRPr(kid(s, 'rPr'), theme),
         pPr: parsePPr(kid(s, 'pPr')),
+        tblPr: type === 'table' ? kid(s, 'tblPr') : null,
       });
       const def = attr(s, 'default');
-      if (type === 'paragraph' && (def === '1' || def === 'true') && !this.defaultParaId) this.defaultParaId = id;
+      const isDefault = def === '1' || def === 'true';
+      if (type === 'paragraph' && isDefault && !this.defaultParaId) this.defaultParaId = id;
+      if (type === 'table' && isDefault && !this.defaultTableId) this.defaultTableId = id;
     }
+  }
+
+  /** Border elements a table style (and the styles it is based on) defines, by side. */
+  tableBorders(id: string | null | undefined): Map<string, Element> {
+    return this.tableSides(id, 'tblBorders');
+  }
+
+  /** Default cell margins (w:tblCellMar) a table style defines, by side. */
+  tableCellMargins(id: string | null | undefined): Map<string, Element> {
+    return this.tableSides(id, 'tblCellMar');
+  }
+
+  private tableSides(id: string | null | undefined, group: string): Map<string, Element> {
+    const out = new Map<string, Element>();
+    const chain: StyleDef[] = [];
+    const seen = new Set<string>();
+    for (let cur = id ?? null; cur && !seen.has(cur); ) {
+      seen.add(cur);
+      const def = this.defs.get(cur);
+      if (!def) break;
+      chain.push(def);
+      cur = def.basedOn;
+    }
+    for (let i = chain.length - 1; i >= 0; i--) {
+      for (const b of kids(kid(chain[i].tblPr, group))) out.set(sideName(b.localName), b);
+    }
+    return out;
   }
 
   get(id: string): StyleDef | undefined {
@@ -704,14 +772,46 @@ interface Ctx {
   /** rel id → data URL of a web-renderable image */
   media: Map<string, string>;
   theme: ThemeFonts;
-  /** Run properties of unstyled body text (doc defaults + default paragraph style). */
-  baseRPr: RunProps;
   fields: Field[];
   listCounters: Map<string, number[]>;
   /** >0 while inside table cells / text boxes: page breaks are dropped there. */
   nested: number;
   /** Inside a header cell: bold is implied by <th>. */
   noBold: boolean;
+  /** Run / paragraph properties of the enclosing table's style (between doc defaults and paragraph styles). */
+  tableRPr: RunProps;
+  tablePPr: ParaProps;
+  /** Set while converting a header / footer part. */
+  hf: HeaderFooterCtx | null;
+}
+
+/** Page geometry in px, for placing header / footer drawings on the page. */
+interface PageGeom {
+  w: number;
+  h: number;
+  top: number;
+  right: number;
+  bottom: number;
+  left: number;
+  header: number;
+  footer: number;
+}
+
+interface ArtJob {
+  graphicData: Element;
+  cx: number;
+  cy: number;
+  x: number;
+  y: number;
+  behind: boolean;
+  name: string;
+}
+
+interface HeaderFooterCtx {
+  kind: 'header' | 'footer';
+  geom: PageGeom;
+  /** Shape groups to render once the part has been converted (rendering is asynchronous). */
+  jobs: ArtJob[];
 }
 
 interface ParaCtx {
@@ -769,11 +869,167 @@ const EMU_PER_PX = 9525;
 const DRAWING_PARTS = new Set(['pic', 'txbxContent']);
 const VML_PARTS = new Set(['imagedata', 'txbxContent']);
 
-function imgTag(src: string, width: number | null, height: number | null, alt: string): string {
+interface FloatPos {
+  x: number;
+  y: number;
+  ink: boolean;
+  behind?: boolean;
+}
+
+function imgTag(
+  src: string,
+  width: number | null,
+  height: number | null,
+  alt: string,
+  float?: FloatPos | null,
+  drawingml?: string | null,
+): string {
   let html = `<img src="${escapeHtml(src)}"`;
   if (width && width > 0) html += ` width="${Math.round(width)}"`;
   if (height && height > 0) html += ` height="${Math.round(height)}"`;
+  if (float) {
+    html += ` data-float-x="${Math.round(float.x)}" data-float-y="${Math.round(float.y)}"`;
+    if (float.ink) html += ' data-ink="true"';
+    if (float.behind) html += ' data-behind="true"';
+  }
+  if (drawingml) html += ` data-drawingml="${drawingml}"`;
   return `${html} alt="${escapeHtml(alt)}">`;
+}
+
+// ── drawings on the page (headers / footers) ────────────────────────────────
+
+/** Where an anchored drawing sits on the page (px from the page's top-left corner). */
+function pagePosition(anchor: Element, w: number, h: number, hf: HeaderFooterCtx): { x: number; y: number } {
+  const g = hf.geom;
+  const paraTop = hf.kind === 'header' ? g.header : g.h - g.footer - 20;
+  const hArea = (rel: string): [number, number] => {
+    switch (rel) {
+      case 'page':
+        return [0, g.w];
+      case 'leftMargin':
+      case 'insideMargin':
+        return [0, g.left];
+      case 'rightMargin':
+      case 'outsideMargin':
+        return [g.w - g.right, g.w];
+      default: // margin, column, character
+        return [g.left, g.w - g.right];
+    }
+  };
+  const vArea = (rel: string): [number, number] => {
+    switch (rel) {
+      case 'page':
+        return [0, g.h];
+      case 'margin':
+        return [g.top, g.h - g.bottom];
+      case 'topMargin':
+        return [0, g.top];
+      case 'bottomMargin':
+        return [g.h - g.bottom, g.h];
+      default: // paragraph, line
+        return [paraTop, paraTop];
+    }
+  };
+  const place = (el: Element | null, [a, b]: [number, number], size: number): number => {
+    const off = parseInt(kid(el, 'posOffset')?.textContent ?? '', 10);
+    if (Number.isFinite(off)) return a + off / EMU_PER_PX;
+    const align = (kid(el, 'align')?.textContent ?? '').trim();
+    if (align === 'center') return a + (b - a - size) / 2;
+    if (align === 'right' || align === 'bottom' || align === 'outside') return b - size;
+    return a;
+  };
+  const H = kid(anchor, 'positionH');
+  const V = kid(anchor, 'positionV');
+  return {
+    x: place(H, hArea(attr(H, 'relativeFrom') ?? 'column'), w),
+    y: place(V, vArea(attr(V, 'relativeFrom') ?? 'paragraph'), h),
+  };
+}
+
+/**
+ * A drawing anchored in a header / footer: a picture becomes a floating image placed on the
+ * page; a shape or group of shapes is rendered to a picture later (see resolveArt).
+ */
+function processPageAnchor(anchor: Element, pc: ParaCtx, ctx: Ctx): boolean {
+  const hf = ctx.hf!;
+  const ext = kid(anchor, 'extent');
+  const cx = intAttr(ext, 'cx') ?? 0;
+  const cy = intAttr(ext, 'cy') ?? 0;
+  const graphicData = descendant(anchor, 'graphicData');
+  const content = graphicData ? kids(graphicData)[0] : null;
+  if (!content || cx <= 0 || cy <= 0) return false;
+  const w = cx / EMU_PER_PX;
+  const h = cy / EMU_PER_PX;
+  const { x, y } = pagePosition(anchor, w, h, hf);
+  const behindDoc = attr(anchor, 'behindDoc');
+  const behind = behindDoc === '1' || behindDoc === 'true';
+  const name = attr(kid(anchor, 'docPr'), 'descr') || attr(kid(anchor, 'docPr'), 'name') || '';
+  if (content.localName === 'pic') {
+    const id = relAttr(descendant(content, 'blip'), 'embed');
+    const src = id ? ctx.media.get(id) : undefined;
+    if (!src) return true;
+    pc.items.push({ t: 'img', html: imgTag(src, w, h, name, { x, y, ink: false, behind }), href: null });
+    return true;
+  }
+  if (content.localName !== 'wgp' && content.localName !== 'wsp') return false;
+  pc.items.push({ t: 'img', html: `<img data-art-job="${hf.jobs.length}">`, href: null });
+  hf.jobs.push({ graphicData: graphicData!, cx, cy, x, y, behind, name });
+  // text inside the shapes still comes through as text
+  for (const box of collect(anchor, new Set(['txbxContent']))) {
+    const html = processBlocks(box, ctx, true);
+    if (html) pc.after.push(html);
+  }
+  return true;
+}
+
+/**
+ * Renders header/footer shape groups as SVG (preferred) or raster, and keeps the original
+ * DrawingML so save can put editable shapes back into Word.
+ */
+async function resolveArt(html: string, hf: HeaderFooterCtx, env: RenderEnv): Promise<string> {
+  const rendered = await Promise.all(
+    hf.jobs.map(async (job) => {
+      try {
+        const svg = await renderGraphicSvg(job.graphicData, job.cx, job.cy, env);
+        const raster = svg ? null : await renderGraphic(job.graphicData, job.cx, job.cy, env, job.behind);
+        const src = svg ?? raster;
+        if (!src) return null;
+        const drawingml = packDrawingMl(job.graphicData, job.cx, job.cy, env.media);
+        return { src, drawingml };
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return html.replace(/<img data-art-job="(\d+)">/g, (_m, i: string) => {
+    const job = hf.jobs[Number(i)];
+    const art = rendered[Number(i)];
+    return job && art
+      ? imgTag(art.src, job.cx / EMU_PER_PX, job.cy / EMU_PER_PX, job.name, { x: job.x, y: job.y, ink: false, behind: job.behind }, art.drawingml)
+      : '';
+  });
+}
+
+const FLOAT_H_BASES = new Set(['column', 'margin', 'character', 'insideMargin', 'leftMargin']);
+const FLOAT_V_BASES = new Set(['paragraph', 'line']);
+
+/**
+ * An anchored picture with no text wrapping, positioned from its paragraph, can float over the
+ * text in the editor too (that is how ink and drawings are stored). Other anchors stay inline.
+ */
+function floatPosition(frame: Element | null): { x: number; y: number; ink: boolean } | null {
+  if (!frame || frame.localName !== 'anchor' || !kid(frame, 'wrapNone')) return null;
+  const h = kid(frame, 'positionH');
+  const v = kid(frame, 'positionV');
+  if (!FLOAT_H_BASES.has(attr(h, 'relativeFrom') ?? '') || !FLOAT_V_BASES.has(attr(v, 'relativeFrom') ?? '')) return null;
+  const off = (el: Element | null): number | null => {
+    const n = parseInt(kid(el, 'posOffset')?.textContent ?? '', 10);
+    return Number.isFinite(n) ? n / EMU_PER_PX : null;
+  };
+  const x = off(h);
+  const y = off(v);
+  if (x === null || y === null) return null;
+  return { x, y, ink: /^Ink\b/.test(attr(kid(frame, 'docPr'), 'name') ?? '') };
 }
 
 function emuSize(ext: Element | null): { w: number; h: number } | null {
@@ -784,6 +1040,8 @@ function emuSize(ext: Element | null): { w: number; h: number } | null {
 }
 
 function processDrawing(drawing: Element, pc: ParaCtx, ctx: Ctx, href: string | null): void {
+  const anchor = kid(drawing, 'anchor');
+  if (ctx.hf && anchor && processPageAnchor(anchor, pc, ctx)) return;
   const parts = collect(drawing, DRAWING_PARTS);
   const pics = parts.filter((p) => p.localName === 'pic');
   const frame = kid(drawing, 'inline') ?? kid(drawing, 'anchor');
@@ -802,7 +1060,8 @@ function processDrawing(drawing: Element, pc: ParaCtx, ctx: Ctx, href: string | 
     const own = emuSize(kid(descendant(kid(part, 'spPr'), 'xfrm'), 'ext'));
     const size = pics.length === 1 ? (frameSize ?? own) : (own ?? frameSize);
     const alt = attr(docPr, 'descr') ?? attr(kid(kid(part, 'nvPicPr'), 'cNvPr'), 'descr') ?? '';
-    pc.items.push({ t: 'img', html: imgTag(src, size?.w ?? null, size?.h ?? null, alt), href });
+    const float = pics.length === 1 ? floatPosition(frame) : null;
+    pc.items.push({ t: 'img', html: imgTag(src, size?.w ?? null, size?.h ?? null, alt, float), href: float ? null : href });
   }
 }
 
@@ -1082,7 +1341,52 @@ class BlockWriter {
   }
 }
 
-function alignAttr(align: string | undefined, styleAlign: string | undefined): string {
+// What the editor shows — and the DOCX exporter writes — when a paragraph sets nothing. Only
+// differences from these are spelled out, so a document saved by this app re-opens unchanged.
+const EDITOR_FONT = 'Calibri';
+const EDITOR_SIZE = 22; // half-points
+const HEADING_SIZES = [40, 32, 28, 24, 22, 20];
+const HEADING_BEFORE = [360, 280, 240, 200, 200, 200];
+const HEADING_AFTER = 80;
+const BODY_AFTER = 160;
+const DEFAULT_LINE = 259;
+
+function editorBase(heading: number | null): RunProps {
+  return heading === null
+    ? { size: EDITOR_SIZE, font: EDITOR_FONT, color: '000000' }
+    : { size: HEADING_SIZES[heading - 1], font: EDITOR_FONT, color: '000000', bold: true };
+}
+
+const pt = (twips: number): string => `${Math.round(twips / 2) / 10}pt`;
+
+/** Paragraph spacing, line height, indents and shading as CSS declarations. */
+function paragraphCss(eff: ParaProps, heading: number | null, opts: { spacing: boolean; indent: boolean }): string[] {
+  const css: string[] = [];
+  if (opts.spacing) {
+    const before = eff.before ?? 0;
+    const after = eff.after ?? 0;
+    const defBefore = heading === null ? 0 : HEADING_BEFORE[heading - 1];
+    const defAfter = heading === null ? BODY_AFTER : HEADING_AFTER;
+    if (before !== defBefore) css.push(`margin-top:${pt(before)}`);
+    if (after !== defAfter) css.push(`margin-bottom:${pt(after)}`);
+  }
+  const rule = eff.lineRule ?? 'auto';
+  const line = eff.line ?? 240;
+  if (rule !== 'auto') css.push(`line-height:${pt(line)}`);
+  else if (line !== DEFAULT_LINE) css.push(`line-height:${Math.round((line / 240) * CSS_LINE_PER_WORD_LINE * 100) / 100}`);
+  if (opts.indent) {
+    if (eff.indLeft && eff.indLeft > 0) css.push(`margin-left:${pt(eff.indLeft)}`);
+    if (eff.indFirst) css.push(`text-indent:${pt(eff.indFirst)}`);
+  }
+  if (eff.shade) css.push(`background-color:#${eff.shade}`);
+  return css;
+}
+
+function styleAttr(decls: string[]): string {
+  return decls.length ? ` style="${decls.join('; ')}"` : '';
+}
+
+function alignCss(align: string | undefined, styleAlign: string | undefined): string {
   const map = (v: string | undefined): string => {
     switch (v) {
       case 'center':
@@ -1106,7 +1410,7 @@ function alignAttr(align: string | undefined, styleAlign: string | undefined): s
   const eff = direct || inherited;
   // left is the default; only spell it out when it overrides a style's alignment
   if (!eff || (eff === 'left' && (!inherited || inherited === 'left'))) return '';
-  return ` style="text-align:${eff}"`;
+  return `text-align:${eff}`;
 }
 
 function processParagraph(p: Element, w: BlockWriter, ctx: Ctx): void {
@@ -1114,7 +1418,8 @@ function processParagraph(p: Element, w: BlockWriter, ctx: Ctx): void {
   const direct = parsePPr(pPrEl);
   const styleId = direct.styleId ?? ctx.styles.defaultParaId;
   const style = ctx.styles.resolve(styleId);
-  const styleRPr = merge(ctx.styles.docRPr, style.rPr);
+  const styleRPr = merge(ctx.styles.docRPr, ctx.tableRPr, style.rPr);
+  const effPPr = merge(ctx.styles.docPPr, ctx.tablePPr, style.pPr, direct);
 
   // classification
   let heading = headingLevelOf(style.keys);
@@ -1153,7 +1458,9 @@ function processParagraph(p: Element, w: BlockWriter, ctx: Ctx): void {
     items: [],
     after: [],
     styleRPr,
-    base: semantic ? styleRPr : ctx.baseRPr,
+    // headings and body text spell out how they differ from the editor's own look;
+    // quotes and code blocks have a look of their own, so only differences from their style count
+    base: heading !== null ? editorBase(heading) : semantic ? styleRPr : editorBase(null),
     pre: isCode,
   };
   processInline(p, pc, ctx, null);
@@ -1167,7 +1474,12 @@ function processParagraph(p: Element, w: BlockWriter, ctx: Ctx): void {
   }
   const hasContent = (seg: Item[]): boolean => seg.some((it) => it.t === 'img' || (it.t === 'text' && it.raw.length > 0));
   const breaks = segments.length - 1;
-  const align = alignAttr(direct.align, style.pPr.align);
+  const alignDecl = alignCss(direct.align, style.pPr.align);
+  const blockAttr = (opts: { spacing: boolean; indent: boolean }): string =>
+    styleAttr([...(alignDecl ? [alignDecl] : []), ...paragraphCss(effPPr, heading, opts)]);
+  const align = blockAttr({ spacing: true, indent: true });
+  const listAlign = blockAttr({ spacing: false, indent: false });
+  const plainAlign = alignDecl ? styleAttr([alignDecl]) : '';
   const breakBefore = top && (direct.pageBreakBefore ?? style.pPr.pageBreakBefore ?? false);
   if (breakBefore) w.block(PAGE_BREAK);
 
@@ -1202,11 +1514,11 @@ function processParagraph(p: Element, w: BlockWriter, ctx: Ctx): void {
       const type = OL_TYPES[level.fmt];
       return (start !== 1 ? ` start="${start}"` : '') + (type ? ` type="${type}"` : '');
     };
-    w.listItem(list.item, attrs, `<p${align}>${renderInline(content)}</p>`);
+    w.listItem(list.item, attrs, `<p${listAlign}>${renderInline(content)}</p>`);
     if (top && breaks > 0 && !leading) w.block(PAGE_BREAK);
   } else if (isQuote) {
     const content = pc.items.filter((it) => it.t !== 'pagebreak');
-    w.quoteBlock(`<p${align}>${renderInline(content)}</p>`);
+    w.quoteBlock(`<p${plainAlign}>${renderInline(content)}</p>`);
     if (top && breaks > 0) w.block(PAGE_BREAK);
   } else if (!pc.items.length && direct.border && !pc.after.length) {
     w.block('<hr>');
@@ -1214,9 +1526,9 @@ function processParagraph(p: Element, w: BlockWriter, ctx: Ctx): void {
     segments.forEach((seg, i) => {
       if (i > 0 && top) w.block(PAGE_BREAK);
       if (!hasContent(seg) && (breaks > 0 || pc.after.length)) return; // paragraph that only carried the break / a text box
-      const html = `<p${align}>${renderInline(seg)}</p>`;
-      if (i === 0 && !breakBefore && direct.indLeft && direct.indLeft > 0 && w.continuation(direct.indLeft, html)) return;
-      w.block(html);
+      const inner = renderInline(seg);
+      if (i === 0 && !breakBefore && direct.indLeft && direct.indLeft > 0 && w.continuation(direct.indLeft, `<p${listAlign}>${inner}</p>`)) return;
+      w.block(`<p${align}>${inner}</p>`);
     });
   }
   emitAfter();
@@ -1252,8 +1564,36 @@ interface CellModel {
   merge: 'restart' | 'continue' | null;
 }
 
+const TWIPS_PER_PX = 15;
+
+function sideName(name: string): string {
+  return name === 'start' ? 'left' : name === 'end' ? 'right' : name;
+}
+
+/** A Word border element as a CSS border value ("none" when it is switched off). */
+function borderCss(b: Element | undefined): string | undefined {
+  if (!b) return undefined;
+  const v = attr(b, 'val');
+  if (!v || v === 'nil' || v === 'none') return 'none';
+  const eighths = intAttr(b, 'sz') ?? 4; // eighths of a point
+  const color = hexColor(attr(b, 'color')) ?? '000000';
+  const style = /^(double|triple)|Gap$/i.test(v) ? 'double' : v === 'dotted' ? 'dotted' : /dash/i.test(v) ? 'dashed' : 'solid';
+  let px = Math.max(1, Math.round((eighths / 6) * 10) / 10);
+  if (style === 'double') px = Math.max(3, px * 3);
+  return `${px}px ${style} #${color}`;
+}
+
 function processTable(tbl: Element, ctx: Ctx): string {
-  const rows: { cells: CellModel[]; header: boolean }[] = [];
+  const tblPr = kid(tbl, 'tblPr');
+  const styleId = val(tblPr, 'tblStyle') ?? ctx.styles.defaultTableId;
+  const tableStyle = ctx.styles.resolve(styleId);
+  const tableBorders = ctx.styles.tableBorders(styleId);
+  const tableMargins = ctx.styles.tableCellMargins(styleId);
+  for (const m of kids(kid(tblPr, 'tblCellMar'))) tableMargins.set(sideName(m.localName), m);
+  for (const b of kids(kid(tblPr, 'tblBorders'))) tableBorders.set(sideName(b.localName), b);
+  const grid = kids(kid(tbl, 'tblGrid'), 'gridCol').map((g) => Math.max(0, intAttr(g, 'w') ?? 0));
+
+  const rows: { cells: CellModel[]; header: boolean; height: number }[] = [];
   for (const tr of unwrap(tbl, 'tr')) {
     const trPr = kid(tr, 'trPr');
     if (kid(trPr, 'del')) continue; // row deleted with change tracking
@@ -1267,16 +1607,31 @@ function processTable(tbl: Element, ctx: Ctx): string {
       cells.push({ el: tc, col, span, merge });
       col += span;
     }
-    rows.push({ cells, header: toggle(trPr, 'tblHeader') === true });
+    const trHeight = kid(trPr, 'trHeight');
+    const height = attr(trHeight, 'hRule') === 'auto' ? 0 : (intAttr(trHeight, 'val') ?? 0);
+    rows.push({ cells, header: toggle(trPr, 'tblHeader') === true, height });
   }
   if (!rows.length) return '';
+  const numCols = Math.max(grid.length, ...rows.map((r) => r.cells.reduce((n, c) => Math.max(n, c.col + c.span), 0)));
+
+  /** Column widths (px) for a cell: from the table grid, else the cell's own width split evenly. */
+  const widths = (cell: CellModel): number[] | null => {
+    const fromGrid = grid.slice(cell.col, cell.col + cell.span);
+    if (fromGrid.length === cell.span && fromGrid.every((w) => w > 0)) return fromGrid.map((w) => Math.max(1, Math.round(w / TWIPS_PER_PX)));
+    const tcW = kid(kid(cell.el, 'tcPr'), 'tcW');
+    const w = attr(tcW, 'type') === 'dxa' || !attr(tcW, 'type') ? (intAttr(tcW, 'w') ?? 0) : 0;
+    if (w <= 0) return null;
+    return Array.from({ length: cell.span }, () => Math.max(1, Math.round(w / cell.span / TWIPS_PER_PX)));
+  };
 
   const cellAt = (r: number, col: number): CellModel | undefined => rows[r]?.cells.find((c) => c.col === col);
   let html = '<table><tbody>';
-  const savedNoBold = ctx.noBold;
+  const saved = { noBold: ctx.noBold, tableRPr: ctx.tableRPr, tablePPr: ctx.tablePPr };
+  ctx.tableRPr = tableStyle.rPr;
+  ctx.tablePPr = tableStyle.pPr;
   ctx.nested++;
   rows.forEach((row, r) => {
-    html += '<tr>';
+    html += row.height > 0 ? `<tr style="height:${Math.round(row.height / TWIPS_PER_PX)}px">` : '<tr>';
     for (const cell of row.cells) {
       if (cell.merge === 'continue') {
         const above = cellAt(r - 1, cell.col);
@@ -1290,16 +1645,55 @@ function processTable(tbl: Element, ctx: Ctx): string {
       ctx.noBold = row.header;
       // Word requires a paragraph after a nested table at the end of a cell; drop it when empty
       const content = processBlocks(cell.el, ctx, false).replace(/(<\/table>)<p><\/p>$/, '$1') || '<p></p>';
+
+      const tcPr = kid(cell.el, 'tcPr');
+      const lastRow = r + rowspan - 1;
+      const own = new Map<string, Element>();
+      for (const b of kids(kid(tcPr, 'tcBorders'))) own.set(sideName(b.localName), b);
+      const bottomOwn = rowspan > 1 ? kid(kid(kid(cellAt(lastRow, cell.col)?.el, 'tcPr'), 'tcBorders'), 'bottom') : null;
+      const side = (name: 'top' | 'right' | 'bottom' | 'left'): string => {
+        const fromCell = name === 'bottom' && bottomOwn ? bottomOwn : own.get(name);
+        const fromTable =
+          name === 'top' ? tableBorders.get(r === 0 ? 'top' : 'insideH')
+          : name === 'bottom' ? tableBorders.get(lastRow === rows.length - 1 ? 'bottom' : 'insideH')
+          : name === 'left' ? tableBorders.get(cell.col === 0 ? 'left' : 'insideV')
+          : tableBorders.get(cell.col + cell.span >= numCols ? 'right' : 'insideV');
+        return borderCss(fromCell ?? fromTable) ?? 'none';
+      };
+      const css = (['top', 'right', 'bottom', 'left'] as const).map((s) => `border-${s}:${side(s)}`);
+      const fill = hexColor(attr(kid(tcPr, 'shd'), 'fill'));
+      if (fill) css.unshift(`background-color:#${fill}`);
+      const vAlign = val(tcPr, 'vAlign');
+      if (vAlign === 'center' || vAlign === 'bottom') css.push(`vertical-align:${vAlign === 'center' ? 'middle' : 'bottom'}`);
+      const w = widths(cell);
+      // Word's cell margins (default 0.075in left / right, none top / bottom); a narrow spacer
+      // column can't hold them, so they shrink to fit as Word's do
+      const ownMar = new Map<string, Element>();
+      for (const m of kids(kid(tcPr, 'tcMar'))) ownMar.set(sideName(m.localName), m);
+      const mar = (s: string, d: number): number => {
+        const el = ownMar.get(s) ?? tableMargins.get(s);
+        const type = attr(el, 'type');
+        const v = el && (!type || type === 'dxa') ? intAttr(el, 'w') : null;
+        return Math.max(0, (v ?? d) / TWIPS_PER_PX);
+      };
+      const cellPx = w ? w.reduce((a, b) => a + b, 0) : Infinity;
+      const fit = (v: number) => Math.round(Math.min(v, Math.max(0, (cellPx - 2) / 2)) * 10) / 10;
+      css.push(`padding:${fit(mar('top', 0))}px ${fit(mar('right', 108))}px ${fit(mar('bottom', 0))}px ${fit(mar('left', 108))}px`);
+
       html +=
         `<${tag}` +
         (cell.span > 1 ? ` colspan="${cell.span}"` : '') +
         (rowspan > 1 ? ` rowspan="${rowspan}"` : '') +
+        (w ? ` colwidth="${w.join(',')}"` : '') +
+        ` style="${css.join('; ')}"` +
         `>${content}</${tag}>`;
     }
     html += '</tr>';
   });
   ctx.nested--;
-  ctx.noBold = savedNoBold;
+  ctx.noBold = saved.noBold;
+  ctx.tableRPr = saved.tableRPr;
+  ctx.tablePPr = saved.tablePPr;
   return html + '</tbody></table>';
 }
 
@@ -1358,12 +1752,18 @@ function processBlocks(container: Element, ctx: Ctx, textBox: boolean): string {
 
 // ── page setup / metadata ────────────────────────────────────────────────────
 
-function readPageSetup(body: Element): PageSetup {
+/** The section properties that apply to the end of the document (the last section). */
+function finalSection(body: Element): Element | null {
   let sect = kid(body, 'sectPr');
   if (!sect) {
     const paras = kids(body, 'p');
     for (let i = paras.length - 1; i >= 0 && !sect; i--) sect = kid(kid(paras[i], 'pPr'), 'sectPr');
   }
+  return sect;
+}
+
+function readPageSetup(body: Element): PageSetup {
+  const sect = finalSection(body);
   const setup: PageSetup = {
     size: DEFAULT_PAGE_SETUP.size,
     orientation: DEFAULT_PAGE_SETUP.orientation,
@@ -1397,7 +1797,121 @@ function readPageSetup(body: Element): PageSetup {
     const tw = intAttr(pgMar, side);
     if (tw !== null) setup.margins[side] = Math.round(Math.abs(tw) * 5) / 100;
   }
+  const header = intAttr(pgMar, 'header');
+  const footer = intAttr(pgMar, 'footer');
+  // only when they differ from Word's default, so documents round-trip unchanged
+  const dist = (tw: number) => Math.round(Math.abs(tw) * 5) / 100;
+  if (header !== null && dist(header) !== DEFAULT_HF_DISTANCE) setup.headerDistance = dist(header);
+  if (footer !== null && dist(footer) !== DEFAULT_HF_DISTANCE) setup.footerDistance = dist(footer);
+  if (kid(sect, 'titlePg')) setup.differentFirstPage = true;
   return setup;
+}
+
+/** Page size and margins in px, straight from w:pgSz / w:pgMar. */
+function pageGeom(sect: Element | null): PageGeom {
+  const pgSz = kid(sect, 'pgSz');
+  const pgMar = kid(sect, 'pgMar');
+  const tw = (el: Element | null, name: string, d: number) => Math.abs(intAttr(el, name) ?? d) / TWIPS_PER_PX;
+  return {
+    w: tw(pgSz, 'w', 12240),
+    h: tw(pgSz, 'h', 15840),
+    top: tw(pgMar, 'top', 1440),
+    right: tw(pgMar, 'right', 1440),
+    bottom: tw(pgMar, 'bottom', 1440),
+    left: tw(pgMar, 'left', 1440),
+    header: tw(pgMar, 'header', 720),
+    footer: tw(pgMar, 'footer', 720),
+  };
+}
+
+/** Embedded images of one part → data URLs (only formats a browser can render). */
+async function loadMedia(zip: JSZip, rels: Map<string, Rel>, dir: string): Promise<Map<string, string>> {
+  const media = new Map<string, string>();
+  for (const [id, rel] of rels) {
+    if (rel.external || !rel.type.endsWith('/image')) continue;
+    const path = resolvePath(dir, rel.target);
+    const ext = (/\.([a-z0-9]+)$/i.exec(path)?.[1] ?? '').toLowerCase();
+    const data = await readPart(zip, path);
+    if (!data || !data.length) continue;
+    const mime = IMAGE_MIME[ext] ?? sniffMime(data);
+    if (mime) media.set(id, toDataUrl(mime, data));
+  }
+  return media;
+}
+
+/** True when converted HTML has any text or picture in it. */
+function hasVisibleContent(html: string): boolean {
+  return /<img\b/i.test(html) || html.replace(/<[^>]+>/g, '').replace(/&nbsp;|\s/g, '').length > 0;
+}
+
+/** One header / footer part (by w:type), converted with its own relationships. */
+async function readHeaderFooterPart(
+  kind: 'header' | 'footer',
+  type: string,
+  sect: Element | null,
+  zip: JSZip,
+  rels: Map<string, Rel>,
+  dir: string,
+  ctx: Ctx,
+  colors: ThemeColors,
+): Promise<string | undefined> {
+  const refs = kids(sect, `${kind}Reference`);
+  const ref = refs.find((r) => (attr(r, 'type') || 'default') === type);
+  if (!ref) return undefined;
+  const id = relAttr(ref, 'id');
+  const rel = id ? rels.get(id) : undefined;
+  if (!rel || rel.external) return undefined;
+  const path = resolvePath(dir, rel.target);
+  const xml = await readXml(zip, path);
+  if (!xml?.documentElement) return undefined;
+  const slash = path.lastIndexOf('/');
+  const partDir = slash >= 0 ? path.slice(0, slash) : '';
+  const partRels = parseRels(await readXml(zip, `${partDir ? partDir + '/' : ''}_rels/${path.slice(slash + 1)}.rels`));
+  const media = await loadMedia(zip, partRels, partDir);
+  const hf: HeaderFooterCtx = { kind, geom: pageGeom(sect), jobs: [] };
+  const partCtx: Ctx = { ...ctx, rels: partRels, media, fields: [], listCounters: new Map(), nested: 0, noBold: false, tableRPr: {}, tablePPr: {}, hf };
+  let html = processBlocks(xml.documentElement, partCtx, false);
+  html = await resolveArt(html, hf, { theme: colors, media });
+  return hasVisibleContent(html) ? html : undefined;
+}
+
+/** Default / first / even header or footer of the last section. */
+async function readHeaderFooters(
+  kind: 'header' | 'footer',
+  sect: Element | null,
+  zip: JSZip,
+  rels: Map<string, Rel>,
+  dir: string,
+  ctx: Ctx,
+  colors: ThemeColors,
+): Promise<{ default?: string; first?: string; even?: string }> {
+  const out: { default?: string; first?: string; even?: string } = {};
+  for (const type of ['default', 'first', 'even'] as const) {
+    try {
+      const html = await readHeaderFooterPart(kind, type, sect, zip, rels, dir, ctx, colors);
+      if (html) out[type] = html;
+    } catch {
+      /* a broken header must not lose the document */
+    }
+  }
+  // Word sometimes omits w:type="default"; fall back to the first untyped / unknown ref
+  if (!out.default && !out.first && !out.even) {
+    const refs = kids(sect, `${kind}Reference`);
+    const ref = refs[0];
+    if (ref) {
+      try {
+        const type = attr(ref, 'type') || 'default';
+        const html = await readHeaderFooterPart(kind, type, sect, zip, rels, dir, ctx, colors);
+        if (html) out.default = html;
+      } catch {
+        /* ignore */
+      }
+    }
+  } else if (!out.default) {
+    // prefer first as the editor's default when only title-page HF exists
+    if (out.first) out.default = out.first;
+  }
+  return out;
 }
 
 // ── entry point ──────────────────────────────────────────────────────────────
@@ -1472,34 +1986,21 @@ export const importDocx: Importer = async (bytes) => {
     styles,
   );
 
-  // embedded images → data URLs (only formats a browser can render)
-  const media = new Map<string, string>();
-  for (const [id, rel] of rels) {
-    if (rel.external || !rel.type.endsWith('/image')) continue;
-    const path = resolvePath(dir, rel.target);
-    const ext = (/\.([a-z0-9]+)$/i.exec(path)?.[1] ?? '').toLowerCase();
-    const data = await readPart(zip, path);
-    if (!data || !data.length) continue;
-    const mime = IMAGE_MIME[ext] ?? sniffMime(data);
-    if (mime) media.set(id, toDataUrl(mime, data));
-  }
+  const media = await loadMedia(zip, rels, dir);
 
-  const baseRPr = merge<RunProps>(
-    { size: 20, font: 'Times New Roman' },
-    styles.docRPr,
-    styles.resolve(styles.defaultParaId).rPr,
-  );
   const ctx: Ctx = {
     styles,
     numbering,
     rels,
     media,
     theme,
-    baseRPr,
     fields: [],
     listCounters: new Map(),
     nested: 0,
     noBold: false,
+    tableRPr: {},
+    tablePPr: {},
+    hf: null,
   };
   // styleRPr of paragraphs starts from the same spec defaults
   styles.docRPr = merge<RunProps>({ size: 20, font: 'Times New Roman' }, styles.docRPr);
@@ -1508,6 +2009,28 @@ export const importDocx: Importer = async (bytes) => {
     html: processBlocks(body, ctx, false),
     pageSetup: readPageSetup(body),
   };
+
+  // headers and footers of the last section (default / first / even)
+  const sect = finalSection(body);
+  const settingsXml = await readXml(zip, relTarget(rels, '/settings', dir, `${prefix}settings.xml`));
+  const colors = readThemeColors(themeXml, settingsXml);
+  if (toggle(settingsXml?.documentElement ?? null, 'evenAndOddHeaders') === true) {
+    result.pageSetup = { ...(result.pageSetup ?? { ...DEFAULT_PAGE_SETUP }), differentOddEven: true };
+  }
+  const headers = await readHeaderFooters('header', sect, zip, rels, dir, ctx, colors);
+  const footers = await readHeaderFooters('footer', sect, zip, rels, dir, ctx, colors);
+  if (headers.default) result.header = headers.default;
+  if (headers.first) result.headerFirst = headers.first;
+  if (headers.even) result.headerEven = headers.even;
+  if (footers.default) result.footer = footers.default;
+  if (footers.first) result.footerFirst = footers.first;
+  if (footers.even) result.footerEven = footers.even;
+  if ((headers.first || footers.first) && result.pageSetup && !result.pageSetup.differentFirstPage) {
+    result.pageSetup = { ...result.pageSetup, differentFirstPage: true };
+  }
+  if ((headers.even || footers.even) && result.pageSetup && !result.pageSetup.differentOddEven) {
+    result.pageSetup = { ...result.pageSetup, differentOddEven: true };
+  }
 
   const core = await readXml(zip, 'docProps/core.xml');
   const title = (kid(core?.documentElement, 'title')?.textContent ?? '').trim();

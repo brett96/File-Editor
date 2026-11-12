@@ -24,10 +24,12 @@ const bridge = {
     ipcRenderer.on('menu', listener);
     return () => ipcRenderer.removeListener('menu', listener);
   },
-  license: {
-    get: () => ipcRenderer.invoke('license-get'),
-    activate: (key: string) => ipcRenderer.invoke('license-activate', key),
+  onUpdateStatus: (callback: (status: { state: string; version?: string; percent?: number }) => void) => {
+    const listener = (_e: IpcRendererEvent, status: { state: string; version?: string; percent?: number }) => callback(status);
+    ipcRenderer.on('update-status', listener);
+    return () => ipcRenderer.removeListener('update-status', listener);
   },
+  installUpdate: () => ipcRenderer.send('install-update'),
   setDirty: (dirty: boolean) => ipcRenderer.send('set-dirty', dirty),
   setTitle: (title: string) => ipcRenderer.send('set-title', title),
 };

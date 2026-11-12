@@ -1,0 +1,127 @@
+# Builds the desktop installers and publishes them as a GitHub Release.
+# Installed copies of File Editor check that release feed (latest.yml / latest-mac.yml) and
+# update themselves — see "Desktop updates" in the README.
+#
+# To ship an update:  bump "version" in package.json, commit and push, then
+#   git tag v0.2.0 && git push origin v0.2.0
+#
+# Flow: one job creates a draft release, the Windows and macOS jobs upload into it, and the
+# draft is published only when both succeed — so installed apps never see a half-filled release.
+name: Release desktop app
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the release and upload installers
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Work out the tag
+        id: tag
+        shell: bash
+        run: |
+          expected="v$(node -p "require('./package.json').version")"
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$expected" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package.json version $expected" >&2
+            exit 1
+          fi
+          echo "tag=$expected" >> "$GITHUB_OUTPUT"
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        shell: bash
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            if [ "$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != true ]; then
+              echo "Release $TAG is already published. Bump the version to ship a new one." >&2
+              exit 1
+            fi
+            echo "Reusing the existing draft for $TAG"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --title "File Editor ${TAG#v}" \
+              --target "$GITHUB_SHA" --generate-notes
+          fi
+
+  build:
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: --win
+          - os: macos-latest
+            target: --mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Tests
+        if: matrix.os == 'windows-latest'
+        run: npm test
+
+      - run: npm run electron:build
+
+      - name: Build, sign and upload installers
+        shell: bash
+        run: |
+          # Secrets that aren't set arrive as empty strings, which electron-builder would treat
+          # as real (empty) values — drop them so it knows they're absent.
+          for v in CSC_LINK CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            [ -z "${!v}" ] && unset "$v"
+          done
+          if [ -z "${CSC_LINK:-}" ]; then
+            echo "::warning::No code-signing certificate set; building unsigned ${{ matrix.target }} installers."
+            if [ "${{ matrix.target }}" = --mac ]; then
+              # Apple Silicon only runs signed code, so ad-hoc sign instead. Ad-hoc signatures
+              # can't use the hardened runtime or be notarized (this edits only CI's checkout).
+              node -e "
+                const fs = require('fs'); const p = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+                Object.assign(p.build.mac, { identity: '-', hardenedRuntime: false, notarize: false });
+                fs.writeFileSync('package.json', JSON.stringify(p, null, 2));"
+            fi
+          elif [ "${{ matrix.target }}" = --mac ] && [ -z "${APPLE_ID:-}" ]; then
+            echo "::warning::No Apple ID set; the macOS app is signed but not notarized."
+          fi
+          npx electron-builder ${{ matrix.target }} --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Code signing (optional but strongly recommended; unsigned builds still publish).
+          # Windows: base64 .pfx + password. macOS: Developer ID .p12 + password + notarization.
+          CSC_LINK: ${{ matrix.os == 'windows-latest' && secrets.WIN_CSC_LINK || secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ matrix.os == 'windows-latest' && secrets.WIN_CSC_KEY_PASSWORD || secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+
+  publish:
+    needs: [draft, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.draft.outputs.tag }}
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

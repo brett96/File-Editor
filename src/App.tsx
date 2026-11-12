@@ -12,6 +12,7 @@ import {
   Save,
   ShieldCheck,
   Upload,
+  RefreshCw,
   Wand2,
   ZoomIn,
   ZoomOut,
@@ -19,9 +20,10 @@ import {
 import { baseName, exportFlow, FORMATS, OPEN_EXTENSIONS, openDocument, type OpenResult } from './core/registry';
 import { buildPdf } from './core/pdf/apply-edits';
 import type { PdfProtection } from './core/pdf/types';
-import { PasswordError, UnsupportedError, type DocFormat, type FlowFormat, type RichDocument } from './core/types';
-import { fileBytes, getHost, readDroppedFile, type OpenedFile } from './platform/host';
-import { IconButton, Divider, cx } from './ui/components';
+import { PasswordError, UnsupportedError, isCodeFormat, type CodeLanguage, type DocFormat, type FlowFormat, type RichDocument } from './core/types';
+import { escapeHtml, utf8Encode } from './core/dom';
+import { fileBytes, getHost, readDroppedFile, type OpenedFile, type UpdateStatus } from './platform/host';
+import { IconButton, Divider, cx, Popover, MenuItem } from './ui/components';
 import {
   EMPTY_PROTECTION,
   ExportModal,
@@ -37,19 +39,40 @@ import { LicenseDialog } from './ui/license/LicenseDialog';
 import { PdfEditor, type PdfEditorHandle } from './ui/pdf/PdfEditor';
 import { ImageEditor, type ImageEditorHandle } from './ui/image/ImageEditor';
 import { VideoEditor, formatTime, rotatedSize, type VideoEditorHandle } from './ui/video/VideoEditor';
+import { CodeEditor, type CodeEditorHandle } from './ui/code/CodeEditor';
 import { ImageExportModal, MediaExportModal, ProgressModal, type ImageExportChoice, type MediaExportChoice } from './ui/media-dialogs';
 import { CONTAINERS, IMAGE_FORMATS, MEDIA_EXTENSIONS_ALL, IMAGE_EXTENSIONS_ALL, sniffMedia, type ContainerFormat, type ImageFormat } from './core/media/media-formats';
 import type { DecodedImage } from './core/media/image-codecs';
 import type { MediaInfo } from './core/media/video-engine';
-import type { Pixels } from './core/media/image-ops';
+import { createPixels, type Pixels } from './core/media/image-ops';
 
 const ALL_OPEN_EXTENSIONS = [...new Set([...OPEN_EXTENSIONS, ...IMAGE_EXTENSIONS_ALL, ...MEDIA_EXTENSIONS_ALL])];
 
 type OpenDoc =
   | { kind: 'flow'; key: number; name: string; format: FlowFormat; initial: RichDocument; handle?: unknown; protection: ProtectionDraft }
+  | { kind: 'code'; key: number; name: string; format: CodeLanguage; language: CodeLanguage; text: string; handle?: unknown; protection: ProtectionDraft }
   | { kind: 'pdf'; key: number; name: string; bytes: Uint8Array; handle?: unknown; protection: ProtectionDraft }
   | { kind: 'image'; key: number; name: string; decoded: DecodedImage; format: ImageFormat; handle?: unknown; protection: ProtectionDraft }
   | { kind: 'media'; key: number; name: string; blob: Blob; info: MediaInfo; container: ContainerFormat; handle?: unknown; protection: ProtectionDraft };
+
+const PRIMARY_SWITCH: Array<DocFormat | 'image'> = ['docx', 'txt', 'html', 'css', 'js', 'pdf', 'image'];
+const SECONDARY_SWITCH: FlowFormat[] = ['odt', 'rtf', 'md', 'doc'];
+
+async function codeToRich(language: CodeLanguage, text: string): Promise<RichDocument> {
+  if (language === 'html') {
+    const { importHtml } = await import('./core/formats/html');
+    return importHtml(utf8Encode(text));
+  }
+  // Keep source intact as plain paragraphs (txt / Word) or a code block for other rich formats
+  const { importText } = await import('./core/formats/text');
+  return importText(utf8Encode(text));
+}
+
+function blankCanvasImage(): DecodedImage {
+  const pixels = createPixels(800, 600);
+  pixels.data.fill(255);
+  return { pixels, format: 'png', warnings: [] };
+}
 
 interface Progress {
   title: string;
@@ -79,7 +102,24 @@ interface Toast {
   text: string;
 }
 
-const ZOOMS = [0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+const ZOOMS = [0.25, 0.33, 0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+
+/**
+ * Zoom at which the widest page fills the editor's scroll area. Pages are measured from the
+ * DOM (PDF pages and the document sheet both size themselves in CSS px at the current zoom).
+ */
+function fitWidthZoom(current: number): number {
+  const ws = document.querySelector<HTMLElement>('.editor-root .workspace');
+  if (!ws) return 1;
+  const cs = getComputedStyle(ws);
+  const avail = ws.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+  let base = 816; // a Letter page at 100 %
+  const pdfPage = ws.querySelector<HTMLElement>('.pdf-page');
+  const sheet = ws.querySelector<HTMLElement>('.page-sheet');
+  if (pdfPage) base = pdfPage.offsetWidth / current;
+  else if (sheet) base = parseFloat(sheet.style.width) || base; // its width is unzoomed (CSS zoom)
+  return Math.max(0.1, Math.min(4, Math.floor((avail / base) * 100) / 100));
+}
 let docKey = 1;
 
 const BLANK: RichDocument = { html: '<p></p>', title: 'Untitled' };
@@ -101,6 +141,8 @@ export default function App() {
   const [doc, setDoc] = useState<OpenDoc | null>(null);
   const [dirty, setDirty] = useState(false);
   const [zoom, setZoom] = useState(1);
+  const zoomRef = useRef(zoom);
+  zoomRef.current = zoom;
   const [busy, setBusy] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [askPw, setAskPw] = useState<PasswordAsk | null>(null);
@@ -111,9 +153,12 @@ export default function App() {
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
+  const [update, setUpdate] = useState<UpdateStatus | null>(null);
+  const [updateDismissed, setUpdateDismissed] = useState(false);
   const [frameExport, setFrameExport] = useState<{ pixels: Pixels; name: string } | null>(null);
   const [imageStatus, setImageStatus] = useState<{ width: number; height: number } | null>(null);
   const richRef = useRef<RichEditorHandle>(null);
+  const codeRef = useRef<CodeEditorHandle>(null);
   const pdfRef = useRef<PdfEditorHandle>(null);
   const imageRef = useRef<ImageEditorHandle>(null);
   const videoRef = useRef<VideoEditorHandle>(null);
@@ -122,6 +167,24 @@ export default function App() {
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
 
+  // On phone-sized screens, open PDFs and documents at "fit width" instead of 100 % (a Letter
+  // page is 816 px wide, about twice a phone). PDF pages appear asynchronously, so wait for one.
+  const docKind = doc?.kind;
+  const docKeyValue = doc?.key;
+  useEffect(() => {
+    if ((docKind !== 'pdf' && docKind !== 'flow') || window.innerWidth >= 900) return;
+    let tries = 0;
+    const timer = setInterval(() => {
+      tries++;
+      const ready = document.querySelector(docKind === 'pdf' ? '.editor-root .pdf-page' : '.editor-root .page-sheet');
+      if (ready || tries > 40) {
+        clearInterval(timer);
+        if (ready) setZoom(fitWidthZoom(zoomRef.current));
+      }
+    }, 100);
+    return () => clearInterval(timer);
+  }, [docKind, docKeyValue]);
+
   const toast = useCallback((text: string, kind: Toast['kind'] = 'error') => {
     const id = Date.now() + Math.random();
     setToasts((t) => [...t, { id, kind, text }]);
@@ -129,6 +192,15 @@ export default function App() {
   }, []);
 
   const markDirty = useCallback(() => setDirty(true), []);
+
+  // desktop app: a newer version downloads in the background; offer to restart into it
+  useEffect(() => {
+    const off = window.desktop?.onUpdateStatus?.((st) => {
+      setUpdate(st);
+      if (st.state === 'available') toast(`Downloading version ${st.version ?? 'update'} in the background…`, 'info');
+    });
+    return () => off?.();
+  }, [toast]);
 
   // ── window title / dirty tracking ────────────────────────────────────────
   useEffect(() => {
@@ -263,6 +335,18 @@ export default function App() {
           : EMPTY_PROTECTION;
         setDoc({ kind: 'pdf', key: docKey++, name: file.name, bytes: result.bytes, handle: file.handle, protection });
         setPageCount(null);
+      } else if (result.kind === 'code') {
+        const sameFormat = FORMATS[result.format].extensions.includes(file.name.split('.').pop()?.toLowerCase() ?? '');
+        setDoc({
+          kind: 'code',
+          key: docKey++,
+          name: sameFormat ? file.name : `${baseName(file.name)}.${FORMATS[result.format].ext}`,
+          format: result.format,
+          language: result.language,
+          text: result.text,
+          handle: sameFormat ? file.handle : undefined,
+          protection: EMPTY_PROTECTION,
+        });
       } else {
         const sameFormat = FORMATS[result.format].extensions.includes(file.name.split('.').pop()?.toLowerCase() ?? '');
         const protection: ProtectionDraft = result.wasProtected && password
@@ -309,7 +393,127 @@ export default function App() {
     if (opened.result.kind === 'pdf') return opened.result.bytes;
     setBusy('Converting to PDF…');
     try {
+      if (opened.result.kind === 'code') {
+        const rich = await codeToRich(opened.result.language, opened.result.text);
+        return await exportFlow(rich, 'pdf');
+      }
       return await exportFlow(opened.result.doc, 'pdf');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  /** Changes the open document's format / kind from the status-bar switcher. */
+  const switchFormat = async (target: DocFormat | 'image') => {
+    const d = docRef.current;
+    if (!d || (d.kind !== 'flow' && d.kind !== 'code')) return;
+    if (d.kind === 'flow' && target === d.format) return;
+    if (d.kind === 'code' && target === d.format) return;
+
+    if (target === 'image') {
+      setDoc({
+        kind: 'image',
+        key: docKey++,
+        name: `${baseName(d.name)}.png`,
+        decoded: blankCanvasImage(),
+        format: 'png',
+        protection: EMPTY_PROTECTION,
+      });
+      setDirty(true);
+      setImageStatus({ width: 800, height: 600 });
+      return;
+    }
+
+    if (target === 'pdf') {
+      setBusy('Converting to PDF…');
+      try {
+        await nextPaint();
+        let bytes: Uint8Array;
+        if (d.kind === 'flow') {
+          bytes = await exportFlow(currentFlow()!, 'pdf');
+        } else {
+          const rich = await codeToRich(d.language, codeRef.current?.getText() ?? d.text);
+          bytes = await exportFlow({ ...rich, title: baseName(d.name) }, 'pdf');
+        }
+        setDoc({ kind: 'pdf', key: docKey++, name: `${baseName(d.name)}.pdf`, bytes, protection: EMPTY_PROTECTION });
+        setDirty(true);
+        setPageCount(null);
+      } catch (err) {
+        toast(`Could not convert: ${errorText(err)}`);
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
+
+    if (isCodeFormat(target)) {
+      setBusy('Switching format…');
+      try {
+        await nextPaint();
+        let text = '';
+        if (d.kind === 'code') {
+          // Keep the source when switching among html/css/js (or renaming the language)
+          text = codeRef.current?.getText() ?? d.text;
+        } else if (target === 'html') {
+          const bytes = await exportFlow(currentFlow()!, 'html');
+          text = new TextDecoder().decode(bytes);
+        } else {
+          // Word/rich → css/js: take plain text from the document so content isn't lost
+          const rich = currentFlow()!;
+          const tmp = document.createElement('div');
+          tmp.innerHTML = rich.html;
+          text = (tmp.innerText || tmp.textContent || '').replace(/\u00a0/g, ' ');
+        }
+        setDoc({
+          kind: 'code',
+          key: docKey++,
+          name: `${baseName(d.name)}.${FORMATS[target].ext}`,
+          format: target,
+          language: target,
+          text,
+          handle: undefined,
+          protection: EMPTY_PROTECTION,
+        });
+        setDirty(true);
+      } catch (err) {
+        toast(`Could not switch format: ${errorText(err)}`);
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
+
+    // Rich flow formats (docx / txt / odt / rtf / md / doc)
+    if (d.kind === 'flow') {
+      setDoc((cur) => {
+        if (!cur || cur.kind !== 'flow') return cur;
+        return {
+          ...cur,
+          format: target,
+          name: `${baseName(cur.name)}.${FORMATS[target].ext}`,
+          handle: undefined,
+        };
+      });
+      setDirty(true);
+      return;
+    }
+
+    setBusy('Switching format…');
+    try {
+      await nextPaint();
+      const rich = await codeToRich(d.language, codeRef.current?.getText() ?? d.text);
+      setDoc({
+        kind: 'flow',
+        key: docKey++,
+        name: `${baseName(d.name)}.${FORMATS[target].ext}`,
+        format: target,
+        initial: rich,
+        protection: EMPTY_PROTECTION,
+      });
+      setDirty(true);
+      setStats(null);
+    } catch (err) {
+      toast(`Could not switch format: ${errorText(err)}`);
     } finally {
       setBusy(null);
     }
@@ -335,6 +539,15 @@ export default function App() {
     if (d.kind === 'image' || d.kind === 'media') throw new Error('Use the image or video save dialog.');
     const pdfProt = protectionToPdf(protection);
     const pw = protection.enabled ? protection.password : undefined;
+    if (d.kind === 'code') {
+      const text = codeRef.current?.getText() ?? d.text;
+      if (isCodeFormat(format) || format === 'txt') return utf8Encode(text);
+      const rich = await codeToRich(d.language, text);
+      return exportFlow({ ...rich, title: baseName(d.name) }, format, {
+        password: format === 'docx' ? pw : undefined,
+        pdfProtection: format === 'pdf' ? pdfProt : null,
+      });
+    }
     if (d.kind === 'flow') {
       const flow = currentFlow()!;
       return exportFlow(flow, format, { password: format === 'docx' ? pw : undefined, pdfProtection: format === 'pdf' ? pdfProt : null });
@@ -360,16 +573,51 @@ export default function App() {
       const res = await host.save({ suggestedName: choice.fileName, bytes, mime: info.mime, ext: info.ext, description: info.label, handle });
       if (!res) return;
       if (adopt) {
-        setDoc((cur) => {
-          if (!cur) return cur;
-          if (cur.kind === 'flow' && choice.format !== 'pdf') {
-            return { ...cur, name: res.name, format: choice.format as FlowFormat, handle: res.handle, protection: choice.protection };
-          }
-          if (cur.kind === 'pdf' && choice.format === 'pdf') {
-            return { ...cur, name: res.name, handle: res.handle, protection: choice.protection };
-          }
-          return cur;
-        });
+        if (d.kind === 'flow' && isCodeFormat(choice.format)) {
+          setDoc({
+            kind: 'code',
+            key: docKey++,
+            name: res.name,
+            format: choice.format,
+            language: choice.format,
+            text: new TextDecoder().decode(bytes),
+            handle: res.handle,
+            protection: choice.protection,
+          });
+        } else if (d.kind === 'code' && !isCodeFormat(choice.format) && choice.format !== 'pdf') {
+          const rich = await codeToRich(d.language, codeRef.current?.getText() ?? d.text);
+          setDoc({
+            kind: 'flow',
+            key: docKey++,
+            name: res.name,
+            format: choice.format as FlowFormat,
+            initial: rich,
+            handle: res.handle,
+            protection: choice.protection,
+          });
+        } else {
+          setDoc((cur) => {
+            if (!cur) return cur;
+            if (cur.kind === 'flow' && choice.format !== 'pdf' && !isCodeFormat(choice.format)) {
+              return { ...cur, name: res.name, format: choice.format as FlowFormat, handle: res.handle, protection: choice.protection };
+            }
+            if (cur.kind === 'code' && isCodeFormat(choice.format)) {
+              return {
+                ...cur,
+                name: res.name,
+                format: choice.format,
+                language: choice.format,
+                text: codeRef.current?.getText() ?? cur.text,
+                handle: res.handle,
+                protection: choice.protection,
+              };
+            }
+            if (cur.kind === 'pdf' && choice.format === 'pdf') {
+              return { ...cur, name: res.name, handle: res.handle, protection: choice.protection };
+            }
+            return cur;
+          });
+        }
         setDirty(false);
       }
       const lock = choice.protection.enabled && info.canProtect ? ' (password protected)' : '';
@@ -458,7 +706,7 @@ export default function App() {
       } else setExportOpen('save-as');
       return;
     }
-    const format: DocFormat = d.kind === 'pdf' ? 'pdf' : d.format;
+    const format: DocFormat = d.kind === 'pdf' ? 'pdf' : d.kind === 'flow' || d.kind === 'code' ? d.format : 'docx';
     if (d.handle && host.canSaveInPlace) {
       await writeOut({ format, fileName: d.name, protection: d.protection }, d.handle, true);
     } else if (host.kind === 'web' && !host.canSaveInPlace) {
@@ -485,6 +733,12 @@ export default function App() {
       } else if (d.kind === 'flow') {
         const html = await exportFlow(currentFlow()!, 'html');
         url = URL.createObjectURL(new Blob([html as BlobPart], { type: 'text/html' }));
+      } else if (d.kind === 'code') {
+        const text = codeRef.current?.getText() ?? d.text;
+        const html = d.language === 'html'
+          ? text
+          : `<!doctype html><html><head><meta charset="utf-8"><title>${baseName(d.name)}</title><style>pre{white-space:pre-wrap;font:12pt/1.4 Consolas,monospace}</style></head><body><pre>${escapeHtml(text)}</pre></body></html>`;
+        url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
       } else {
         url = URL.createObjectURL(new Blob([(await pdfBytes(null)) as BlobPart], { type: 'application/pdf' }));
       }
@@ -645,8 +899,24 @@ export default function App() {
     };
   }, []);
 
-  const format: DocFormat | null = doc ? (doc.kind === 'pdf' ? 'pdf' : doc.kind === 'flow' ? doc.format : null) : null;
+  const format: DocFormat | null = doc
+    ? doc.kind === 'pdf'
+      ? 'pdf'
+      : doc.kind === 'flow' || doc.kind === 'code'
+        ? doc.format
+        : null
+    : null;
   const isMediaDoc = doc?.kind === 'image' || doc?.kind === 'media';
+  const canSwitchFormat = doc?.kind === 'flow' || doc?.kind === 'code';
+  const formatLabel = format
+    ? FORMATS[format].label
+    : doc?.kind === 'image'
+      ? `${IMAGE_FORMATS[doc.format].label} image`
+      : doc?.kind === 'media'
+        ? doc.info.hasVideo
+          ? 'Video'
+          : 'Audio'
+        : '';
 
   return (
     <div className={cx('app', `host-${host.kind}`)}>
@@ -678,11 +948,18 @@ export default function App() {
               {doc.kind === 'pdf' && (
                 <IconButton label="Convert PDF to editable document" onClick={convertPdfToFlow}><Wand2 size={16} /></IconButton>
               )}
-              {!isMediaDoc && (
+              {!isMediaDoc && doc.kind !== 'code' && (
                 <>
                   <Divider />
                   <IconButton label="Zoom out (Ctrl -)" onClick={() => setZoom((z) => [...ZOOMS].reverse().find((v) => v < z - 0.001) ?? z)}><ZoomOut size={16} /></IconButton>
-                  <select className="tb-select zoom-select" aria-label="Zoom" value={String(zoom)} onChange={(e) => setZoom(parseFloat(e.target.value))}>
+                  <select
+                    className="tb-select zoom-select"
+                    aria-label="Zoom"
+                    value={String(zoom)}
+                    onChange={(e) => setZoom(e.target.value === 'fit' ? fitWidthZoom(zoom) : parseFloat(e.target.value))}
+                  >
+                    <option value="fit">Fit width</option>
+                    {!ZOOMS.includes(zoom) && <option value={String(zoom)}>{Math.round(zoom * 100)}%</option>}
                     {ZOOMS.map((z) => <option key={z} value={String(z)}>{Math.round(z * 100)}%</option>)}
                   </select>
                   <IconButton label="Zoom in (Ctrl +)" onClick={() => setZoom((z) => ZOOMS.find((v) => v > z + 0.001) ?? z)}><ZoomIn size={16} /></IconButton>
@@ -696,10 +973,13 @@ export default function App() {
       <main className="main">
         {!doc && <StartScreen onNew={newDocument} onOpen={pickAndOpen} />}
         {doc?.kind === 'flow' && (
-          <RichEditor key={doc.key} ref={richRef} initial={doc.initial} zoom={zoom} onChange={markDirty} onStats={setStats} onError={toast} />
+          <RichEditor key={doc.key} ref={richRef} initial={doc.initial} zoom={zoom} onZoom={setZoom} onChange={markDirty} onStats={setStats} onPageCount={setPageCount} onError={toast} />
+        )}
+        {doc?.kind === 'code' && (
+          <CodeEditor key={doc.key} ref={codeRef} initialText={doc.text} language={doc.language} onChange={markDirty} />
         )}
         {doc?.kind === 'pdf' && (
-          <PdfEditor key={doc.key} ref={pdfRef} bytes={doc.bytes} zoom={zoom} onChange={markDirty} onError={toast} onPageCount={setPageCount} loadAsPdf={loadAsPdf} />
+          <PdfEditor key={doc.key} ref={pdfRef} bytes={doc.bytes} zoom={zoom} onZoom={setZoom} onChange={markDirty} onError={toast} onPageCount={setPageCount} loadAsPdf={loadAsPdf} />
         )}
         {doc?.kind === 'image' && (
           <ImageEditor key={doc.key} ref={imageRef} initial={doc.decoded} onChange={markDirty} onError={toast} onStatus={setImageStatus} />
@@ -711,11 +991,58 @@ export default function App() {
 
       {doc && (
         <footer className="statusbar">
-          <span>{format ? FORMATS[format].label : doc.kind === 'image' ? `${IMAGE_FORMATS[doc.format].label} image` : doc.kind === 'media' ? (doc.info.hasVideo ? 'Video' : 'Audio') : ''}</span>
+          {canSwitchFormat ? (
+            <Popover
+              label="Change format"
+              text
+              button={<span className="format-switch-label">{formatLabel}</span>}
+            >
+              {(close) => (
+                <div className="format-menu">
+                  {PRIMARY_SWITCH.map((id) => {
+                    const label = id === 'image' ? 'Blank canvas (PNG)' : FORMATS[id].label;
+                    const hint = id === 'image' ? '800×600' : `.${FORMATS[id].ext}`;
+                    const active = id !== 'image' && format === id;
+                    return (
+                      <MenuItem
+                        key={id}
+                        hint={hint}
+                        disabled={active}
+                        onClick={() => {
+                          close();
+                          void switchFormat(id);
+                        }}
+                      >
+                        {label}
+                      </MenuItem>
+                    );
+                  })}
+                  <div className="format-menu-sep" role="separator" />
+                  <div className="format-menu-group">More formats</div>
+                  {SECONDARY_SWITCH.map((id) => (
+                    <MenuItem
+                      key={id}
+                      hint={`.${FORMATS[id].ext}`}
+                      disabled={format === id}
+                      onClick={() => {
+                        close();
+                        void switchFormat(id);
+                      }}
+                    >
+                      {FORMATS[id].label}
+                    </MenuItem>
+                  ))}
+                </div>
+              )}
+            </Popover>
+          ) : (
+            <span>{formatLabel}</span>
+          )}
+          {doc.kind === 'code' && <span>{doc.language.toUpperCase()}</span>}
           {doc.kind === 'image' && imageStatus && <span>{imageStatus.width} × {imageStatus.height} px</span>}
           {doc.kind === 'media' && <span>{formatTime(doc.info.duration, false)}{doc.info.hasVideo ? ` · ${doc.info.width} × ${doc.info.height}` : ''}{doc.info.fps ? ` · ${Math.round(doc.info.fps)} fps` : ''}</span>}
           {doc.kind === 'flow' && stats && <span>{stats.words.toLocaleString()} words · {stats.characters.toLocaleString()} characters</span>}
-          {doc.kind === 'pdf' && pageCount !== null && <span>{pageCount} {pageCount === 1 ? 'page' : 'pages'}</span>}
+          {(doc.kind === 'flow' || doc.kind === 'pdf') && pageCount !== null && <span>{pageCount} {pageCount === 1 ? 'page' : 'pages'}</span>}
           {doc.protection.enabled && <span className="status-lock"><Lock size={12} /> Password protected</span>}
           <span className="spacer" />
           <span>{dirty ? 'Unsaved changes' : 'All changes saved'}</span>
@@ -732,6 +1059,25 @@ export default function App() {
       {busy && (
         <div className="busy" role="status">
           <span className="spinner" /> {busy}
+        </div>
+      )}
+      {update?.state === 'ready' && !updateDismissed && (
+        <div className="update-banner" role="status">
+          <RefreshCw size={16} />
+          <span>Version {update.version} is ready to install.</span>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={() => {
+              if (dirtyRef.current && !window.confirm('Restart now? Your unsaved changes will be lost.')) return;
+              window.desktop?.installUpdate?.();
+            }}
+          >
+            Restart now
+          </button>
+          <button type="button" className="btn btn-text" onClick={() => setUpdateDismissed(true)} title="It will install the next time you close the app">
+            Later
+          </button>
         </div>
       )}
       <div className="toasts" aria-live="polite">
@@ -798,7 +1144,7 @@ export default function App() {
         />
       )}
       {progress && <ProgressModal title={progress.title} phase={progress.phase} progress={progress.progress} onCancel={progress.cancel} />}
-      {exportOpen && doc && format && (
+      {exportOpen && doc && format && (doc.kind === 'flow' || doc.kind === 'code' || doc.kind === 'pdf') && (
         <ExportModal
           title="Save as / Convert"
           sourceKind={doc.kind === 'pdf' ? 'pdf' : 'flow'}
@@ -813,7 +1159,7 @@ export default function App() {
           }}
         />
       )}
-      {securityOpen && doc && format && (
+      {securityOpen && doc && format && (doc.kind === 'flow' || doc.kind === 'code' || doc.kind === 'pdf') && (
         <SecurityModal format={format} initial={doc.protection} onClose={() => setSecurityOpen(false)} onApply={applySecurity} />
       )}
       {licenseOpen && host.kind === 'desktop' && <LicenseDialog onClose={() => setLicenseOpen(false)} />}
@@ -831,7 +1177,7 @@ function StartScreen({ onNew, onOpen }: { onNew: () => void; onOpen: () => void 
           <button type="button" className="start-card" onClick={onNew}>
             <FilePlus size={28} />
             <strong>Blank document</strong>
-            <span>Write and format a new document</span>
+            <span>Starts as Word (.docx) — use the format label in the status bar to switch to text, HTML, CSS, JS, PDF or a blank canvas</span>
           </button>
           <button type="button" className="start-card" onClick={onOpen}>
             <FolderOpen size={28} />
@@ -843,7 +1189,7 @@ function StartScreen({ onNew, onOpen }: { onNew: () => void; onOpen: () => void 
           <h2>Supported formats</h2>
           <table>
             <tbody>
-              <tr><th>Edit</th><td>Word (.docx, .doc), PDF, OpenDocument (.odt), Rich Text (.rtf), Markdown, HTML, plain text</td></tr>
+              <tr><th>Edit</th><td>Word (.docx, .doc), PDF, OpenDocument (.odt), Rich Text (.rtf), Markdown, HTML, CSS, JavaScript, plain text</td></tr>
               <tr><th>PDF</th><td>Edit existing text, add text, images, links, shapes and drawings; insert, delete, reorder and rotate pages; merge files</td></tr>
               <tr><th><ImageIcon size={14} /> Photos</th><td>JPEG, PNG, WebP, AVIF, HEIC (iPhone), JPEG XL, GIF, TIFF, BMP, ICO, SVG — crop, rotate, resize, adjust colour, filters, text, drawing, redact faces or plates</td></tr>
               <tr><th><Film size={14} /> Video &amp; audio</th><td>MP4, MOV, WebM, MKV, AVI, WMV, FLV, MPEG, 3GP, MP3, M4A, WAV, FLAC, OGG and more — trim, crop, rotate, resize, colour, text, fades, volume, extract sound, GIFs</td></tr>

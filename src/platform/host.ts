@@ -61,6 +61,8 @@ export interface DesktopBridge {
   saveFileAs(options: { suggestedName: string; ext: string; description: string }, bytes: Uint8Array): Promise<{ name: string; token: string } | null>;
   onOpenFile(callback: (file: { name: string; bytes: Uint8Array; token: string }) => void): () => void;
   onMenuCommand(callback: (command: string) => void): () => void;
+  onUpdateStatus?(callback: (status: UpdateStatus) => void): () => void;
+  installUpdate?(): void;
   setDirty(dirty: boolean): void;
   setTitle(title: string): void;
   /** Desktop license activation (see electron/license.ts). */
@@ -68,6 +70,12 @@ export interface DesktopBridge {
     get(): Promise<LicenseState>;
     activate(key: string): Promise<{ ok: true; state: LicenseState } | { ok: false; error: string; code: string }>;
   };
+}
+
+export interface UpdateStatus {
+  state: 'available' | 'downloading' | 'ready' | 'error';
+  version?: string;
+  percent?: number;
 }
 
 declare global {

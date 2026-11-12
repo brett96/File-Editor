@@ -2,7 +2,7 @@ import JSZip from 'jszip';
 import { isCfb, isOfficeEncrypted, decryptOffice, encryptOffice } from './crypto/office-crypto';
 import { pdfLockState, protectPdf, unlockPdf } from './crypto/pdf-crypto';
 import type { PdfProtection } from './pdf/types';
-import { PasswordError, UnsupportedError, type DocFormat, type FlowFormat, type RichDocument } from './types';
+import { PasswordError, UnsupportedError, isCodeFormat, type CodeLanguage, type DocFormat, type FlowFormat, type RichDocument } from './types';
 
 export interface FormatInfo {
   id: DocFormat;
@@ -32,11 +32,13 @@ export const FORMATS: Record<DocFormat, FormatInfo> = {
     note: 'Saved as Word-compatible rich text inside a .doc file. Opening legacy .doc files imports text, not full formatting.',
   },
   md: { id: 'md', label: 'Markdown', ext: 'md', extensions: ['md', 'markdown', 'mdown'], mime: 'text/markdown', canProtect: false },
-  html: { id: 'html', label: 'Web page (HTML)', ext: 'html', extensions: ['html', 'htm', 'xhtml'], mime: 'text/html', canProtect: false },
+  html: { id: 'html', label: 'HTML', ext: 'html', extensions: ['html', 'htm', 'xhtml'], mime: 'text/html', canProtect: false },
+  css: { id: 'css', label: 'CSS stylesheet', ext: 'css', extensions: ['css'], mime: 'text/css', canProtect: false },
+  js: { id: 'js', label: 'JavaScript', ext: 'js', extensions: ['js', 'mjs'], mime: 'text/javascript', canProtect: false },
   txt: { id: 'txt', label: 'Plain text', ext: 'txt', extensions: ['txt', 'text', 'log'], mime: 'text/plain', canProtect: false },
 };
 
-export const FORMAT_ORDER: DocFormat[] = ['docx', 'pdf', 'odt', 'rtf', 'doc', 'md', 'html', 'txt'];
+export const FORMAT_ORDER: DocFormat[] = ['docx', 'pdf', 'odt', 'rtf', 'doc', 'md', 'html', 'css', 'js', 'txt'];
 
 export const OPEN_EXTENSIONS: string[] = FORMAT_ORDER.flatMap((f) => FORMATS[f].extensions);
 
@@ -122,6 +124,7 @@ export async function sniffFormat(name: string, bytes: Uint8Array): Promise<Snif
 
 export type OpenResult =
   | { kind: 'flow'; format: FlowFormat; doc: RichDocument; wasProtected: boolean }
+  | { kind: 'code'; format: CodeLanguage; language: CodeLanguage; text: string; wasProtected: boolean }
   | { kind: 'pdf'; bytes: Uint8Array; wasProtected: boolean };
 
 async function importFlow(format: FlowFormat, bytes: Uint8Array): Promise<RichDocument> {
@@ -139,6 +142,8 @@ async function importFlow(format: FlowFormat, bytes: Uint8Array): Promise<RichDo
     case 'html':
       return (await import('./formats/html')).importHtml(bytes);
     case 'txt':
+    case 'css':
+    case 'js':
       return (await import('./formats/text')).importText(bytes);
   }
 }
@@ -180,6 +185,11 @@ export async function openDocument(name: string, bytes: Uint8Array, password?: s
   }
 
   let format = sniffed.format;
+  // HTML / CSS / JS open as raw source so scripts and styles are not stripped.
+  if (isCodeFormat(format)) {
+    const { decodeText } = await import('./dom');
+    return { kind: 'code', format, language: format, text: decodeText(bytes), wasProtected: false };
+  }
   let doc: RichDocument;
   try {
     doc = await importFlow(format, bytes);
@@ -224,6 +234,8 @@ export async function exportFlow(doc: RichDocument, format: DocFormat, options: 
     case 'html':
       return (await import('./formats/html')).exportHtml(doc);
     case 'txt':
+    case 'css':
+    case 'js':
       return (await import('./formats/text')).exportText(doc);
   }
 }

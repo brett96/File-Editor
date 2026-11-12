@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, X } from 'lucide-react';
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
@@ -86,10 +86,44 @@ export function Popover({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  const popRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; maxHeight: number } | null>(null);
+
+  // Fixed positioning, measured from the button: the toolbar scrolls sideways on phones and
+  // would otherwise clip an absolutely positioned menu.
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null);
+      return;
+    }
+    const place = () => {
+      const b = ref.current?.getBoundingClientRect();
+      const pop = popRef.current;
+      if (!b || !pop) return;
+      const w = pop.offsetWidth;
+      const vw = window.innerWidth;
+      const vh = window.visualViewport?.height ?? window.innerHeight;
+      let left = align === 'right' ? b.right - w : b.left;
+      left = Math.max(8, Math.min(left, vw - w - 8));
+      const below = vh - b.bottom - 12;
+      const above = b.top - 12;
+      const top = below >= Math.min(pop.scrollHeight, 320) || below >= above ? b.bottom + 4 : Math.max(8, b.top - 4 - Math.min(pop.scrollHeight, above));
+      setPos({ top, left, maxHeight: Math.max(160, top > b.top ? below : above) });
+    };
+    place();
+    window.addEventListener('resize', place);
+    window.addEventListener('scroll', place, true);
+    return () => {
+      window.removeEventListener('resize', place);
+      window.removeEventListener('scroll', place, true);
+    };
+  }, [open, align]);
+
   useEffect(() => {
     if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    const onDown = (e: MouseEvent | TouchEvent) => {
+      const t = e.target as Node;
+      if (ref.current && !ref.current.contains(t) && !popRef.current?.contains(t)) setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setOpen(false);
@@ -117,7 +151,15 @@ export function Popover({
         {button}
         <ChevronDown size={12} className="chev" />
       </button>
-      {open && <div className={cx('popover', align === 'right' && 'popover-right')}>{children(() => setOpen(false))}</div>}
+      {open && (
+        <div
+          ref={popRef}
+          className={cx('popover', align === 'right' && 'popover-right')}
+          style={pos ? { position: 'fixed', top: pos.top, left: pos.left, right: 'auto', maxHeight: pos.maxHeight, overflowY: 'auto' } : { position: 'fixed', visibility: 'hidden' }}
+        >
+          {children(() => setOpen(false))}
+        </div>
+      )}
     </div>
   );
 }

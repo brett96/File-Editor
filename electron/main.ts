@@ -373,6 +373,49 @@ function registerIpc() {
   });
 }
 
+// ── auto-update ────────────────────────────────────────────────────────────
+/**
+ * Checks GitHub Releases (build.publish in package.json) at launch and every few hours. A newer
+ * version downloads in the background; electron-updater verifies the download's SHA-512 against
+ * the release's latest.yml and, on Windows, its code signature against the running app's
+ * publisher before installing. When it is ready the app shows "Restart to update"; otherwise it
+ * installs silently the next time the app quits.
+ */
+const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000;
+
+function sendUpdateStatus(status: { state: 'available' | 'downloading' | 'ready' | 'error'; version?: string; percent?: number }) {
+  mainWindow?.webContents.send('update-status', status);
+}
+
+async function startAutoUpdates() {
+  let updater: typeof import('electron-updater').autoUpdater;
+  try {
+    ({ autoUpdater: updater } = await import('electron-updater'));
+  } catch {
+    return; // updater not bundled
+  }
+  updater.autoDownload = true;
+  updater.autoInstallOnAppQuit = true;
+  updater.allowPrerelease = false;
+  updater.on('update-available', (info) => sendUpdateStatus({ state: 'available', version: info.version }));
+  updater.on('download-progress', (p) => sendUpdateStatus({ state: 'downloading', percent: Math.round(p.percent) }));
+  updater.on('update-downloaded', (info) => sendUpdateStatus({ state: 'ready', version: info.version }));
+  updater.on('error', () => sendUpdateStatus({ state: 'error' }));
+  ipcMain.on('install-update', (e) => {
+    try {
+      assertSender(e);
+    } catch {
+      return;
+    }
+    dirty = false; // the renderer already confirmed unsaved changes
+    // isSilent=false shows the installer's progress on Windows; isForceRunAfter relaunches the app
+    updater.quitAndInstall(false, true);
+  });
+  const check = () => updater.checkForUpdates().catch(() => undefined);
+  void check();
+  setInterval(check, UPDATE_INTERVAL_MS);
+}
+
 // ── startup ────────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
   // deny every permission prompt (camera, mic, notifications, geolocation…) — none are needed
@@ -392,15 +435,7 @@ app.whenReady().then(async () => {
   pendingOpen.push(...filesFromArgv(process.argv));
   createWindow();
 
-  if (app.isPackaged) {
-    try {
-      const { autoUpdater } = await import('electron-updater');
-      // updates are downloaded over HTTPS and their code signature is verified before install
-      autoUpdater.checkForUpdatesAndNotify().catch(() => undefined);
-    } catch {
-      /* updater not configured */
-    }
-  }
+  if (app.isPackaged) void startAutoUpdates();
 
   // daily license check-in (refund / revoke); does nothing offline or without a license
   setTimeout(() => void refreshLicenseStatus().catch(() => undefined), 15_000);
