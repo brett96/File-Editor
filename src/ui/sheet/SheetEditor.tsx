@@ -9,6 +9,8 @@
  */
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { ICellData, IWorkbookData } from '../../core/sheet/workbook';
+import { fitForPhone, isPhoneScreen, restoreFromPhone, type PhoneRestore } from './phone-view';
+import { installSheetTouch } from './touch';
 
 export interface SheetEditorHandle {
   /** The workbook as it is now, every formula written out per cell. */
@@ -21,6 +23,8 @@ interface Props {
   initial: IWorkbookData;
   onChange: () => void;
   onError: (message: string) => void;
+  /** Informational notices (e.g. view changes made for a phone screen). */
+  onNotice?: (message: string) => void;
 }
 
 type Api = import('@univerjs/presets').FUniver;
@@ -33,7 +37,7 @@ type Api = import('@univerjs/presets').FUniver;
 const EDIT_MUTATION = /^sheets?[.-]/i;
 const QUIET_MUTATION = /formula|calculation|auto-height|auto-width|selection|scroll|zoom|set-worksheet-activate|set-active|numfmt\.mutation\.set-numfmt-local/i;
 
-export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEditor({ initial, onChange, onError }, ref) {
+export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEditor({ initial, onChange, onError, onNotice }, ref) {
   const host = useRef<HTMLDivElement>(null);
   const api = useRef<Api | null>(null);
   const [loading, setLoading] = useState(true);
@@ -41,6 +45,9 @@ export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEd
   onChangeRef.current = onChange;
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
+  const onNoticeRef = useRef(onNotice);
+  onNoticeRef.current = onNotice;
+  const phoneRestore = useRef<PhoneRestore | null>(null);
 
   useEffect(() => {
     let disposed = false;
@@ -63,6 +70,14 @@ export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEd
           import('@univerjs/preset-sheets-find-replace/lib/index.css'),
         ]);
         if (disposed || !host.current) return;
+        const phone = isPhoneScreen();
+        // Univer takes ownership of (and mutates) the snapshot it is given
+        const snapshot = structuredClone(initial);
+        if (phone) {
+          const { restore, unfroze } = fitForPhone(snapshot, host.current.clientWidth, host.current.clientHeight);
+          phoneRestore.current = restore;
+          if (unfroze) onNoticeRef.current?.('Frozen columns or rows are unfrozen on this screen so you can scroll through the sheet. The file keeps them when you save.');
+        }
         const dark = window.matchMedia?.('(prefers-color-scheme: dark)');
         const { LocaleType, mergeLocales, createUniver } = presets;
         const { univer, univerAPI } = createUniver({
@@ -70,15 +85,28 @@ export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEd
           locales: { [LocaleType.EN_US]: mergeLocales(enCore.default, enSort.default, enFilter.default, enFind.default) },
           darkMode: !!dark?.matches,
           presets: [
-            core.UniverSheetsCorePreset({ container: host.current, header: true, footer: { menus: true }, formulaBar: true }),
+            core.UniverSheetsCorePreset({
+              container: host.current,
+              header: true,
+              formulaBar: true,
+              // phones: keep the sheet tabs; selection statistics, footer menus and the zoom
+              // slider crowd them out (pinch to zoom instead)
+              footer: phone ? { sheetBar: true, statisticBar: false, menus: false, zoomSlider: false } : { menus: true },
+              ...(phone ? { ribbonType: 'simple' as const } : {}),
+            }),
             sort.UniverSheetsSortPreset(),
             filter.UniverSheetsFilterPreset(),
             find.UniverSheetsFindReplacePreset(),
           ],
         });
-        // structuredClone: Univer takes ownership of (and mutates) the snapshot it is given
-        univerAPI.createWorkbook(structuredClone(initial));
+        univerAPI.createWorkbook(snapshot);
         api.current = univerAPI;
+        const removeTouch = phone
+          ? installSheetTouch(host.current, {
+              getZoom: () => univerAPI.getActiveWorkbook()?.getActiveSheet().getZoom() ?? 1,
+              setZoom: (z) => void univerAPI.getActiveWorkbook()?.getActiveSheet().zoom(z),
+            })
+          : null;
 
         const onScheme = (e: MediaQueryListEvent) => univerAPI.toggleDarkMode(e.matches);
         dark?.addEventListener?.('change', onScheme);
@@ -92,6 +120,7 @@ export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEd
         });
         dispose = () => {
           clearTimeout(readyTimer);
+          removeTouch?.();
           dark?.removeEventListener?.('change', onScheme);
           sub.dispose();
           api.current = null;
@@ -130,7 +159,7 @@ export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEd
           }
         }
       }
-      return snap;
+      return restoreFromPhone(snap, phoneRestore.current);
     },
     getActiveSheet() {
       const wbApi = api.current?.getActiveWorkbook();

@@ -25,17 +25,23 @@ function cellFromText(text: string): ICellData | null {
   return { v: text, t: 1 };
 }
 
-export function guessDelimiter(text: string): string {
+/**
+ * The delimiter that splits the lines into the same number of columns (comma, semicolon as in
+ * European Excel, tab or pipe), or null when none does (prose, code: one column).
+ */
+export function detectDelimiter(text: string): string | null {
   const sample = text.slice(0, 20_000).split(/\r?\n/).slice(0, 20).filter(Boolean);
-  const candidates = [',', ';', '\t', '|'];
-  let best = ',';
-  let bestScore = -1;
-  for (const d of candidates) {
+  if (!sample.length) return null;
+  let best: string | null = null;
+  let bestScore = 0;
+  for (const d of [',', ';', '\t', '|']) {
     const counts = sample.map((line) => Papa.parse<string[]>(line, { delimiter: d }).data[0]?.length ?? 1);
-    if (!counts.length) continue;
     const first = counts[0];
+    if (first < 2) continue;
     const consistent = counts.filter((n) => n === first).length;
-    const score = first > 1 ? consistent * 1000 + first : 0;
+    // most lines must agree (a stray comma in a sentence doesn't make a CSV)
+    if (consistent < Math.max(1, Math.ceil(sample.length * 0.8))) continue;
+    const score = consistent * 1000 + first;
     if (score > bestScore) {
       bestScore = score;
       best = d;
@@ -44,16 +50,14 @@ export function guessDelimiter(text: string): string {
   return best;
 }
 
-/** Parses CSV/TSV bytes into a one-sheet workbook. */
-export function readDelimited(bytes: Uint8Array, name: string, delimiter?: string): IWorkbookData {
-  const text = decodeText(bytes);
-  const delim = delimiter ?? guessDelimiter(text);
-  const parsed = Papa.parse<string[]>(text, { delimiter: delim, skipEmptyLines: false });
-  const rows = parsed.data;
-  // a trailing newline produces one empty row
-  while (rows.length && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === '') rows.pop();
+/** Delimiter for a .csv file: the detected one, or a comma. */
+export function guessDelimiter(text: string): string {
+  return detectDelimiter(text) ?? ',';
+}
 
-  const sheet = blankSheet(name.replace(/\.[^.]+$/, '').slice(0, 31) || 'Sheet1');
+/** A one-sheet workbook from rows of text (numbers become numbers; see cellFromText). */
+export function rowsToWorkbook(rows: string[][], name: string): IWorkbookData {
+  const sheet = blankSheet(name.replace(/\.[^.]+$/, '').replace(/[:\\/?*[\]]/g, '_').slice(0, 31) || 'Sheet1');
   const cellData: Record<number, Record<number, ICellData>> = {};
   const widths: number[] = [];
   let maxCols = 0;
@@ -89,6 +93,29 @@ export function readDelimited(bytes: Uint8Array, name: string, delimiter?: strin
     sheetOrder: [sheet.id],
     sheets: { [sheet.id]: sheet },
   };
+}
+
+/** Splits delimited text into rows (a trailing newline doesn't add an empty row). */
+export function parseDelimited(text: string, delimiter: string): string[][] {
+  const rows = Papa.parse<string[]>(text, { delimiter, skipEmptyLines: false }).data;
+  while (rows.length && rows[rows.length - 1].length === 1 && rows[rows.length - 1][0] === '') rows.pop();
+  return rows;
+}
+
+/** Parses CSV/TSV bytes into a one-sheet workbook. */
+export function readDelimited(bytes: Uint8Array, name: string, delimiter?: string): IWorkbookData {
+  const text = decodeText(bytes);
+  return rowsToWorkbook(parseDelimited(text, delimiter ?? guessDelimiter(text)), name);
+}
+
+/**
+ * A workbook from plain text: split into columns when the text is consistently delimited
+ * (tabs, commas…), otherwise one line per row in column A.
+ */
+export function textToWorkbook(text: string, name: string, split = true): IWorkbookData {
+  const delim = split ? detectDelimiter(text) : null;
+  const rows = delim ? parseDelimited(text, delim) : text.replace(/\r\n?/g, '\n').replace(/\n+$/, '').split('\n').map((l) => [l]);
+  return rowsToWorkbook(rows.length === 1 && rows[0].length === 1 && rows[0][0] === '' ? [] : rows, name);
 }
 
 /** Serializes rows of display text as CSV (comma) or TSV (tab). */
