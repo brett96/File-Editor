@@ -62,8 +62,9 @@ async function codeToRich(language: CodeLanguage, text: string): Promise<RichDoc
     const { importHtml } = await import('./core/formats/html');
     return importHtml(utf8Encode(text));
   }
-  const body = text.trim() ? `<pre><code>${escapeHtml(text)}</code></pre>` : '<p></p>';
-  return { html: body, title: 'Untitled' };
+  // Keep source intact as plain paragraphs (txt / Word) or a code block for other rich formats
+  const { importText } = await import('./core/formats/text');
+  return importText(utf8Encode(text));
 }
 
 function blankCanvasImage(): DecodedImage {
@@ -449,11 +450,17 @@ export default function App() {
         await nextPaint();
         let text = '';
         if (d.kind === 'code') {
-          const current = codeRef.current?.getText() ?? d.text;
-          text = d.language === target || target === 'html' ? current : '';
+          // Keep the source when switching among html/css/js (or renaming the language)
+          text = codeRef.current?.getText() ?? d.text;
         } else if (target === 'html') {
           const bytes = await exportFlow(currentFlow()!, 'html');
           text = new TextDecoder().decode(bytes);
+        } else {
+          // Word/rich → css/js: take plain text from the document so content isn't lost
+          const rich = currentFlow()!;
+          const tmp = document.createElement('div');
+          tmp.innerHTML = rich.html;
+          text = (tmp.innerText || tmp.textContent || '').replace(/\u00a0/g, ' ');
         }
         setDoc({
           kind: 'code',
@@ -462,6 +469,7 @@ export default function App() {
           format: target,
           language: target,
           text,
+          handle: undefined,
           protection: EMPTY_PROTECTION,
         });
         setDirty(true);
