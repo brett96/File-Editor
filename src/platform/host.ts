@@ -42,6 +42,16 @@ export interface FileHost {
   setTitle?(title: string): void;
 }
 
+/** License state reported by the desktop app's main process (electron/license.ts). */
+export interface LicenseState {
+  status: 'unlicensed' | 'active' | 'revoked';
+  email?: string;
+  keyHint?: string;
+  activatedAt?: string;
+  message?: string;
+  purchaseUrl: string;
+}
+
 /** Shape of the API exposed by electron/preload.ts. */
 export interface DesktopBridge {
   platform: string;
@@ -55,6 +65,11 @@ export interface DesktopBridge {
   installUpdate?(): void;
   setDirty(dirty: boolean): void;
   setTitle(title: string): void;
+  /** Desktop license activation (see electron/license.ts). */
+  license: {
+    get(): Promise<LicenseState>;
+    activate(key: string): Promise<{ ok: true; state: LicenseState } | { ok: false; error: string; code: string }>;
+  };
 }
 
 export interface UpdateStatus {
@@ -214,4 +229,9 @@ export async function readDroppedFile(file: File): Promise<OpenedFile> {
 
 export async function fileBytes(file: OpenedFile): Promise<Uint8Array> {
   return new Uint8Array(await file.blob.arrayBuffer());
+}
+
+/** The desktop app's license API, or null in the browser (licenses are desktop-only). */
+export function licenseBridge(): DesktopBridge['license'] | null {
+  return typeof window !== 'undefined' ? window.desktop?.license ?? null : null;
 }

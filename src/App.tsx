@@ -35,6 +35,7 @@ import {
   type ProtectionDraft,
 } from './ui/dialogs';
 import { RichEditor, type RichEditorHandle } from './ui/rich/RichEditor';
+import { LicenseDialog } from './ui/license/LicenseDialog';
 import { PdfEditor, type PdfEditorHandle } from './ui/pdf/PdfEditor';
 import { ImageEditor, type ImageEditorHandle } from './ui/image/ImageEditor';
 import { VideoEditor, formatTime, rotatedSize, type VideoEditorHandle } from './ui/video/VideoEditor';
@@ -147,6 +148,7 @@ export default function App() {
   const [askPw, setAskPw] = useState<PasswordAsk | null>(null);
   const [exportOpen, setExportOpen] = useState<null | 'save-as' | 'export'>(null);
   const [securityOpen, setSecurityOpen] = useState(false);
+  const [licenseOpen, setLicenseOpen] = useState(false);
   const [stats, setStats] = useState<{ words: number; characters: number } | null>(null);
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -837,6 +839,7 @@ export default function App() {
       const a = actions.current;
       if (cmd === 'new') a.newDocument();
       else if (cmd === 'open') void a.pickAndOpen();
+      else if (cmd === 'license') setLicenseOpen(true);
       else if (!docRef.current) return;
       else if (cmd === 'save') void a.save();
       else if (cmd === 'save-as') a.saveAs();
@@ -1159,6 +1162,7 @@ export default function App() {
       {securityOpen && doc && format && (doc.kind === 'flow' || doc.kind === 'code' || doc.kind === 'pdf') && (
         <SecurityModal format={format} initial={doc.protection} onClose={() => setSecurityOpen(false)} onApply={applySecurity} />
       )}
+      {licenseOpen && host.kind === 'desktop' && <LicenseDialog onClose={() => setLicenseOpen(false)} />}
     </div>
   );
 }

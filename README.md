@@ -106,7 +106,32 @@ What the build does to harden the app:
 - Auto-updates come from GitHub Releases over HTTPS. `electron-updater` checks the update's
   signature before installing it. Set `build.publish` in `package.json` to your repository.
 - At runtime the renderer is sandboxed, can only reach files the user picked, cannot navigate
-  away or open new windows, and is blocked from making any network request.
+  away or open new windows, and is blocked from making any network request. The only network
+  traffic besides updates is license activation (below), made by the main process.
+
+### Licenses (desktop only)
+
+The desktop app can be activated with a lifetime license bought at
+`license.bretttomita.com` (one license, one device, for life). **Nothing is locked without a
+license**; activation only records that the computer holds one. The web version never asks.
+
+- **Help → Enter License Key…** opens the license dialog (`src/ui/license/LicenseDialog.tsx`).
+- `electron/license.ts` (main process) sends the key and a device id to
+  `https://license.bretttomita.com/api/license/activate`, verifies the Ed25519-signed token it
+  gets back against `LICENSE_PUBLIC_KEY`, and stores it in `license.json` in the app's user-data
+  folder. The device id is a SHA-256 of the OS machine id; the raw id never leaves the computer.
+  The token only verifies on the device it was issued for.
+- Once a day an activated app checks `/api/license/status` to learn about a refund or revoke.
+  Offline, nothing changes.
+- License requests use their own in-memory Electron session that can reach only the license
+  server; the app's main session still blocks all network access.
+- `LICENSE_PUBLIC_KEY` must match the server's `LICENSE_SIGNING_PRIVATE_KEY` (Admin → Licenses
+  on the portfolio site shows the server's public key). If you rotate the server key, update
+  the constant and ship a new build; licenses activated under the old key then need
+  re-activating (same key, same device works).
+- For local testing, `FILE_EDITOR_LICENSE_API=http://localhost:3000` points an unpackaged dev
+  build at a local portfolio server (packaged builds ignore it). The server side is documented
+  in the portfolio repo's `docs/license.md`.
 
 Publish `SHA256SUMS` next to the downloads so users can verify them:
 
