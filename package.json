@@ -73,6 +73,7 @@
     "@univerjs/preset-sheets-sort": "^1.4.0",
     "@univerjs/presets": "^1.4.0",
     "@vitejs/plugin-react": "^6.3.0",
+    "ag-psd": "^34.2.0",
     "cfb": "^1.2.2",
     "codemirror": "^6.0.2",
     "concurrently": "^10.0.7",
@@ -303,6 +304,13 @@
         "name": "Audio",
         "description": "Audio",
         "role": "Editor"
+      },
+      {
+        "ext": "psd",
+        "name": "Photoshop Document",
+        "description": "Photoshop document",
+        "role": "Editor",
+        "mimeType": "image/vnd.adobe.photoshop"
       }
     ],
     "win": {

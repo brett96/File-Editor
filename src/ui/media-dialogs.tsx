@@ -15,7 +15,7 @@ import {
 import { QUALITY_LABELS, encodableCodecs, type MediaExportOptions, type MediaInfo, type QualityLevel } from '../core/media/video-engine';
 import { Field, Modal } from './components';
 
-export type ImageTarget = ImageOutputFormat | 'pdf';
+export type ImageTarget = ImageOutputFormat | 'pdf' | 'psd';
 
 export interface ImageExportChoice {
   format: ImageTarget;
@@ -35,8 +35,11 @@ export function ImageExportModal({
   height,
   onSubmit,
   onClose,
+  allowPsd = false,
 }: {
   title?: string;
+  /** offer Photoshop (.psd, with layers): the desktop pro photo editor */
+  allowPsd?: boolean;
   initialFormat: ImageTarget;
   initialName: string;
   width: number;
@@ -50,8 +53,8 @@ export function ImageExportModal({
   const [lossless, setLossless] = useState(false);
   const [background, setBackground] = useState('#ffffff');
   const [scale, setScale] = useState(1);
-  const info = format === 'pdf' ? null : IMAGE_FORMATS[format];
-  const ext = format === 'pdf' ? 'pdf' : info!.ext;
+  const info = format === 'pdf' || format === 'psd' ? null : IMAGE_FORMATS[format];
+  const ext = format === 'pdf' ? 'pdf' : format === 'psd' ? 'psd' : info!.ext;
   const lossy = format === 'pdf' || (info?.lossy ?? false);
   const canLossless = format === 'webp' || format === 'avif' || format === 'jxl';
   const noAlpha = format === 'jpeg' || format === 'pdf';
@@ -86,6 +89,7 @@ export function ImageExportModal({
           </Field>
           <Field label="Format">
             <select className="input" value={format} onChange={(e) => setFormat(e.target.value as ImageTarget)}>
+              {allowPsd && <option value="psd">Photoshop, with layers (.psd)</option>}
               {IMAGE_OUTPUT_ORDER.map((f) => <option key={f} value={f}>{IMAGE_FORMATS[f].label} (.{IMAGE_FORMATS[f].ext})</option>)}
               <option value="pdf">PDF document (.pdf)</option>
             </select>
@@ -104,13 +108,14 @@ export function ImageExportModal({
             <input type="color" value={background} onChange={(e) => setBackground(e.target.value)} aria-label="Background colour" />
           </label>
         )}
-        <Field label="Size">
+        {format === 'psd' && <p className="dialog-hint">Keeps every layer, mask, blend mode and adjustment layer. Text, shape and fill layers are saved as pixels.</p>}
+        {format !== 'psd' && <Field label="Size">
           <select className="input" value={String(scale)} onChange={(e) => setScale(Number(e.target.value))}>
             {[1, 0.75, 0.5, 0.25].map((k) => (
               <option key={k} value={k}>{k === 1 ? 'Original' : `${k * 100}%`} — {Math.max(1, Math.round(width * k))} × {Math.max(1, Math.round(height * k))}</option>
             ))}
           </select>
-        </Field>
+        </Field>}
         {info?.note && <p className="dialog-hint">{info.note}</p>}
         {format === 'pdf' && <p className="dialog-hint">The image is placed on a page of its own size. Open the PDF afterwards to add pages or text.</p>}
         <p className="dialog-hint">Camera details and GPS location are not copied into the saved file.</p>

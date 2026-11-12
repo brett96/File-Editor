@@ -1317,6 +1317,28 @@ body {
   color: #fff;
 }
 
+/* ── desktop: Quick edit / Pro (Studio) workspace switch in the status bar ── */
+.workspace-switch {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.workspace-switch button {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 1px 9px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.workspace-switch button.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+
 /* ── spreadsheet editor (Univer) ────────────────────────────────────── */
 .sheet-editor {
   position: absolute;

@@ -1,0 +1,525 @@
+/* Pro photo editor (desktop): dark, dense workspace like other pro image apps. */
+.pi-root {
+  --pi-bg: #1e1f23;
+  --pi-panel: #2a2b30;
+  --pi-panel-2: #33353b;
+  --pi-border: #3d3f46;
+  --pi-text: #e6e7ea;
+  --pi-muted: #9a9ca5;
+  --pi-accent: #3b82f6;
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--pi-bg);
+  color: var(--pi-text);
+  font-size: 12px;
+  user-select: none;
+}
+
+.pi-root input[type='color'] {
+  width: 28px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--pi-border);
+  border-radius: 4px;
+  background: none;
+}
+
+.pi-root .tb-select,
+.pi-root .input {
+  background: var(--pi-panel-2);
+  color: var(--pi-text);
+  border-color: var(--pi-border);
+}
+
+.pi-root .check {
+  color: var(--pi-text);
+  font-size: 12px;
+  gap: 5px;
+}
+
+.pi-menubar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: var(--pi-panel);
+  border-bottom: 1px solid var(--pi-border);
+  min-height: 38px;
+  flex-wrap: wrap;
+}
+
+.pi-menubar .btn {
+  color: var(--pi-text);
+}
+
+.pi-menubar-sep {
+  width: 1px;
+  height: 20px;
+  background: var(--pi-border);
+  margin: 0 4px;
+}
+
+.pi-options {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pi-options .pi-slider {
+  width: 190px;
+}
+
+.pi-menu-scroll {
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.pi-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.pi-tools {
+  width: 42px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 6px 0;
+  background: var(--pi-panel);
+  border-right: 1px solid var(--pi-border);
+  overflow-y: auto;
+}
+
+.pi-tool,
+.pi-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--pi-text);
+  cursor: pointer;
+}
+
+.pi-icon-btn {
+  width: 26px;
+  height: 26px;
+}
+
+.pi-tool:hover,
+.pi-icon-btn:hover:not(:disabled) {
+  background: var(--pi-panel-2);
+}
+
+.pi-tool.is-active {
+  background: var(--pi-accent);
+  color: #fff;
+}
+
+.pi-icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.pi-text-btn {
+  border: 1px solid var(--pi-border);
+  background: var(--pi-panel-2);
+  color: var(--pi-text);
+  border-radius: 4px;
+  padding: 3px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.pi-dim {
+  opacity: 0.35;
+}
+
+.pi-swatches {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  margin-top: 10px;
+}
+
+.pi-swatch {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  border: 1px solid #fff;
+  outline: 1px solid #000;
+  cursor: pointer;
+}
+
+.pi-swatch input {
+  opacity: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.pi-fg {
+  left: 0;
+  top: 0;
+  z-index: 1;
+}
+
+.pi-bg {
+  right: 0;
+  bottom: 0;
+}
+
+.pi-canvas-area {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: auto;
+  background: #141518;
+}
+
+.pi-stage {
+  display: grid;
+  place-items: center;
+  min-width: 100%;
+  min-height: 100%;
+}
+
+.pi-checker {
+  position: relative;
+  background-color: #fff;
+  background-image: linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 0 8px, 8px -8px, -8px 0;
+  box-shadow: 0 2px 18px rgb(0 0 0 / 45%);
+}
+
+.pi-view,
+.pi-overlay {
+  position: absolute;
+  inset: 0;
+  image-rendering: auto;
+}
+
+.pi-overlay {
+  touch-action: none;
+}
+
+.pi-busy {
+  position: absolute;
+  left: 50%;
+  top: 14px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: rgb(0 0 0 / 75%);
+}
+
+.pi-side {
+  width: 280px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--pi-panel);
+  border-left: 1px solid var(--pi-border);
+  min-height: 0;
+}
+
+.pi-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-bottom: 1px solid var(--pi-border);
+}
+
+.pi-props {
+  flex: 0 1 auto;
+  max-height: 52%;
+}
+
+.pi-props-body {
+  padding: 8px 10px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pi-layers {
+  flex: 1;
+}
+
+.pi-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-weight: 600;
+  background: var(--pi-panel-2);
+  text-transform: none;
+}
+
+.pi-layer-opts {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+}
+
+.pi-layer-opts .tb-select {
+  flex: 1;
+  min-width: 0;
+}
+
+.pi-opacity {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pi-opacity span {
+  color: var(--pi-muted);
+}
+
+.pi-opacity input {
+  width: 70px;
+}
+
+.pi-opacity output {
+  width: 34px;
+  text-align: right;
+}
+
+.pi-layer-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.pi-layer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--pi-border);
+  cursor: pointer;
+}
+
+.pi-layer.is-active {
+  background: #2f4d7a;
+}
+
+.pi-layer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pi-layer-name small {
+  display: block;
+  color: var(--pi-muted);
+  font-size: 10px;
+}
+
+.pi-thumb {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  background-color: #fff;
+  background-image: linear-gradient(45deg, #ccc 25%, transparent 25%), linear-gradient(-45deg, #ccc 25%, transparent 25%),
+    linear-gradient(45deg, transparent 75%, #ccc 75%), linear-gradient(-45deg, transparent 75%, #ccc 75%);
+  background-size: 8px 8px;
+  background-position: 0 0, 0 4px, 4px -4px, -4px 0;
+  outline: 1px solid var(--pi-border);
+  flex: none;
+}
+
+.pi-thumb.is-active {
+  outline: 2px solid #fff;
+}
+
+.pi-thumb canvas {
+  max-width: 40px;
+  max-height: 40px;
+}
+
+.pi-layer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  padding: 4px;
+  background: var(--pi-panel-2);
+}
+
+.pi-slider {
+  display: grid;
+  grid-template-columns: 78px 1fr 52px;
+  align-items: center;
+  gap: 6px;
+}
+
+.pi-slider span {
+  color: var(--pi-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pi-num {
+  width: 52px;
+  padding: 2px 4px;
+  border: 1px solid var(--pi-border);
+  border-radius: 3px;
+  background: var(--pi-panel-2);
+  color: var(--pi-text);
+  font-size: 11px;
+}
+
+.pi-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pi-grid2 {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 4px;
+}
+
+.pi-hint {
+  color: var(--pi-muted);
+  font-size: 11px;
+  margin: 0;
+}
+
+.pi-mask-note {
+  color: #fbbf24;
+}
+
+.pi-text {
+  min-height: 54px;
+  resize: vertical;
+  font-size: 13px;
+}
+
+.pi-seg {
+  display: inline-flex;
+  border: 1px solid var(--pi-border);
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.pi-seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--pi-text);
+  padding: 4px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.pi-seg button.is-active {
+  background: var(--pi-accent);
+  color: #fff;
+}
+
+.pi-histogram {
+  width: 100%;
+  height: 70px;
+  background: #18191c;
+  border: 1px solid var(--pi-border);
+}
+
+.pi-histogram path {
+  fill: #9aa3b5;
+}
+
+.pi-curves {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pi-curve-graph {
+  width: 100%;
+  aspect-ratio: 1;
+  background: #18191c;
+  border: 1px solid var(--pi-border);
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.pi-curve-graph .pi-histogram {
+  height: 100%;
+  border: 0;
+  opacity: 0.35;
+}
+
+.pi-grid line,
+.pi-diag {
+  stroke: #3d3f46;
+  stroke-width: 1;
+}
+
+.pi-curve {
+  fill: none;
+  stroke: #e6e7ea;
+  stroke-width: 2;
+}
+
+.pi-curve.ch-r {
+  stroke: #f87171;
+}
+
+.pi-curve.ch-g {
+  stroke: #4ade80;
+}
+
+.pi-curve.ch-b {
+  stroke: #60a5fa;
+}
+
+.pi-curve-pt {
+  fill: #18191c;
+  stroke: #fff;
+  stroke-width: 2;
+}
+
+.pi-anchor {
+  display: grid;
+  grid-template-columns: repeat(3, 22px);
+  gap: 3px;
+}
+
+.pi-anchor button {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.pi-anchor button.is-active {
+  background: var(--accent);
+}

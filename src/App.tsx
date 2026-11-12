@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
 import {
   FileDown,
   FilePlus,
@@ -39,6 +39,8 @@ import { RichEditor, type RichEditorHandle } from './ui/rich/RichEditor';
 import { LicenseDialog } from './ui/license/LicenseDialog';
 import { PdfEditor, type PdfEditorHandle } from './ui/pdf/PdfEditor';
 import { ImageEditor, type ImageEditorHandle } from './ui/image/ImageEditor';
+import type { ProImageEditorHandle } from './ui/pro-image/ProImageEditor';
+import type { ProDocument } from './core/pro-image/document';
 import { VideoEditor, formatTime, rotatedSize, type VideoEditorHandle } from './ui/video/VideoEditor';
 import { CodeEditor, type CodeEditorHandle } from './ui/code/CodeEditor';
 import { ImageExportModal, MediaExportModal, ProgressModal, type ImageExportChoice, type MediaExportChoice } from './ui/media-dialogs';
@@ -50,6 +52,9 @@ import { SHEET_EXTENSIONS, SHEET_FORMATS, blankWorkbook, sheetFormatFromName, us
 import { SheetEditor, type SheetEditorHandle } from './ui/sheet/SheetEditor';
 import { SheetExportModal, SheetSecurityModal, type SheetExportChoice } from './ui/sheet/sheet-dialogs';
 
+// Pro editors are desktop-only and loaded on demand, so the web build never downloads them.
+const ProImageEditor = lazy(() => import('./ui/pro-image/ProImageEditor').then((m) => ({ default: m.ProImageEditor })));
+
 const ALL_OPEN_EXTENSIONS = [...new Set([...OPEN_EXTENSIONS, ...SHEET_EXTENSIONS, ...IMAGE_EXTENSIONS_ALL, ...MEDIA_EXTENSIONS_ALL])];
 
 type OpenDoc =
@@ -57,6 +62,8 @@ type OpenDoc =
   | { kind: 'code'; key: number; name: string; format: CodeLanguage; language: CodeLanguage; text: string; handle?: unknown; protection: ProtectionDraft }
   | { kind: 'pdf'; key: number; name: string; bytes: Uint8Array; handle?: unknown; protection: ProtectionDraft }
   | { kind: 'image'; key: number; name: string; decoded: DecodedImage; format: ImageFormat; handle?: unknown; protection: ProtectionDraft }
+  /** desktop pro photo editor: a layered document (format: what Save writes without asking) */
+  | { kind: 'proimage'; key: number; name: string; doc: ProDocument; format: ImageFormat | 'psd'; handle?: unknown; protection: ProtectionDraft }
   | { kind: 'media'; key: number; name: string; blob: Blob; info: MediaInfo; container: ContainerFormat; handle?: unknown; protection: ProtectionDraft }
   | { kind: 'sheet'; key: number; name: string; format: SheetFormat; workbook: IWorkbookData; handle?: unknown; protection: ProtectionDraft };
 
@@ -169,6 +176,7 @@ export default function App() {
   const codeRef = useRef<CodeEditorHandle>(null);
   const pdfRef = useRef<PdfEditorHandle>(null);
   const imageRef = useRef<ImageEditorHandle>(null);
+  const proImageRef = useRef<ProImageEditorHandle>(null);
   const videoRef = useRef<VideoEditorHandle>(null);
   const sheetRef = useRef<SheetEditorHandle>(null);
   const docRef = useRef(doc);
@@ -386,9 +394,28 @@ export default function App() {
     return true;
   };
 
+  /** Photoshop files: layered in the desktop pro editor. Returns false when the file is not a PSD. */
+  const openPsd = async (file: OpenedFile): Promise<boolean> => {
+    if (!/\.(psd|psb)$/i.test(file.name)) return false;
+    if (host.kind !== 'desktop') throw new Error('Photoshop (.psd) files open in the File Editor desktop app, which has the pro photo editor with layers.');
+    setBusy(`Opening ${file.name}…`);
+    try {
+      await nextPaint();
+      const { readPsdDocument } = await import('./core/pro-image/psd');
+      const { doc: pdoc, warnings } = readPsdDocument(await fileBytes(file));
+      setDoc({ kind: 'proimage', key: docKey++, name: file.name, doc: pdoc, format: 'psd', handle: file.handle, protection: EMPTY_PROTECTION });
+      setDirty(false);
+      if (warnings.length) toast(`Opened. Not editable here: ${warnings.join(', ')}.`, 'info');
+    } finally {
+      setBusy(null);
+    }
+    return true;
+  };
+
   const openFile = async (file: OpenedFile) => {
     if (!confirmDiscard()) return;
     try {
+      if (await openPsd(file)) return;
       if (await openSheet(file)) return;
       if (await openMedia(file)) return;
     } catch (err) {
@@ -443,7 +470,8 @@ export default function App() {
 
   const pickAndOpen = async () => {
     try {
-      const [file] = await host.openFiles({ extensions: ALL_OPEN_EXTENSIONS, description: 'Documents, images, video & audio' });
+      const extensions = host.kind === 'desktop' ? [...ALL_OPEN_EXTENSIONS, 'psd'] : ALL_OPEN_EXTENSIONS;
+      const [file] = await host.openFiles({ extensions, description: 'Documents, images, video & audio' });
       if (file) await openFile(file);
     } catch (err) {
       toast(errorText(err));
@@ -455,6 +483,37 @@ export default function App() {
     setDoc({ kind: 'flow', key: docKey++, name: 'Untitled.docx', format: 'docx', initial: { ...BLANK }, protection: EMPTY_PROTECTION });
     setDirty(false);
     setStats(null);
+  };
+
+  /** Desktop: move the open photo between the quick editor and the layered pro editor. */
+  const switchPhotoWorkspace = async (to: 'quick' | 'pro') => {
+    const d = docRef.current;
+    if (!d) return;
+    if (to === 'pro' && d.kind === 'image') {
+      const px = imageRef.current?.getPixels();
+      if (!px) return;
+      const { newDocument: newProDocument } = await import('./core/pro-image/document');
+      setDoc({ kind: 'proimage', key: docKey++, name: d.name, doc: newProDocument(px), format: d.format, handle: d.handle, protection: EMPTY_PROTECTION });
+      return;
+    }
+    if (to === 'quick' && d.kind === 'proimage') {
+      const pro = proImageRef.current;
+      if (!pro) return;
+      const layers = pro.getDocument().layers.length;
+      if (layers > 1 && !window.confirm(`The quick editor works on a single image, so the ${layers} layers will be flattened. Continue?`)) return;
+      const px = pro.getPixels();
+      const fmt: ImageFormat = d.format === 'psd' ? 'png' : d.format;
+      setDoc({
+        kind: 'image',
+        key: docKey++,
+        name: d.format === 'psd' ? `${baseName(d.name)}.png` : d.name,
+        decoded: { pixels: px, format: fmt, warnings: [] },
+        format: fmt,
+        handle: d.format === 'psd' ? undefined : d.handle,
+        protection: EMPTY_PROTECTION,
+      });
+      if (layers > 1 || d.format === 'psd') setDirty(true);
+    }
   };
 
   const newSpreadsheet = () => {
@@ -667,7 +726,7 @@ export default function App() {
 
   const render = async (format: DocFormat, protection: ProtectionDraft): Promise<Uint8Array> => {
     const d = docRef.current!;
-    if (d.kind === 'image' || d.kind === 'media' || d.kind === 'sheet') throw new Error('Use the image, video or spreadsheet save dialog.');
+    if (d.kind === 'image' || d.kind === 'proimage' || d.kind === 'media' || d.kind === 'sheet') throw new Error('Use the image, video or spreadsheet save dialog.');
     const pdfProt = protectionToPdf(protection);
     const pw = protection.enabled ? protection.password : undefined;
     if (d.kind === 'code') {
@@ -765,23 +824,37 @@ export default function App() {
     const codecs = await import('./core/media/image-codecs');
     const src = c.scale !== 1 ? codecs.resizePixels(px, px.width * c.scale, px.height * c.scale) : px;
     if (c.format === 'pdf') return { bytes: await codecs.imageToPdf(src, title, c.quality), mime: 'application/pdf', ext: 'pdf', label: 'PDF' };
+    if (c.format === 'psd') throw new Error('Use the pro photo editor to save Photoshop files.');
     const info = IMAGE_FORMATS[c.format];
     return { bytes: await codecs.encodeImage(src, c.format, { quality: c.quality, lossless: c.lossless, background: c.background }), mime: info.mime, ext: info.ext, label: info.label };
   };
 
   const saveImage = async (c: ImageExportChoice, handle: unknown | undefined, adopt: boolean, pixels?: Pixels) => {
     const d = docRef.current;
-    const px = pixels ?? imageRef.current?.getPixels();
-    if (!px) return;
+    const pro = d?.kind === 'proimage' && !pixels ? proImageRef.current : null;
     setBusy('Saving…');
     try {
       await nextPaint();
-      const out = await encodeChoice(px, c, baseName(c.fileName));
+      let out: { bytes: Uint8Array; mime: string; ext: string; label: string };
+      if (c.format === 'psd') {
+        if (!pro) throw new Error('Layered Photoshop files are saved from the pro photo editor.');
+        out = { bytes: pro.getPsd(), mime: 'image/vnd.adobe.photoshop', ext: 'psd', label: 'Photoshop document' };
+      } else {
+        const px = pixels ?? (pro ? pro.getPixels() : imageRef.current?.getPixels());
+        if (!px) return;
+        out = await encodeChoice(px, c, baseName(c.fileName));
+      }
       const res = await host.save({ suggestedName: c.fileName, bytes: out.bytes, mime: out.mime, ext: out.ext, description: out.label, handle });
       if (!res) return;
-      if (adopt && d?.kind === 'image' && c.format !== 'pdf') {
+      if (adopt && d?.kind === 'image' && c.format !== 'pdf' && c.format !== 'psd') {
         setDoc((cur) => (cur && cur.kind === 'image' ? { ...cur, name: res.name, format: c.format as ImageFormat, handle: res.handle } : cur));
         setDirty(false);
+      }
+      if (adopt && d?.kind === 'proimage' && c.format !== 'pdf') {
+        // keep the editor (and its undo history) mounted: same key, new file details
+        setDoc((cur) => (cur && cur.kind === 'proimage' ? { ...cur, name: res.name, format: c.format as ImageFormat | 'psd', handle: res.handle } : cur));
+        if (c.format === 'psd') setDirty(false);
+        else toast('Saved a flattened copy. Save as Photoshop (.psd) to keep the layers.', 'info');
       }
       toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${res.name} (${(out.bytes.length / 1024).toFixed(0)} KB)`, 'info');
     } catch (err) {
@@ -878,6 +951,13 @@ export default function App() {
       setExportOpen('save-as');
       return;
     }
+    if (d.kind === 'proimage') {
+      // Save keeps layers only in .psd; anything else asks (Save As) so layers aren't flattened by surprise
+      if (d.format === 'psd' && d.handle) {
+        await saveImage({ format: 'psd', fileName: d.name, quality: 92, lossless: false, background: '#ffffff', scale: 1 }, d.handle, true);
+      } else setExportOpen('save-as');
+      return;
+    }
     if (d.kind === 'image') {
       const f = d.format;
       if (IMAGE_FORMATS[f].canWrite && (host.canSaveInPlace ? !!d.handle : host.kind === 'web')) {
@@ -903,8 +983,8 @@ export default function App() {
     try {
       let url: string;
       if (d.kind === 'media') throw new Error('Video and audio cannot be printed. Save a frame as an image to print it.');
-      if (d.kind === 'image') {
-        const px = imageRef.current!.getPixels();
+      if (d.kind === 'image' || d.kind === 'proimage') {
+        const px = d.kind === 'proimage' ? proImageRef.current!.getPixels() : imageRef.current!.getPixels();
         const { pixelsToCanvas } = await import('./core/media/image-codecs');
         const dataUrl = pixelsToCanvas(px).toDataURL('image/png');
         const html = `<!doctype html><html><head><title>${baseName(d.name)}</title><style>@page{margin:12mm}html,body{margin:0;height:100%}body{display:flex;align-items:center;justify-content:center}img{max-width:100%;max-height:100vh;object-fit:contain}</style></head><body><img src="${dataUrl}"></body></html>`;
@@ -1094,13 +1174,15 @@ export default function App() {
         ? doc.format
         : null
     : null;
-  const isMediaDoc = doc?.kind === 'image' || doc?.kind === 'media';
+  const isMediaDoc = doc?.kind === 'image' || doc?.kind === 'proimage' || doc?.kind === 'media';
   const canSwitchFormat = doc?.kind === 'flow' || doc?.kind === 'code' || doc?.kind === 'sheet';
   const currentFormat: SwitchTarget | null = doc?.kind === 'sheet' ? doc.format : format;
   const formatLabel = format
     ? FORMATS[format].label
     : doc?.kind === 'sheet'
       ? SHEET_FORMATS[doc.format].label
+      : doc?.kind === 'proimage'
+      ? doc.format === 'psd' ? 'Photoshop document' : `${IMAGE_FORMATS[doc.format].label} · layers`
       : doc?.kind === 'image'
       ? `${IMAGE_FORMATS[doc.format].label} image`
       : doc?.kind === 'media'
@@ -1172,6 +1254,11 @@ export default function App() {
         )}
         {doc?.kind === 'pdf' && (
           <PdfEditor key={doc.key} ref={pdfRef} bytes={doc.bytes} zoom={zoom} onZoom={setZoom} onChange={markDirty} onError={toast} onPageCount={setPageCount} loadAsPdf={loadAsPdf} />
+        )}
+        {doc?.kind === 'proimage' && (
+          <Suspense fallback={<div className="busy" role="status"><span className="spinner" /> Loading the pro editor…</div>}>
+            <ProImageEditor key={doc.key} ref={proImageRef} initial={doc.doc} onChange={markDirty} onError={toast} onStatus={setImageStatus} />
+          </Suspense>
         )}
         {doc?.kind === 'image' && (
           <ImageEditor key={doc.key} ref={imageRef} initial={doc.decoded} onChange={markDirty} onError={toast} onStatus={setImageStatus} />
@@ -1246,7 +1333,13 @@ export default function App() {
             <span>{formatLabel}</span>
           )}
           {doc.kind === 'code' && <span>{doc.language.toUpperCase()}</span>}
-          {doc.kind === 'image' && imageStatus && <span>{imageStatus.width} × {imageStatus.height} px</span>}
+          {host.kind === 'desktop' && (doc.kind === 'image' || doc.kind === 'proimage') && (
+            <div className="workspace-switch" role="radiogroup" aria-label="Photo workspace">
+              <button type="button" role="radio" aria-checked={doc.kind === 'image'} className={doc.kind === 'image' ? 'is-active' : ''} onClick={() => void switchPhotoWorkspace('quick')} title="Crop, adjust, filters, text and drawing on one image">Quick edit</button>
+              <button type="button" role="radio" aria-checked={doc.kind === 'proimage'} className={doc.kind === 'proimage' ? 'is-active' : ''} onClick={() => void switchPhotoWorkspace('pro')} title="Layers, masks, adjustment layers, selections, brushes, filters, Photoshop files">Pro</button>
+            </div>
+          )}
+          {(doc.kind === 'image' || doc.kind === 'proimage') && imageStatus && <span>{imageStatus.width} × {imageStatus.height} px</span>}
           {doc.kind === 'media' && <span>{formatTime(doc.info.duration, false)}{doc.info.hasVideo ? ` · ${doc.info.width} × ${doc.info.height}` : ''}{doc.info.fps ? ` · ${Math.round(doc.info.fps)} fps` : ''}</span>}
           {doc.kind === 'flow' && stats && <span>{stats.words.toLocaleString()} words · {stats.characters.toLocaleString()} characters</span>}
           {(doc.kind === 'flow' || doc.kind === 'pdf') && pageCount !== null && <span>{pageCount} {pageCount === 1 ? 'page' : 'pages'}</span>}
@@ -1302,6 +1395,21 @@ export default function App() {
           incorrect={askPw.incorrect}
           onClose={() => { askPw.resolve(null); setAskPw(null); }}
           onSubmit={(pw) => { askPw.resolve(pw); setAskPw(null); }}
+        />
+      )}
+      {exportOpen && doc?.kind === 'proimage' && (
+        <ImageExportModal
+          allowPsd
+          // layered work defaults to .psd so Save As never flattens it by surprise
+          initialFormat="psd"
+          initialName={baseName(doc.name)}
+          width={imageStatus?.width ?? doc.doc.width}
+          height={imageStatus?.height ?? doc.doc.height}
+          onClose={() => setExportOpen(null)}
+          onSubmit={(c) => {
+            setExportOpen(null);
+            void saveImage(c, undefined, true);
+          }}
         />
       )}
       {exportOpen && doc?.kind === 'image' && (
