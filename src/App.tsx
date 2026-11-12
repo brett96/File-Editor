@@ -14,6 +14,8 @@ import {
   ShieldCheck,
   Upload,
   RefreshCw,
+  Download,
+  AlertTriangle,
   History,
   Wand2,
   ZoomIn,
@@ -150,6 +152,12 @@ let docKey = 1;
 const BLANK: RichDocument = { html: '<p></p>', title: 'Untitled' };
 
 /** Resolves after the browser has painted pending UI (e.g. a busy indicator). */
+/** "1.4 MB/s" for the update download. */
+function formatSpeed(bytesPerSecond: number): string {
+  const mb = bytesPerSecond / (1024 * 1024);
+  return mb >= 1 ? `${mb.toFixed(1)} MB/s` : `${Math.max(1, Math.round(bytesPerSecond / 1024))} KB/s`;
+}
+
 function nextPaint(): Promise<void> {
   return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
 }
@@ -179,7 +187,8 @@ export default function App() {
   const [dragging, setDragging] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
-  const [updateDismissed, setUpdateDismissed] = useState(false);
+  /** the update state the user closed the banner on (it comes back for a new state or a manual check) */
+  const [updateDismissed, setUpdateDismissed] = useState<UpdateStatus['state'] | null>(null);
   const [frameExport, setFrameExport] = useState<{ pixels: Pixels; name: string } | null>(null);
   const [imageStatus, setImageStatus] = useState<{ width: number; height: number } | null>(null);
   const richRef = useRef<RichEditorHandle>(null);
@@ -231,11 +240,22 @@ export default function App() {
     if (editSeq.current === seq) setDirty(false);
   };
 
-  // desktop app: a newer version downloads in the background; offer to restart into it
+  // desktop app: a newer version downloads in the background (with progress); offer to restart
+  // into it. Help → Check for Updates also reports "checking", "up to date" and errors.
   useEffect(() => {
     const off = window.desktop?.onUpdateStatus?.((st) => {
+      if (st.manual) setUpdateDismissed(null);
+      if (st.state === 'none') {
+        if (st.manual) toast(`You're up to date — File Editor ${st.version ?? ''} is the latest version.`, 'info');
+        setUpdate(null);
+        return;
+      }
+      // background checks stay quiet until there is something to download; their errors are only logged
+      if ((st.state === 'checking' || st.state === 'error') && !st.manual) {
+        setUpdate((cur) => (cur?.state === 'ready' ? cur : null));
+        return;
+      }
       setUpdate(st);
-      if (st.state === 'available') toast(`Downloading version ${st.version ?? 'update'} in the background…`, 'info');
     });
     return () => off?.();
   }, [toast]);
@@ -1711,7 +1731,46 @@ export default function App() {
           <span className="spinner" /> {busy}
         </div>
       )}
-      {update?.state === 'ready' && !updateDismissed && (
+      {update && update.state !== 'ready' && updateDismissed !== update.state && (
+        <div className={cx('update-banner', update.state === 'error' && 'update-error')} role={update.state === 'error' ? 'alert' : 'status'}>
+          {update.state === 'checking' && (
+            <>
+              <span className="spinner" />
+              <span>Checking for updates…</span>
+            </>
+          )}
+          {(update.state === 'available' || update.state === 'downloading') && (
+            <>
+              <Download size={16} />
+              <div className="update-progress">
+                <span>
+                  Downloading version {update.version ?? 'update'}… {update.percent ?? 0}%
+                  {update.speed ? <span className="update-speed"> · {formatSpeed(update.speed)}</span> : null}
+                </span>
+                <progress max={100} value={update.percent ?? 0} aria-label="Update download progress" />
+              </div>
+            </>
+          )}
+          {update.state === 'error' && (
+            <>
+              <AlertTriangle size={16} />
+              <span className="update-message">Couldn't update: {update.message ?? 'unknown error'}</span>
+              <button type="button" className="btn btn-primary btn-sm" onClick={() => window.desktop?.checkForUpdates?.()}>
+                Retry
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            className="btn btn-text"
+            onClick={() => setUpdateDismissed(update.state)}
+            title={update.state === 'downloading' || update.state === 'available' ? 'The download continues in the background' : undefined}
+          >
+            {update.state === 'error' ? 'Close' : 'Hide'}
+          </button>
+        </div>
+      )}
+      {update?.state === 'ready' && updateDismissed !== 'ready' && (
         <div className="update-banner" role="status">
           <RefreshCw size={16} />
           <span>Version {update.version} is ready to install.</span>
@@ -1725,7 +1784,7 @@ export default function App() {
           >
             Restart now
           </button>
-          <button type="button" className="btn btn-text" onClick={() => setUpdateDismissed(true)} title="It will install the next time you close the app">
+          <button type="button" className="btn btn-text" onClick={() => setUpdateDismissed('ready')} title="It will install the next time you close the app">
             Later
           </button>
         </div>

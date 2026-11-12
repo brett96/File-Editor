@@ -14,7 +14,7 @@
  */
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell, type MenuItemConstructorOptions } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { activateLicense, getLicenseState, refreshLicenseStatus } from './license';
@@ -362,6 +362,16 @@ function buildMenu() {
       role: 'help',
       submenu: [
         { label: 'Enter License Key…', click: () => send('license') },
+        { label: 'Check for Updates…', click: () => void checkForUpdates(true) },
+        {
+          label: 'Show Update Log',
+          click: async () => {
+            const file = updateLogPath();
+            const exists = await stat(file).then(() => true, () => false);
+            if (exists) shell.showItemInFolder(file);
+            else void dialog.showMessageBox({ type: 'info', title: 'Update Log', message: 'Nothing has been logged yet.', detail: file });
+          },
+        },
         { type: 'separator' },
         {
           label: 'About File Editor',
@@ -515,38 +525,176 @@ function registerIpc() {
  * installs silently the next time the app quits.
  */
 const UPDATE_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const UPDATE_LOG_MAX_BYTES = 512 * 1024;
 
-function sendUpdateStatus(status: { state: 'available' | 'downloading' | 'ready' | 'error'; version?: string; percent?: number }) {
+type UpdateState = 'checking' | 'none' | 'available' | 'downloading' | 'ready' | 'error';
+interface UpdateStatus {
+  state: UpdateState;
+  /** the new version (or, for 'none', the installed one) */
+  version?: string;
+  percent?: number;
+  /** bytes per second while downloading */
+  speed?: number;
+  message?: string;
+  /** true when the user asked (Help → Check for Updates), so the window reports every outcome */
+  manual?: boolean;
+}
+
+type Updater = import('electron-updater').AppUpdater;
+let updater: Updater | null = null;
+let updaterLoadError: string | null = null;
+let updateStatus: UpdateStatus | null = null;
+/** the current check was started from the menu */
+let manualCheck = false;
+
+function updateLogPath() {
+  return join(app.getPath('userData'), 'logs', 'updater.log');
+}
+
+/** Appends to <userData>/logs/updater.log (restarted when it grows past UPDATE_LOG_MAX_BYTES). */
+function logUpdate(level: string, ...args: unknown[]) {
+  const text = args.map((a) => (a instanceof Error ? (a.stack ?? a.message) : typeof a === 'string' ? a : JSON.stringify(a))).join(' ');
+  const line = `[${new Date().toISOString()}] ${level.toUpperCase()} ${text}\n`;
+  void (async () => {
+    try {
+      const file = updateLogPath();
+      await mkdir(dirname(file), { recursive: true });
+      const size = await stat(file).then((s) => s.size, () => 0);
+      if (size > UPDATE_LOG_MAX_BYTES) await writeFile(file, line);
+      else await appendFile(file, line);
+    } catch {
+      /* logging must never break updates */
+    }
+  })();
+}
+
+function setUpdateStatus(status: UpdateStatus) {
+  updateStatus = status;
   mainWindow?.webContents.send('update-status', status);
 }
 
+/** First line of an error, without electron-updater's long HTTP dumps. */
+function updateErrorText(err: unknown): string {
+  const raw = err instanceof Error ? err.message : String(err ?? 'Unknown error');
+  const first = raw.split('\n')[0].trim();
+  if (/ENOTFOUND|EAI_AGAIN|ERR_INTERNET_DISCONNECTED|ERR_NAME_NOT_RESOLVED|ENETUNREACH/i.test(raw)) return 'No internet connection.';
+  return first.length > 240 ? `${first.slice(0, 240)}…` : first;
+}
+
+/**
+ * electron-updater is CommonJS and defines `autoUpdater` as a lazy getter, which Node's ESM
+ * interop cannot see as a named export: `(await import('electron-updater')).autoUpdater` is
+ * undefined in the packaged app (that silently disabled updates in 0.1.1). Read it from the
+ * module itself (`default`) when the named export is missing.
+ */
+async function loadUpdater(): Promise<Updater> {
+  const mod = (await import('electron-updater')) as typeof import('electron-updater') & { default?: typeof import('electron-updater') };
+  const u = mod.autoUpdater ?? mod.default?.autoUpdater;
+  if (!u) throw new Error('electron-updater did not export autoUpdater');
+  return u;
+}
+
 async function startAutoUpdates() {
-  let updater: typeof import('electron-updater').autoUpdater;
   try {
-    ({ autoUpdater: updater } = await import('electron-updater'));
-  } catch {
-    return; // updater not bundled
+    updater = await loadUpdater();
+  } catch (err) {
+    updaterLoadError = updateErrorText(err);
+    logUpdate('error', 'Could not load the updater:', err);
+    return;
   }
-  updater.autoDownload = true;
-  updater.autoInstallOnAppQuit = true;
-  updater.allowPrerelease = false;
-  updater.on('update-available', (info) => sendUpdateStatus({ state: 'available', version: info.version }));
-  updater.on('download-progress', (p) => sendUpdateStatus({ state: 'downloading', percent: Math.round(p.percent) }));
-  updater.on('update-downloaded', (info) => sendUpdateStatus({ state: 'ready', version: info.version }));
-  updater.on('error', () => sendUpdateStatus({ state: 'error' }));
+  const u = updater;
+  u.logger = {
+    info: (...a: unknown[]) => logUpdate('info', ...a),
+    warn: (...a: unknown[]) => logUpdate('warn', ...a),
+    error: (...a: unknown[]) => logUpdate('error', ...a),
+    debug: () => undefined,
+  };
+  u.autoDownload = true;
+  u.autoInstallOnAppQuit = true;
+  u.allowPrerelease = false;
+  logUpdate('info', `File Editor ${app.getVersion()} started (${process.platform}-${process.arch})`);
+  u.on('checking-for-update', () => setUpdateStatus({ state: 'checking', manual: manualCheck }));
+  u.on('update-not-available', () => {
+    setUpdateStatus({ state: 'none', version: app.getVersion(), manual: manualCheck });
+    manualCheck = false;
+  });
+  u.on('update-available', (info) => setUpdateStatus({ state: 'available', version: info.version, percent: 0, manual: manualCheck }));
+  u.on('download-progress', (p) =>
+    setUpdateStatus({
+      state: 'downloading',
+      version: updateStatus?.version,
+      percent: Math.max(0, Math.min(100, Math.round(p.percent))),
+      speed: p.bytesPerSecond,
+      manual: manualCheck,
+    }),
+  );
+  u.on('update-downloaded', (info) => {
+    setUpdateStatus({ state: 'ready', version: info.version, manual: manualCheck });
+    manualCheck = false;
+  });
+  u.on('error', (err) => {
+    setUpdateStatus({ state: 'error', message: updateErrorText(err), manual: manualCheck });
+    manualCheck = false;
+  });
+  void checkForUpdates(false);
+  setInterval(() => void checkForUpdates(false), UPDATE_INTERVAL_MS);
+}
+
+/** Help → Check for Updates (manual) and the periodic background check. */
+async function checkForUpdates(manual: boolean) {
+  if (manual && !app.isPackaged) {
+    void dialog.showMessageBox({ type: 'info', title: 'Check for Updates', message: 'Updates are only checked in the installed app.', detail: `This is a development build (${app.getVersion()}).` });
+    return;
+  }
+  if (!updater) {
+    if (manual) setUpdateStatus({ state: 'error', message: updaterLoadError ?? 'The updater is still starting. Try again in a moment.', manual: true });
+    return;
+  }
+  const busy = updateStatus?.state === 'checking' || updateStatus?.state === 'available' || updateStatus?.state === 'downloading';
+  if (busy || updateStatus?.state === 'ready') {
+    // already under way (or downloaded): show where it is instead of starting another check
+    if (manual) {
+      manualCheck = manualCheck || busy;
+      setUpdateStatus({ ...updateStatus!, manual: true });
+    }
+    return;
+  }
+  manualCheck = manual;
+  try {
+    const result = await updater.checkForUpdates();
+    // null means updates are disabled for this build (no app-update.yml)
+    if (!result && manual) setUpdateStatus({ state: 'error', message: 'This copy of the app is not set up to receive updates.', manual: true });
+  } catch (err) {
+    // the 'error' event has already reported it; this only stops an unhandled rejection
+    logUpdate('error', 'Update check failed:', err);
+  }
+}
+
+function registerUpdateIpc() {
+  ipcMain.handle('update-status-get', (e) => {
+    assertSender(e);
+    return updateStatus;
+  });
+  ipcMain.on('update-check', (e) => {
+    try {
+      assertSender(e);
+    } catch {
+      return;
+    }
+    void checkForUpdates(true);
+  });
   ipcMain.on('install-update', (e) => {
     try {
       assertSender(e);
     } catch {
       return;
     }
+    if (!updater || updateStatus?.state !== 'ready') return;
     dirty = false; // the renderer already confirmed unsaved changes
+    logUpdate('info', `Installing ${updateStatus.version} now`);
     // isSilent=false shows the installer's progress on Windows; isForceRunAfter relaunches the app
     updater.quitAndInstall(false, true);
   });
-  const check = () => updater.checkForUpdates().catch(() => undefined);
-  void check();
-  setInterval(check, UPDATE_INTERVAL_MS);
 }
 
 // ── startup ────────────────────────────────────────────────────────────────
@@ -564,6 +712,7 @@ app.whenReady().then(async () => {
 
   registerAppProtocol();
   registerIpc();
+  registerUpdateIpc();
   await loadRecents();
   buildMenu();
   pendingOpen.push(...filesFromArgv(process.argv));

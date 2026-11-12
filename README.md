@@ -179,8 +179,17 @@ Developer ID certificate.
   `.blockmap`, so usually only the changed parts).
 - The download is checked against the SHA-512 in `latest.yml`; on Windows the new installer's
   code signature must also match the publisher of the installed app, otherwise it is refused.
+- While it downloads, a banner shows the progress (it can be hidden; the download carries on).
 - When it is ready, a banner offers **Restart now** (asks first if there are unsaved changes).
   **Later** installs it silently the next time the app is closed.
+- **Help → Check for Updates…** checks right away and reports every outcome: "checking",
+  download progress, "you're up to date", or the error with a **Retry** button. Background
+  checks stay quiet unless there is something to download.
+- Everything the updater does is logged to `<userData>/logs/updater.log`
+  (Windows: `%APPDATA%\File Editor\logs\updater.log`); **Help → Show Update Log** opens its folder.
+- Versions up to and including **0.1.2 never checked for updates** (the updater failed to load
+  in packaged builds, silently). Anyone on those versions must install the first fixed version
+  by hand; from then on updates are automatic.
 
 **Requirements**
 

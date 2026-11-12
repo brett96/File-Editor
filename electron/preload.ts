@@ -5,6 +5,7 @@
 import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from 'electron';
 
 type FilePayload = { name: string; bytes: Uint8Array; token: string };
+type UpdateStatusPayload = { state: string; version?: string; percent?: number; speed?: number; message?: string; manual?: boolean };
 
 const bridge = {
   platform: process.platform,
@@ -24,11 +25,23 @@ const bridge = {
     ipcRenderer.on('menu', listener);
     return () => ipcRenderer.removeListener('menu', listener);
   },
-  onUpdateStatus: (callback: (status: { state: string; version?: string; percent?: number }) => void) => {
-    const listener = (_e: IpcRendererEvent, status: { state: string; version?: string; percent?: number }) => callback(status);
+  onUpdateStatus: (callback: (status: UpdateStatusPayload) => void) => {
+    let live = false;
+    const listener = (_e: IpcRendererEvent, status: UpdateStatusPayload) => {
+      live = true;
+      callback(status);
+    };
     ipcRenderer.on('update-status', listener);
+    // the update may have been found (or downloaded) before this window subscribed
+    void ipcRenderer.invoke('update-status-get').then(
+      (status: UpdateStatusPayload | null) => {
+        if (status && !live) callback({ ...status, manual: false });
+      },
+      () => undefined,
+    );
     return () => ipcRenderer.removeListener('update-status', listener);
   },
+  checkForUpdates: () => ipcRenderer.send('update-check'),
   installUpdate: () => ipcRenderer.send('install-update'),
   recent: {
     list: (): Promise<{ id: string; name: string; folder: string }[]> => ipcRenderer.invoke('recent-list'),

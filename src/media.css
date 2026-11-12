@@ -705,3 +705,45 @@
   box-shadow: var(--shadow-lg);
   max-width: calc(100vw - 24px);
 }
+
+.update-banner.update-error {
+  border-left-color: var(--danger);
+}
+.update-banner.update-error > svg {
+  color: var(--danger);
+  flex: none;
+}
+.update-banner > svg {
+  flex: none;
+}
+.update-message {
+  overflow-wrap: anywhere;
+}
+.update-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: min(260px, 60vw);
+}
+.update-progress progress {
+  width: 100%;
+  height: 6px;
+  appearance: none;
+  border: 0;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--border);
+}
+.update-progress progress::-webkit-progress-bar {
+  background: var(--border);
+}
+.update-progress progress::-webkit-progress-value {
+  background: var(--accent);
+  transition: width 0.3s;
+}
+.update-progress progress::-moz-progress-bar {
+  background: var(--accent);
+}
+.update-speed {
+  color: var(--muted);
+}

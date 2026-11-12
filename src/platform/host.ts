@@ -91,6 +91,8 @@ export interface DesktopBridge {
   onOpenFile(callback: (file: { name: string; bytes: Uint8Array; token: string }) => void): () => void;
   onMenuCommand(callback: (command: string) => void): () => void;
   onUpdateStatus?(callback: (status: UpdateStatus) => void): () => void;
+  /** Same as Help → Check for Updates (used by the update banner's Retry). */
+  checkForUpdates?(): void;
   installUpdate?(): void;
   setDirty(dirty: boolean): void;
   setTitle(title: string): void;
@@ -111,9 +113,15 @@ export interface DesktopBridge {
 }
 
 export interface UpdateStatus {
-  state: 'available' | 'downloading' | 'ready' | 'error';
+  state: 'checking' | 'none' | 'available' | 'downloading' | 'ready' | 'error';
+  /** the new version (for 'none', the installed one) */
   version?: string;
   percent?: number;
+  /** download speed, bytes per second */
+  speed?: number;
+  message?: string;
+  /** the user asked (Help → Check for Updates): report every outcome, not just a finished download */
+  manual?: boolean;
 }
 
 declare global {
