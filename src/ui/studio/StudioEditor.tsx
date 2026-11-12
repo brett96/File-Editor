@@ -6,7 +6,9 @@
  */
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { useTabActive } from '../tab-active';
+import { openGuide } from '../help/open';
 import {
+  CircleHelp,
   Film,
   Magnet,
   Minus,
@@ -699,6 +701,9 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
           <button type="button" role="radio" aria-checked={view === 'timeline'} className={view === 'timeline' ? 'is-active' : ''} onClick={() => setView('timeline')}><Rows3 size={13} /> Timeline</button>
           <button type="button" role="radio" aria-checked={view === 'mixer'} className={view === 'mixer' ? 'is-active' : ''} onClick={() => setView('mixer')}><SlidersHorizontal size={13} /> Mixer</button>
         </div>
+        <button type="button" className="btn btn-icon" title="Studio guide" aria-label="Studio guide" onClick={() => openGuide(view === 'mixer' ? 'studio-mixer' : 'studio')}>
+          <CircleHelp size={15} />
+        </button>
       </div>
 
       <div className="st-main">

@@ -22,6 +22,8 @@ import {
   Download,
   AlertTriangle,
   History,
+  CircleHelp,
+  BookOpen,
   Wand2,
   ZoomIn,
   ZoomOut,
@@ -65,6 +67,31 @@ import { SheetExportModal, SheetSecurityModal, type SheetExportChoice } from './
 
 // Pro editors are desktop-only and loaded on demand, so the web build never downloads them.
 const ProImageEditor = lazy(() => import('./ui/pro-image/ProImageEditor').then((m) => ({ default: m.ProImageEditor })));
+// the user guide is loaded the first time it is opened
+const HelpGuide = lazy(() => import('./ui/help/HelpGuide'));
+
+/** The guide page F1 opens for each kind of file. */
+const GUIDE_FOR_KIND: Record<string, string> = {
+  flow: 'documents',
+  code: 'documents',
+  pdf: 'pdf',
+  sheet: 'spreadsheets',
+  image: 'photo-quick',
+  proimage: 'photo-pro',
+  media: 'video-quick',
+  studio: 'studio',
+};
+
+/** `#help` or `#help/<section>` in the address opens the guide (shareable links). */
+function helpFromHash(): { section: string | null } | null {
+  try {
+    const m = /^#help(?:\/([\w-]+))?$/.exec(location.hash);
+    return m ? { section: m[1] ?? null } : null;
+  } catch {
+    return null;
+  }
+}
+
 const StudioEditor = lazy(() => import('./ui/studio/StudioEditor').then((m) => ({ default: m.StudioEditor })));
 const StudioExportModal = lazy(() => import('./ui/studio/StudioExport').then((m) => ({ default: m.StudioExportModal })));
 
@@ -1799,6 +1826,20 @@ export default function App() {
   const [actionsSlot, setActionsSlot] = useState<HTMLElement | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [licenseOpen, setLicenseOpen] = useState(false);
+  const [help, setHelp] = useState<{ section: string | null } | null>(helpFromHash);
+  useEffect(() => {
+    const onHelp = (e: Event) => setHelp({ section: (e as CustomEvent<string | null>).detail ?? null });
+    const onHash = () => {
+      const h = helpFromHash();
+      if (h) setHelp(h);
+    };
+    window.addEventListener('fe:help', onHelp);
+    window.addEventListener('hashchange', onHash);
+    return () => {
+      window.removeEventListener('fe:help', onHelp);
+      window.removeEventListener('hashchange', onHash);
+    };
+  }, []);
   const [dragging, setDragging] = useState(false);
   const [update, setUpdate] = useState<UpdateStatus | null>(null);
   /** the update state the user closed the banner on (it comes back for a new state or a manual check) */
@@ -1956,6 +1997,13 @@ export default function App() {
       shell.current.activate(ts[next].id);
     };
     const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'F1' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        // opens the guide at the page for the kind of file in front of you
+        e.preventDefault();
+        const kind = tabsRef.current.find((t) => t.id === activeIdRef.current)?.info.kind ?? null;
+        setHelp((h) => h ?? { section: kind ? GUIDE_FOR_KIND[kind] : null });
+        return;
+      }
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const k = e.key.toLowerCase();
       if (k === 'o') {
@@ -1985,6 +2033,10 @@ export default function App() {
       else if (cmd === 'open') void s.pickAndOpen();
       else if (cmd === 'license') setLicenseOpen(true);
       else if (cmd === 'toggle-autosave') setAutoSave((v) => !v);
+      else if (cmd === 'help' || cmd === 'help:context') {
+        const kind = tabsRef.current.find((t) => t.id === activeIdRef.current)?.info.kind ?? null;
+        setHelp({ section: cmd === 'help:context' && kind ? GUIDE_FOR_KIND[kind] : null });
+      } else if (cmd.startsWith('help:')) setHelp({ section: cmd.slice(5) });
       else {
         const api = activeIdRef.current !== null ? apis.current.get(activeIdRef.current) : undefined;
         if (!api) return;
@@ -2099,6 +2151,37 @@ export default function App() {
           )}
           {/* the active tab's own buttons (Save, Print, zoom…) are rendered here */}
           <span className="topbar-doc-actions" ref={setActionsSlot} />
+          <Popover label="Help" text align="right" button={<><CircleHelp size={16} /><span>Help</span></>}>
+            {(close) => {
+              const item = (label: string, section: string | null, hint?: string) => (
+                <MenuItem key={label} hint={hint} onClick={() => { close(); setHelp({ section }); }}>{label}</MenuItem>
+              );
+              return (
+                <div className="format-menu help-menu" role="menu" aria-label="Help">
+                  {item('User guide', null, 'F1')}
+                  <div className="menu-sep" role="separator" />
+                  {item('Opening, saving & auto-save', 'saving')}
+                  {item('Documents & PDFs', 'documents')}
+                  {item('Photos', 'photo-quick')}
+                  {item('Video & audio', 'video-quick')}
+                  {item('Studio: video & sound editing', 'studio', host.kind === 'desktop' ? undefined : 'Desktop app')}
+                  {item('Studio: keyframe animation', 'studio-keyframes')}
+                  {item('Studio: mixing console', 'studio-mixer')}
+                  {item('Pro Photo: layers & masks', 'photo-pro', host.kind === 'desktop' ? undefined : 'Desktop app')}
+                  <div className="menu-sep" role="separator" />
+                  {item('Keyboard shortcuts', 'shortcuts')}
+                  {item('Troubleshooting', 'troubleshooting')}
+                  {host.kind === 'desktop' && (
+                    <>
+                      <div className="menu-sep" role="separator" />
+                      <MenuItem onClick={() => { close(); setLicenseOpen(true); }}>License…</MenuItem>
+                      <MenuItem onClick={() => { close(); window.desktop?.checkForUpdates?.(); }}>Check for updates</MenuItem>
+                    </>
+                  )}
+                </div>
+              );
+            }}
+          </Popover>
         </nav>
       </header>
 
@@ -2164,6 +2247,7 @@ export default function App() {
             onRemoveRecent={removeRecent}
             openTabs={tabs.map((t) => ({ id: t.id, name: t.info.name, dirty: t.info.dirty, kind: t.info.kind }))}
             onShowTab={activate}
+            onHelp={() => setHelp({ section: null })}
           />
         </main>
       )}
@@ -2255,6 +2339,11 @@ export default function App() {
         ))}
       </div>
       {licenseOpen && host.kind === 'desktop' && <LicenseDialog onClose={() => setLicenseOpen(false)} />}
+      {help && (
+        <Suspense fallback={<div className="busy" role="status"><span className="spinner" /> Opening the guide…</div>}>
+          <HelpGuide section={help.section} desktop={host.kind === 'desktop'} onClose={() => setHelp(null)} />
+        </Suspense>
+      )}
     </div>
   );
 }
@@ -2267,6 +2356,7 @@ function StartScreen({
   onRemoveRecent,
   openTabs,
   onShowTab,
+  onHelp,
 }: {
   onNew: () => void;
   onOpen: () => void;
@@ -2275,12 +2365,16 @@ function StartScreen({
   onRemoveRecent: (id: string) => void;
   openTabs: { id: number; name: string; dirty: boolean; kind: TabInfo['kind'] }[];
   onShowTab: (id: number) => void;
+  onHelp: () => void;
 }) {
   return (
     <div className="start">
       <div className="start-inner">
         <h1>File Editor</h1>
         <p className="start-lead">Create, edit, convert and protect documents, spreadsheets, photos, video and audio. Everything runs on your device; no file is uploaded.</p>
+        <button type="button" className="start-guide" onClick={onHelp}>
+          <BookOpen size={16} /> New here? Read the user guide <span>F1</span>
+        </button>
         <div className="start-cards">
           <button type="button" className="start-card" onClick={onNew}>
             <FilePlus size={28} />

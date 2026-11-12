@@ -19,6 +19,13 @@ there is no server to run.
 | **Convert** | Documents ↔ documents (incl. PDF ↔ DOCX); spreadsheets ↔ .xlsx, CSV, TSV; photos ↔ any photo format or PDF; video ↔ MP4 (H.264/HEVC/AV1/VP9), WebM, MOV, MKV, TS, animated GIF, AVI, WMV, FLV, MPEG, 3GP, OGV; video or audio → MP3, M4A, WAV, FLAC, OGG, Opus, AAC |
 | **Passwords** | Open Word, Excel and PDF files protected by Office, Acrobat or other tools (with the password); save password-protected DOCX and XLSX (Office AES-256) and PDF (AES-256, with optional permission restrictions) |
 
+**User guide:** the app has a built-in, searchable guide covering every feature, with
+step-by-step walkthroughs for Studio (timeline, keyframes, green screen, waveform repair,
+mixing, loudness) and Pro Photo. Open it with **Help ▸ User Guide** (desktop menu or the
+in-app Help button), **F1** (it opens at the page for the file in front of you), the link on
+the start screen, or a `#help/<page>` address such as `#help/studio-keyframes`. Its text lives
+in `src/ui/help/content.tsx`; keep button and menu names there in step with the UI.
+
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
 
 ## Development

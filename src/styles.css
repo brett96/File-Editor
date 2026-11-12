@@ -2237,3 +2237,35 @@ button.brand:focus-visible {
     opacity: 1;
   }
 }
+
+/* ── help ──────────────────────────────────────────────────────────────── */
+.help-menu {
+  min-width: 270px;
+}
+
+.start-guide {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 18px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--accent);
+  font: inherit;
+  font-size: 13.5px;
+  cursor: pointer;
+}
+
+.start-guide:hover {
+  border-color: var(--accent);
+}
+
+.start-guide span {
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}

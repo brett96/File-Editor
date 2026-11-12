@@ -370,6 +370,11 @@ function buildMenu() {
     {
       role: 'help',
       submenu: [
+        { label: 'User Guide', accelerator: 'F1', click: () => send('help:context') },
+        { label: 'Studio Guide', click: () => send('help:studio') },
+        { label: 'Pro Photo Guide', click: () => send('help:photo-pro') },
+        { label: 'Keyboard Shortcuts', click: () => send('help:shortcuts') },
+        { type: 'separator' },
         { label: licensed ? 'View License Info…' : 'Enter License Key…', click: () => send('license') },
         { label: 'Check for Updates…', click: () => void checkForUpdates(true) },
         {

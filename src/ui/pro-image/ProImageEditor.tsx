@@ -47,6 +47,7 @@ import {
 } from 'lucide-react';
 import type { Pixels } from '../../core/media/image-ops';
 import { ADJUST_LABELS, type AdjustType } from '../../core/pro-image/adjust';
+import { openGuide } from '../help/open';
 import {
   adjustLayer,
   clonePixels,
@@ -1249,6 +1250,22 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
                 >
                   {FILTER_DEFS[id].label}
                 </MenuItem>
+              ))}
+            </div>
+          )}
+        </Popover>
+        <Popover label="Help" text button={<span>Help</span>}>
+          {(close) => (
+            <div className="format-menu">
+              {([
+                ['Pro Photo guide', 'photo-pro'],
+                ['Layers, blend modes & masks', 'pro-layers'],
+                ['Adjustment layers (Curves, Levels…)', 'pro-adjust'],
+                ['Selections', 'pro-select'],
+                ['Painting & retouching', 'pro-paint'],
+                ['Filters, size & transform', 'pro-filters'],
+              ] as const).map(([label, id]) => (
+                <MenuItem key={id} onClick={() => { close(); openGuide(id); }}>{label}</MenuItem>
               ))}
             </div>
           )}
