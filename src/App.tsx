@@ -46,7 +46,7 @@ import { CONTAINERS, IMAGE_FORMATS, MEDIA_EXTENSIONS_ALL, IMAGE_EXTENSIONS_ALL, 
 import type { DecodedImage } from './core/media/image-codecs';
 import type { MediaInfo } from './core/media/video-engine';
 import { createPixels, type Pixels } from './core/media/image-ops';
-import { SHEET_EXTENSIONS, SHEET_FORMATS, blankWorkbook, sheetFormatFromName, type IWorkbookData, type SheetFormat } from './core/sheet/workbook';
+import { SHEET_EXTENSIONS, SHEET_FORMATS, blankWorkbook, sheetFormatFromName, usedRange, type IWorkbookData, type SheetFormat } from './core/sheet/workbook';
 import { SheetEditor, type SheetEditorHandle } from './ui/sheet/SheetEditor';
 import { SheetExportModal, SheetSecurityModal, type SheetExportChoice } from './ui/sheet/sheet-dialogs';
 
@@ -62,6 +62,9 @@ type OpenDoc =
 
 const PRIMARY_SWITCH: Array<DocFormat | 'image'> = ['docx', 'txt', 'html', 'css', 'js', 'pdf', 'image'];
 const SECONDARY_SWITCH: FlowFormat[] = ['odt', 'rtf', 'md', 'doc'];
+const SHEET_SWITCH: SheetFormat[] = ['xlsx', 'csv', 'tsv'];
+type SwitchTarget = DocFormat | 'image' | SheetFormat;
+const isSheetFormat = (t: SwitchTarget): t is SheetFormat => (SHEET_SWITCH as string[]).includes(t);
 
 async function codeToRich(language: CodeLanguage, text: string): Promise<RichDocument> {
   if (language === 'html') {
@@ -478,17 +481,17 @@ export default function App() {
   };
 
   /** Changes the open document's format / kind from the status-bar switcher. */
-  const switchFormat = async (target: DocFormat | 'image') => {
+  const switchFormat = async (target: SwitchTarget) => {
     const d = docRef.current;
-    if (!d || (d.kind !== 'flow' && d.kind !== 'code')) return;
-    if (d.kind === 'flow' && target === d.format) return;
-    if (d.kind === 'code' && target === d.format) return;
+    if (!d || (d.kind !== 'flow' && d.kind !== 'code' && d.kind !== 'sheet')) return;
+    if (target === d.format) return;
+    const title = baseName(d.name);
 
     if (target === 'image') {
       setDoc({
         kind: 'image',
         key: docKey++,
-        name: `${baseName(d.name)}.png`,
+        name: `${title}.png`,
         decoded: blankCanvasImage(),
         format: 'png',
         protection: EMPTY_PROTECTION,
@@ -498,18 +501,73 @@ export default function App() {
       return;
     }
 
+    // ── to a spreadsheet format ──
+    if (isSheetFormat(target)) {
+      const info = SHEET_FORMATS[target];
+      if (d.kind === 'sheet') {
+        // same workbook, different file format (the editor keeps its state)
+        setDoc((cur) =>
+          cur?.kind === 'sheet'
+            ? { ...cur, format: target, name: `${baseName(cur.name)}.${info.ext}`, handle: undefined, protection: info.canProtect ? cur.protection : EMPTY_PROTECTION }
+            : cur,
+        );
+        setDirty(true);
+        const active = sheetRef.current?.getActiveSheet();
+        if (!info.canProtect && active && active.sheetCount > 1) {
+          toast(`${info.label} holds one sheet: saving writes the active sheet only. The other sheets stay here until you close the file.`, 'info');
+        }
+        return;
+      }
+      setBusy('Switching format…');
+      try {
+        await nextPaint();
+        const { htmlToWorkbook, plainTextToWorkbook } = await import('./core/sheet/convert');
+        let workbook: IWorkbookData;
+        if (d.kind === 'code') {
+          const text = codeRef.current?.getText() ?? d.text;
+          // source code: one line per row (a CSS rule's semicolons aren't columns)
+          workbook = d.language === 'html' ? htmlToWorkbook(text, title) : plainTextToWorkbook(text, title, false);
+        } else if (d.format === 'txt') {
+          const tmp = document.createElement('div');
+          tmp.innerHTML = currentFlow()!.html;
+          workbook = plainTextToWorkbook((tmp.innerText || tmp.textContent || '').replace(/\u00a0/g, ' '), title);
+        } else {
+          workbook = htmlToWorkbook(currentFlow()!.html, title);
+        }
+        setDoc({ kind: 'sheet', key: docKey++, name: `${title}.${info.ext}`, format: target, workbook, protection: EMPTY_PROTECTION });
+        // an untouched blank document becomes an untouched blank spreadsheet
+        const empty = workbook.sheetOrder.every((id) => usedRange(workbook.sheets[id]).lastRow < 0);
+        setDirty(dirtyRef.current || !empty);
+      } catch (err) {
+        toast(`Could not switch format: ${errorText(err)}`);
+      } finally {
+        setBusy(null);
+      }
+      return;
+    }
+
+    // ── from a spreadsheet to a document format: the active sheet becomes a table ──
+    let fromSheet: { rich: RichDocument; text: string } | null = null;
+    if (d.kind === 'sheet') {
+      const active = sheetRef.current?.getActiveSheet();
+      if (!active) return;
+      const { rowsToDocumentHtml, rowsToText } = await import('./core/sheet/convert');
+      fromSheet = { rich: { html: rowsToDocumentHtml(active.rows), title }, text: rowsToText(active.rows) };
+      if (active.sheetCount > 1) toast(`Converted the sheet "${active.name}". Other sheets are not included.`, 'info');
+    }
+    const richOf = async (): Promise<RichDocument> => {
+      if (fromSheet) return fromSheet.rich;
+      if (d.kind === 'flow') return currentFlow()!;
+      if (d.kind === 'code') return { ...(await codeToRich(d.language, codeRef.current?.getText() ?? d.text)), title };
+      throw new Error('Nothing to convert.');
+    };
+
     if (target === 'pdf') {
       setBusy('Converting to PDF…');
       try {
         await nextPaint();
-        let bytes: Uint8Array;
-        if (d.kind === 'flow') {
-          bytes = await exportFlow(currentFlow()!, 'pdf');
-        } else {
-          const rich = await codeToRich(d.language, codeRef.current?.getText() ?? d.text);
-          bytes = await exportFlow({ ...rich, title: baseName(d.name) }, 'pdf');
-        }
-        setDoc({ kind: 'pdf', key: docKey++, name: `${baseName(d.name)}.pdf`, bytes, protection: EMPTY_PROTECTION });
+        const bytes = await exportFlow(await richOf(), 'pdf');
+        setDoc({ kind: 'pdf', key: docKey++, name: `${title}.pdf`, bytes, protection: EMPTY_PROTECTION });
         setDirty(true);
         setPageCount(null);
       } catch (err) {
@@ -529,19 +587,19 @@ export default function App() {
           // Keep the source when switching among html/css/js (or renaming the language)
           text = codeRef.current?.getText() ?? d.text;
         } else if (target === 'html') {
-          const bytes = await exportFlow(currentFlow()!, 'html');
-          text = new TextDecoder().decode(bytes);
+          text = new TextDecoder().decode(await exportFlow(await richOf(), 'html'));
+        } else if (fromSheet) {
+          text = fromSheet.text;
         } else {
           // Word/rich → css/js: take plain text from the document so content isn't lost
-          const rich = currentFlow()!;
           const tmp = document.createElement('div');
-          tmp.innerHTML = rich.html;
+          tmp.innerHTML = currentFlow()!.html;
           text = (tmp.innerText || tmp.textContent || '').replace(/\u00a0/g, ' ');
         }
         setDoc({
           kind: 'code',
           key: docKey++,
-          name: `${baseName(d.name)}.${FORMATS[target].ext}`,
+          name: `${title}.${FORMATS[target].ext}`,
           format: target,
           language: target,
           text,
@@ -575,13 +633,12 @@ export default function App() {
     setBusy('Switching format…');
     try {
       await nextPaint();
-      const rich = await codeToRich(d.language, codeRef.current?.getText() ?? d.text);
       setDoc({
         kind: 'flow',
         key: docKey++,
-        name: `${baseName(d.name)}.${FORMATS[target].ext}`,
+        name: `${title}.${FORMATS[target].ext}`,
         format: target,
-        initial: rich,
+        initial: await richOf(),
         protection: EMPTY_PROTECTION,
       });
       setDirty(true);
@@ -1038,7 +1095,8 @@ export default function App() {
         : null
     : null;
   const isMediaDoc = doc?.kind === 'image' || doc?.kind === 'media';
-  const canSwitchFormat = doc?.kind === 'flow' || doc?.kind === 'code';
+  const canSwitchFormat = doc?.kind === 'flow' || doc?.kind === 'code' || doc?.kind === 'sheet';
+  const currentFormat: SwitchTarget | null = doc?.kind === 'sheet' ? doc.format : format;
   const formatLabel = format
     ? FORMATS[format].label
     : doc?.kind === 'sheet'
@@ -1067,7 +1125,6 @@ export default function App() {
         )}
         <nav className="topbar-actions" aria-label="File">
           <IconButton label="New" text onClick={newDocument}><FilePlus size={16} /></IconButton>
-          <IconButton label="New spreadsheet" onClick={newSpreadsheet}><SheetIcon size={16} /></IconButton>
           <IconButton label="Open" text onClick={pickAndOpen}><FolderOpen size={16} /></IconButton>
           {doc && (
             <>
@@ -1105,7 +1162,7 @@ export default function App() {
       </header>
 
       <main className="main">
-        {!doc && <StartScreen onNew={newDocument} onNewSheet={newSpreadsheet} onOpen={pickAndOpen} />}
+        {!doc && <StartScreen onNew={newDocument} onOpen={pickAndOpen} />}
         {doc?.kind === 'sheet' && <SheetEditor key={doc.key} ref={sheetRef} initial={doc.workbook} onChange={markDirty} onError={toast} onNotice={(m) => toast(m, 'info')} />}
         {doc?.kind === 'flow' && (
           <RichEditor key={doc.key} ref={richRef} initial={doc.initial} zoom={zoom} onZoom={setZoom} onChange={markDirty} onStats={setStats} onPageCount={setPageCount} onError={toast} />
@@ -1137,7 +1194,7 @@ export default function App() {
                   {PRIMARY_SWITCH.map((id) => {
                     const label = id === 'image' ? 'Blank canvas (PNG)' : FORMATS[id].label;
                     const hint = id === 'image' ? '800×600' : `.${FORMATS[id].ext}`;
-                    const active = id !== 'image' && format === id;
+                    const active = id !== 'image' && currentFormat === id;
                     return (
                       <MenuItem
                         key={id}
@@ -1153,12 +1210,27 @@ export default function App() {
                     );
                   })}
                   <div className="format-menu-sep" role="separator" />
+                  <div className="format-menu-group">Spreadsheets</div>
+                  {SHEET_SWITCH.map((id) => (
+                    <MenuItem
+                      key={id}
+                      hint={`.${SHEET_FORMATS[id].ext}`}
+                      disabled={currentFormat === id}
+                      onClick={() => {
+                        close();
+                        void switchFormat(id);
+                      }}
+                    >
+                      {SHEET_FORMATS[id].label}
+                    </MenuItem>
+                  ))}
+                  <div className="format-menu-sep" role="separator" />
                   <div className="format-menu-group">More formats</div>
                   {SECONDARY_SWITCH.map((id) => (
                     <MenuItem
                       key={id}
                       hint={`.${FORMATS[id].ext}`}
-                      disabled={format === id}
+                      disabled={currentFormat === id}
                       onClick={() => {
                         close();
                         void switchFormat(id);
@@ -1322,7 +1394,7 @@ export default function App() {
   );
 }
 
-function StartScreen({ onNew, onNewSheet, onOpen }: { onNew: () => void; onNewSheet: () => void; onOpen: () => void }) {
+function StartScreen({ onNew, onOpen }: { onNew: () => void; onOpen: () => void }) {
   return (
     <div className="start">
       <div className="start-inner">
@@ -1332,12 +1404,7 @@ function StartScreen({ onNew, onNewSheet, onOpen }: { onNew: () => void; onNewSh
           <button type="button" className="start-card" onClick={onNew}>
             <FilePlus size={28} />
             <strong>Blank document</strong>
-            <span>Starts as Word (.docx) — use the format label in the status bar to switch to text, HTML, CSS, JS, PDF or a blank canvas</span>
-          </button>
-          <button type="button" className="start-card" onClick={onNewSheet}>
-            <SheetIcon size={28} />
-            <strong>Blank spreadsheet</strong>
-            <span>Excel workbook (.xlsx) with formulas, formatting and multiple sheets — save as CSV or TSV too</span>
+            <span>Starts as Word (.docx) — use the format label in the status bar to switch to a spreadsheet (Excel, CSV), text, HTML, CSS, JS, PDF or a blank canvas</span>
           </button>
           <button type="button" className="start-card" onClick={onOpen}>
             <FolderOpen size={28} />
