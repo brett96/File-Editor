@@ -24,7 +24,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
 /** Base64 SPKI DER of the server's Ed25519 public key (Admin → Licenses shows the server's). */
-export const LICENSE_PUBLIC_KEY = 'MCowBQYDK2VwAyEA1anfSDUVUUEX2EfCb2xqFuEnFZYEcmrJWkNSlYZChrY=';
+export const LICENSE_PUBLIC_KEY = 'MCowBQYDK2VwAyEAup+QSSXf7sveuyvbJCoTzkggXxsKEXggI27sgJkG01c=';
 const DEFAULT_API = 'https://license.bretttomita.com';
 const PURCHASE_URL = 'https://license.bretttomita.com';
 const TOKEN_VERSION = 'FE1';
