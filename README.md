@@ -1,6 +1,6 @@
 # File Editor
 
-Create, edit, convert and password-protect documents, photos, video and audio, in the browser or as an installed desktop
+Create, edit, convert and password-protect documents, spreadsheets, photos, video and audio, in the browser or as an installed desktop
 app for Windows and macOS. Everything runs on the user's device: no file is ever uploaded, and
 there is no server to run.
 
@@ -8,11 +8,12 @@ there is no server to run.
 |---|---|
 | **Open & edit** | Word (.docx, .doc), PDF, OpenDocument (.odt), Rich Text (.rtf), Markdown, HTML, plain text |
 | **Word-style editing** | Headings, fonts, sizes, colours, highlight, alignment, lists, tables (merge/split), images, links, page breaks, page size/orientation/margins |
+| **Spreadsheets** | Open Excel (.xlsx, .xlsm, .xltx), CSV and TSV; new blank workbooks. Excel / Google Sheets-style editor: formula bar with 400+ functions, multiple sheets, cell formatting (fonts, colours, borders, alignment, wrap, rotation), number formats (currency, percent, dates…), merge, freeze panes, insert/delete/hide rows and columns, sort, filter, find & replace, fill handle, copy/paste, undo |
 | **PDF editing** | Edit existing text, add text, images, links, shapes, lines, freehand drawing/signature, highlights, white-out; insert blank pages or pages from another document at any position; delete, duplicate, reorder (drag) and rotate pages |
 | **Photos** | Open JPEG, PNG, WebP, AVIF, HEIC/HEIF (iPhone), JPEG XL, GIF, TIFF, BMP, ICO and SVG. Crop (with aspect presets), rotate, flip, straighten, resize; exposure, contrast, highlights/shadows, saturation, warmth, hue, vignette, sharpen, blur; one-click filters; text, arrows, shapes, freehand drawing, stickers; redact faces, plates or text (pixelate / blur / black box) |
 | **Video & audio** | Open MP4, MOV, WebM, MKV, TS, MP3, M4A, WAV, FLAC, OGG/Opus, AAC, plus legacy AVI, WMV, FLV, MPEG, 3GP, OGV, WMA, AIFF, AMR. Trim, crop, rotate, flip, resize, change frame rate; colour look and filters; text overlays with timing; fade in/out; volume or mute; save a frame as a picture or edit it in the photo editor |
-| **Convert** | Documents ↔ documents (incl. PDF ↔ DOCX); photos ↔ any photo format or PDF; video ↔ MP4 (H.264/HEVC/AV1/VP9), WebM, MOV, MKV, TS, animated GIF, AVI, WMV, FLV, MPEG, 3GP, OGV; video or audio → MP3, M4A, WAV, FLAC, OGG, Opus, AAC |
-| **Passwords** | Open Word and PDF files protected by Word, Acrobat or other tools (with the password); save password-protected DOCX (Office AES-256) and PDF (AES-256, with optional permission restrictions) |
+| **Convert** | Documents ↔ documents (incl. PDF ↔ DOCX); spreadsheets ↔ .xlsx, CSV, TSV; photos ↔ any photo format or PDF; video ↔ MP4 (H.264/HEVC/AV1/VP9), WebM, MOV, MKV, TS, animated GIF, AVI, WMV, FLV, MPEG, 3GP, OGV; video or audio → MP3, M4A, WAV, FLAC, OGG, Opus, AAC |
+| **Passwords** | Open Word, Excel and PDF files protected by Office, Acrobat or other tools (with the password); save password-protected DOCX and XLSX (Office AES-256) and PDF (AES-256, with optional permission restrictions) |
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design.
 
@@ -191,6 +192,19 @@ Developer ID certificate.
 
 ## Format support and limitations
 
+- **Spreadsheets** (`src/core/sheet/`, editor `src/ui/sheet/`): the editor is
+  [Univer](https://github.com/dream-num/univer) (Apache-2.0), loaded only when a spreadsheet is
+  opened (≈6 MB); `.xlsx` is read and written with ExcelJS (MIT) and CSV/TSV with Papa Parse
+  (MIT). Kept in `.xlsx`: all sheets (order, names, hidden, tab colour), values, formulas with
+  their results, fonts, fills, borders, alignment/wrap/rotation, number formats, merged cells,
+  column widths, row heights, hidden rows/columns, frozen panes, zoom and gridlines. Not kept
+  (the app lists what a file uses when it opens): charts, pictures, comments, conditional
+  formatting, data validation, pivot tables, named ranges, mixed formatting inside one cell and
+  macros (`.xlsm` is saved as `.xlsx`). Legacy `.xls` and `.ods` are not supported yet.
+  CSV/TSV keep one sheet's values as displayed (UTF-8 with BOM, so Excel shows accents);
+  reading one detects the encoding and delimiter, turns plain numbers into numbers and keeps
+  codes such as `00501` and values starting with `=` as text. Printing a spreadsheet prints
+  the active sheet as a simple table.
 - **DOCX** is the highest-fidelity editable format. Layout tables keep their column widths,
   cell borders, shading and row heights, and paragraphs keep their spacing, line height and
   indents. Footnotes, comments and tracked-change history are not imported yet.

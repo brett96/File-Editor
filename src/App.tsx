@@ -6,6 +6,7 @@ import {
   Image as ImageIcon,
   FileText,
   FolderOpen,
+  Sheet as SheetIcon,
   Lock,
   LockOpen,
   Printer,
@@ -45,15 +46,19 @@ import { CONTAINERS, IMAGE_FORMATS, MEDIA_EXTENSIONS_ALL, IMAGE_EXTENSIONS_ALL, 
 import type { DecodedImage } from './core/media/image-codecs';
 import type { MediaInfo } from './core/media/video-engine';
 import { createPixels, type Pixels } from './core/media/image-ops';
+import { SHEET_EXTENSIONS, SHEET_FORMATS, blankWorkbook, sheetFormatFromName, type IWorkbookData, type SheetFormat } from './core/sheet/workbook';
+import { SheetEditor, type SheetEditorHandle } from './ui/sheet/SheetEditor';
+import { SheetExportModal, SheetSecurityModal, type SheetExportChoice } from './ui/sheet/sheet-dialogs';
 
-const ALL_OPEN_EXTENSIONS = [...new Set([...OPEN_EXTENSIONS, ...IMAGE_EXTENSIONS_ALL, ...MEDIA_EXTENSIONS_ALL])];
+const ALL_OPEN_EXTENSIONS = [...new Set([...OPEN_EXTENSIONS, ...SHEET_EXTENSIONS, ...IMAGE_EXTENSIONS_ALL, ...MEDIA_EXTENSIONS_ALL])];
 
 type OpenDoc =
   | { kind: 'flow'; key: number; name: string; format: FlowFormat; initial: RichDocument; handle?: unknown; protection: ProtectionDraft }
   | { kind: 'code'; key: number; name: string; format: CodeLanguage; language: CodeLanguage; text: string; handle?: unknown; protection: ProtectionDraft }
   | { kind: 'pdf'; key: number; name: string; bytes: Uint8Array; handle?: unknown; protection: ProtectionDraft }
   | { kind: 'image'; key: number; name: string; decoded: DecodedImage; format: ImageFormat; handle?: unknown; protection: ProtectionDraft }
-  | { kind: 'media'; key: number; name: string; blob: Blob; info: MediaInfo; container: ContainerFormat; handle?: unknown; protection: ProtectionDraft };
+  | { kind: 'media'; key: number; name: string; blob: Blob; info: MediaInfo; container: ContainerFormat; handle?: unknown; protection: ProtectionDraft }
+  | { kind: 'sheet'; key: number; name: string; format: SheetFormat; workbook: IWorkbookData; handle?: unknown; protection: ProtectionDraft };
 
 const PRIMARY_SWITCH: Array<DocFormat | 'image'> = ['docx', 'txt', 'html', 'css', 'js', 'pdf', 'image'];
 const SECONDARY_SWITCH: FlowFormat[] = ['odt', 'rtf', 'md', 'doc'];
@@ -162,6 +167,7 @@ export default function App() {
   const pdfRef = useRef<PdfEditorHandle>(null);
   const imageRef = useRef<ImageEditorHandle>(null);
   const videoRef = useRef<VideoEditorHandle>(null);
+  const sheetRef = useRef<SheetEditorHandle>(null);
   const docRef = useRef(doc);
   docRef.current = doc;
   const dirtyRef = useRef(dirty);
@@ -316,9 +322,71 @@ export default function App() {
     return true;
   };
 
+  /** Opens Excel / CSV / TSV files. Returns false when the file is not a spreadsheet. */
+  const openSheet = async (file: OpenedFile): Promise<boolean> => {
+    const format = sheetFormatFromName(file.name);
+    if (!format) return false;
+    let bytes = await fileBytes(file);
+    let password: string | undefined;
+    if (format === 'xlsx') {
+      const { isCfb, isOfficeEncrypted, decryptOffice } = await import('./core/crypto/office-crypto');
+      if (isCfb(bytes) && isOfficeEncrypted(bytes)) {
+        let incorrect = false;
+        for (;;) {
+          const pw = await requestPassword(file.name, 'This workbook is password protected.', incorrect);
+          if (pw === null) return true;
+          setBusy(`Opening ${file.name}…`);
+          try {
+            bytes = await decryptOffice(bytes, pw);
+            password = pw;
+            break;
+          } catch (err) {
+            if (!(err instanceof PasswordError)) throw err;
+            incorrect = true;
+          } finally {
+            setBusy(null);
+          }
+        }
+      }
+    }
+    setBusy(`Opening ${file.name}…`);
+    try {
+      await nextPaint();
+      let workbook: IWorkbookData;
+      let warnings: string[] = [];
+      if (format === 'xlsx') {
+        const { readXlsx } = await import('./core/sheet/xlsx');
+        ({ workbook, warnings } = await readXlsx(bytes, baseName(file.name)));
+      } else {
+        const { readDelimited } = await import('./core/sheet/csv');
+        workbook = readDelimited(bytes, file.name, format === 'tsv' ? '\t' : undefined);
+      }
+      // .xlsm / .xltx are saved as plain .xlsx (macros are not kept)
+      const ext = file.name.split('.').pop()?.toLowerCase();
+      const keepsName = ext === SHEET_FORMATS[format].ext;
+      setDoc({
+        kind: 'sheet',
+        key: docKey++,
+        name: keepsName ? file.name : `${baseName(file.name)}.${SHEET_FORMATS[format].ext}`,
+        format,
+        workbook,
+        handle: keepsName ? file.handle : undefined,
+        protection: password ? { ...EMPTY_PROTECTION, enabled: true, password, confirm: password } : EMPTY_PROTECTION,
+      });
+      setDirty(false);
+      if (password) toast('Unlocked. The password will be kept when you save — change it under Protect.', 'info');
+      if (ext === 'xlsm') warnings.push('Macros (saved as a macro-free .xlsx)');
+      if (warnings.length) toast(`Opened. Not shown and not kept when saved: ${warnings.join(', ')}.`, 'info');
+    } finally {
+      setBusy(null);
+    }
+    return true;
+  };
+
   const openFile = async (file: OpenedFile) => {
     if (!confirmDiscard()) return;
     try {
+      if (await openSheet(file)) return;
       if (await openMedia(file)) return;
     } catch (err) {
       toast(`Could not open ${file.name}: ${errorText(err)}`);
@@ -384,6 +452,12 @@ export default function App() {
     setDoc({ kind: 'flow', key: docKey++, name: 'Untitled.docx', format: 'docx', initial: { ...BLANK }, protection: EMPTY_PROTECTION });
     setDirty(false);
     setStats(null);
+  };
+
+  const newSpreadsheet = () => {
+    if (!confirmDiscard()) return;
+    setDoc({ kind: 'sheet', key: docKey++, name: 'Untitled.xlsx', format: 'xlsx', workbook: blankWorkbook('Untitled'), protection: EMPTY_PROTECTION });
+    setDirty(false);
   };
 
   /** Converts any picked file into PDF bytes, for inserting its pages into the open PDF. */
@@ -536,7 +610,7 @@ export default function App() {
 
   const render = async (format: DocFormat, protection: ProtectionDraft): Promise<Uint8Array> => {
     const d = docRef.current!;
-    if (d.kind === 'image' || d.kind === 'media') throw new Error('Use the image or video save dialog.');
+    if (d.kind === 'image' || d.kind === 'media' || d.kind === 'sheet') throw new Error('Use the image, video or spreadsheet save dialog.');
     const pdfProt = protectionToPdf(protection);
     const pw = protection.enabled ? protection.password : undefined;
     if (d.kind === 'code') {
@@ -692,9 +766,57 @@ export default function App() {
     }
   };
 
+  // ── spreadsheets ─────────────────────────────────────────────────────────
+  const saveSheet = async (c: SheetExportChoice, handle: unknown | undefined, adopt: boolean) => {
+    const d = docRef.current;
+    if (d?.kind !== 'sheet' || !sheetRef.current) return;
+    setBusy('Saving…');
+    try {
+      await nextPaint();
+      const info = SHEET_FORMATS[c.format];
+      let bytes: Uint8Array;
+      let note = '';
+      if (c.format === 'xlsx') {
+        const wb = sheetRef.current.getWorkbook();
+        if (!wb) throw new Error('The spreadsheet is still loading.');
+        const { writeXlsx } = await import('./core/sheet/xlsx');
+        bytes = await writeXlsx({ ...wb, name: baseName(c.fileName) });
+        if (c.protection.enabled && c.protection.password) {
+          const { encryptOffice } = await import('./core/crypto/office-crypto');
+          bytes = await encryptOffice(bytes, c.protection.password);
+        }
+      } else {
+        const active = sheetRef.current.getActiveSheet();
+        if (!active) throw new Error('The spreadsheet is still loading.');
+        const { writeDelimited } = await import('./core/sheet/csv');
+        bytes = writeDelimited(active.rows, c.format === 'tsv' ? '\t' : ',');
+        if (active.sheetCount > 1) note = ` (sheet "${active.name}" only)`;
+      }
+      const res = await host.save({ suggestedName: c.fileName, bytes, mime: info.mime, ext: info.ext, description: info.label, handle });
+      if (!res) return;
+      if (adopt) {
+        setDoc((cur) => (cur && cur.kind === 'sheet' ? { ...cur, name: res.name, format: c.format, handle: res.handle, protection: c.protection } : cur));
+        setDirty(false);
+      }
+      const lock = c.protection.enabled && info.canProtect ? ' (password protected)' : '';
+      toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${res.name}${lock}${note}`, 'info');
+    } catch (err) {
+      toast(`Could not save: ${errorText(err)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const save = async () => {
     const d = docRef.current;
     if (!d) return;
+    if (d.kind === 'sheet') {
+      const choice = { format: d.format, fileName: d.name, protection: d.protection };
+      if (d.handle && host.canSaveInPlace) await saveSheet(choice, d.handle, true);
+      else if (host.kind === 'web' && !host.canSaveInPlace) await saveSheet(choice, undefined, true);
+      else setExportOpen('save-as');
+      return;
+    }
     if (d.kind === 'media') {
       setExportOpen('save-as');
       return;
@@ -733,6 +855,12 @@ export default function App() {
       } else if (d.kind === 'flow') {
         const html = await exportFlow(currentFlow()!, 'html');
         url = URL.createObjectURL(new Blob([html as BlobPart], { type: 'text/html' }));
+      } else if (d.kind === 'sheet') {
+        const active = sheetRef.current?.getActiveSheet();
+        if (!active) throw new Error('The spreadsheet is still loading.');
+        const rows = active.rows.map((r) => `<tr>${r.map((v) => `<td>${escapeHtml(v)}</td>`).join('')}</tr>`).join('');
+        const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(active.name)}</title><style>@page{margin:12mm}body{font:10pt Calibri,Arial,sans-serif}table{border-collapse:collapse}td{border:1px solid #bbb;padding:2px 6px;white-space:pre-wrap;vertical-align:top}h1{font-size:12pt;margin:0 0 8px}</style></head><body><h1>${escapeHtml(baseName(d.name))} — ${escapeHtml(active.name)}</h1><table>${rows}</table></body></html>`;
+        url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
       } else if (d.kind === 'code') {
         const text = codeRef.current?.getText() ?? d.text;
         const html = d.language === 'html'
@@ -801,8 +929,8 @@ export default function App() {
   };
 
   // ── shortcuts, OS file-open events, native menu ──────────────────────────
-  const actions = useRef({ save, pickAndOpen, newDocument, print, saveAs: () => setExportOpen('save-as'), protect: () => setSecurityOpen(true), openFile });
-  actions.current = { save, pickAndOpen, newDocument, print, saveAs: () => setExportOpen('save-as'), protect: () => setSecurityOpen(true), openFile };
+  const actions = useRef({ save, pickAndOpen, newDocument, newSpreadsheet, print, saveAs: () => setExportOpen('save-as'), protect: () => setSecurityOpen(true), openFile });
+  actions.current = { save, pickAndOpen, newDocument, newSpreadsheet, print, saveAs: () => setExportOpen('save-as'), protect: () => setSecurityOpen(true), openFile };
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -822,6 +950,8 @@ export default function App() {
       } else if (k === 'n' && e.shiftKey === false && host.kind === 'desktop') {
         e.preventDefault();
         actions.current.newDocument();
+      } else if (docRef.current?.kind === 'sheet') {
+        // the spreadsheet has its own zoom (bottom right) and shortcuts
       } else if (k === '=' || k === '+') {
         e.preventDefault();
         setZoom((z) => ZOOMS.find((v) => v > z + 0.001) ?? z);
@@ -838,6 +968,7 @@ export default function App() {
     const offMenu = host.onMenuCommand((cmd) => {
       const a = actions.current;
       if (cmd === 'new') a.newDocument();
+      else if (cmd === 'new-spreadsheet') a.newSpreadsheet();
       else if (cmd === 'open') void a.pickAndOpen();
       else if (cmd === 'license') setLicenseOpen(true);
       else if (!docRef.current) return;
@@ -910,7 +1041,9 @@ export default function App() {
   const canSwitchFormat = doc?.kind === 'flow' || doc?.kind === 'code';
   const formatLabel = format
     ? FORMATS[format].label
-    : doc?.kind === 'image'
+    : doc?.kind === 'sheet'
+      ? SHEET_FORMATS[doc.format].label
+      : doc?.kind === 'image'
       ? `${IMAGE_FORMATS[doc.format].label} image`
       : doc?.kind === 'media'
         ? doc.info.hasVideo
@@ -934,6 +1067,7 @@ export default function App() {
         )}
         <nav className="topbar-actions" aria-label="File">
           <IconButton label="New" text onClick={newDocument}><FilePlus size={16} /></IconButton>
+          <IconButton label="New spreadsheet" onClick={newSpreadsheet}><SheetIcon size={16} /></IconButton>
           <IconButton label="Open" text onClick={pickAndOpen}><FolderOpen size={16} /></IconButton>
           {doc && (
             <>
@@ -948,7 +1082,7 @@ export default function App() {
               {doc.kind === 'pdf' && (
                 <IconButton label="Convert PDF to editable document" onClick={convertPdfToFlow}><Wand2 size={16} /></IconButton>
               )}
-              {!isMediaDoc && doc.kind !== 'code' && (
+              {!isMediaDoc && doc.kind !== 'code' && doc.kind !== 'sheet' && (
                 <>
                   <Divider />
                   <IconButton label="Zoom out (Ctrl -)" onClick={() => setZoom((z) => [...ZOOMS].reverse().find((v) => v < z - 0.001) ?? z)}><ZoomOut size={16} /></IconButton>
@@ -971,7 +1105,8 @@ export default function App() {
       </header>
 
       <main className="main">
-        {!doc && <StartScreen onNew={newDocument} onOpen={pickAndOpen} />}
+        {!doc && <StartScreen onNew={newDocument} onNewSheet={newSpreadsheet} onOpen={pickAndOpen} />}
+        {doc?.kind === 'sheet' && <SheetEditor key={doc.key} ref={sheetRef} initial={doc.workbook} onChange={markDirty} onError={toast} />}
         {doc?.kind === 'flow' && (
           <RichEditor key={doc.key} ref={richRef} initial={doc.initial} zoom={zoom} onZoom={setZoom} onChange={markDirty} onStats={setStats} onPageCount={setPageCount} onError={toast} />
         )}
@@ -1159,6 +1294,26 @@ export default function App() {
           }}
         />
       )}
+      {exportOpen && doc?.kind === 'sheet' && (() => {
+        const active = sheetRef.current?.getActiveSheet();
+        return (
+          <SheetExportModal
+            initialFormat={doc.format}
+            initialName={baseName(doc.name)}
+            initialProtection={doc.protection}
+            sheetCount={active?.sheetCount ?? 1}
+            activeSheet={active?.name ?? 'Sheet1'}
+            onClose={() => setExportOpen(null)}
+            onSubmit={(c) => {
+              setExportOpen(null);
+              void saveSheet(c, undefined, true);
+            }}
+          />
+        );
+      })()}
+      {securityOpen && doc?.kind === 'sheet' && (
+        <SheetSecurityModal format={doc.format} initial={doc.protection} onClose={() => setSecurityOpen(false)} onApply={applySecurity} />
+      )}
       {securityOpen && doc && format && (doc.kind === 'flow' || doc.kind === 'code' || doc.kind === 'pdf') && (
         <SecurityModal format={format} initial={doc.protection} onClose={() => setSecurityOpen(false)} onApply={applySecurity} />
       )}
@@ -1167,22 +1322,27 @@ export default function App() {
   );
 }
 
-function StartScreen({ onNew, onOpen }: { onNew: () => void; onOpen: () => void }) {
+function StartScreen({ onNew, onNewSheet, onOpen }: { onNew: () => void; onNewSheet: () => void; onOpen: () => void }) {
   return (
     <div className="start">
       <div className="start-inner">
         <h1>File Editor</h1>
-        <p className="start-lead">Create, edit, convert and protect documents, photos, video and audio. Everything runs on your device; no file is uploaded.</p>
+        <p className="start-lead">Create, edit, convert and protect documents, spreadsheets, photos, video and audio. Everything runs on your device; no file is uploaded.</p>
         <div className="start-cards">
           <button type="button" className="start-card" onClick={onNew}>
             <FilePlus size={28} />
             <strong>Blank document</strong>
             <span>Starts as Word (.docx) — use the format label in the status bar to switch to text, HTML, CSS, JS, PDF or a blank canvas</span>
           </button>
+          <button type="button" className="start-card" onClick={onNewSheet}>
+            <SheetIcon size={28} />
+            <strong>Blank spreadsheet</strong>
+            <span>Excel workbook (.xlsx) with formulas, formatting and multiple sheets — save as CSV or TSV too</span>
+          </button>
           <button type="button" className="start-card" onClick={onOpen}>
             <FolderOpen size={28} />
             <strong>Open a file</strong>
-            <span>Documents, photos, video or audio — or drag one onto this window</span>
+            <span>Documents, spreadsheets, photos, video or audio — or drag one onto this window</span>
           </button>
         </div>
         <div className="start-formats">
@@ -1190,11 +1350,12 @@ function StartScreen({ onNew, onOpen }: { onNew: () => void; onOpen: () => void 
           <table>
             <tbody>
               <tr><th>Edit</th><td>Word (.docx, .doc), PDF, OpenDocument (.odt), Rich Text (.rtf), Markdown, HTML, CSS, JavaScript, plain text</td></tr>
+              <tr><th><SheetIcon size={14} /> Spreadsheets</th><td>Excel (.xlsx, .xlsm), CSV, TSV — formulas (400+ functions), formatting, number formats, merge, freeze panes, sort, filter, find &amp; replace, multiple sheets</td></tr>
               <tr><th>PDF</th><td>Edit existing text, add text, images, links, shapes and drawings; insert, delete, reorder and rotate pages; merge files</td></tr>
               <tr><th><ImageIcon size={14} /> Photos</th><td>JPEG, PNG, WebP, AVIF, HEIC (iPhone), JPEG XL, GIF, TIFF, BMP, ICO, SVG — crop, rotate, resize, adjust colour, filters, text, drawing, redact faces or plates</td></tr>
               <tr><th><Film size={14} /> Video &amp; audio</th><td>MP4, MOV, WebM, MKV, AVI, WMV, FLV, MPEG, 3GP, MP3, M4A, WAV, FLAC, OGG and more — trim, crop, rotate, resize, colour, text, fades, volume, extract sound, GIFs</td></tr>
               <tr><th>Convert</th><td>Save any file in any format of its kind: documents ↔ documents, photo ↔ photo (or PDF), video ↔ video ↔ audio</td></tr>
-              <tr><th>Protect</th><td>Open and save password-protected Word and PDF files</td></tr>
+              <tr><th>Protect</th><td>Open and save password-protected Word, Excel and PDF files</td></tr>
             </tbody>
           </table>
         </div>
