@@ -8,7 +8,8 @@ const base = process.env.ELECTRON ? './' : process.env.VITE_BASE || '/';
 /**
  * Strict Content-Security-Policy for production builds. Not applied to the dev server,
  * because Vite's HMR client relies on inline scripts. Everything the app needs is bundled:
- * no remote scripts, styles, fonts or connections are allowed.
+ * no remote scripts, styles or fonts. The only outbound connect is GitHub Releases, so the
+ * home-screen "Download for Windows/Mac" button can look up the latest installer.
  */
 export const CSP = [
   "default-src 'self'",
@@ -17,7 +18,7 @@ export const CSP = [
   "img-src 'self' data: blob:",
   "font-src 'self' data:",
   "worker-src 'self' blob:",
-  "connect-src 'self' blob: data:",
+  "connect-src 'self' blob: data: https://api.github.com",
   "media-src 'self' blob: data:",
   "frame-src 'self' blob:",
   "object-src 'none'",
