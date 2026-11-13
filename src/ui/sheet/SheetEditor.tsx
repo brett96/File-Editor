@@ -10,6 +10,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { ICellData, IWorkbookData } from '../../core/sheet/workbook';
 import { fitForPhone, isPhoneScreen, restoreFromPhone, type PhoneRestore } from './phone-view';
+import { installSheetRibbon } from './ribbon-extras';
 import { installSheetTouch } from './touch';
 
 export interface SheetEditorHandle {
@@ -36,6 +37,13 @@ type Api = import('@univerjs/presets').FUniver;
  */
 const EDIT_MUTATION = /^sheets?[.-]/i;
 const QUIET_MUTATION = /formula|calculation|auto-height|auto-width|selection|scroll|zoom|set-worksheet-activate|set-active|numfmt\.mutation\.set-numfmt-local/i;
+
+/** The first ribbon tab is "Home", as in Excel (Univer calls it "Start"). */
+function withHomeTab<T extends object>(locale: T): T {
+  const ui = (locale as { ui?: { ribbon?: Record<string, unknown> } }).ui;
+  if (!ui?.ribbon) return locale;
+  return { ...locale, ui: { ...ui, ribbon: { ...ui.ribbon, start: 'Home' } } };
+}
 
 export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEditor({ initial, onChange, onError, onNotice }, ref) {
   const host = useRef<HTMLDivElement>(null);
@@ -82,7 +90,7 @@ export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEd
         const { LocaleType, mergeLocales, createUniver } = presets;
         const { univer, univerAPI } = createUniver({
           locale: LocaleType.EN_US,
-          locales: { [LocaleType.EN_US]: mergeLocales(enCore.default, enSort.default, enFilter.default, enFind.default) },
+          locales: { [LocaleType.EN_US]: withHomeTab(mergeLocales(enCore.default, enSort.default, enFilter.default, enFind.default)) },
           darkMode: !!dark?.matches,
           presets: [
             core.UniverSheetsCorePreset({
@@ -99,6 +107,7 @@ export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEd
             find.UniverSheetsFindReplacePreset(),
           ],
         });
+        installSheetRibbon(univerAPI, (m) => onNoticeRef.current?.(m));
         univerAPI.createWorkbook(snapshot);
         api.current = univerAPI;
         const removeTouch = phone

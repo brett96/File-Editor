@@ -549,18 +549,41 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     return true;
   };
 
-  /** Opens SQLite databases (.sqlite, .db, …). Returns false when the file is not a database. */
+  /** Opens SQLite and LiteDB databases (.sqlite, .db, …). Returns false when the file is not a database. */
   const openDatabase = async (file: OpenedFile): Promise<boolean> => {
-    const head = new Uint8Array(await file.blob.slice(0, 32).arrayBuffer());
+    const head = new Uint8Array(await file.blob.slice(0, 64).arrayBuffer());
     const byExt = dbFormatFromName(file.name);
+    const { liteDbVersion } = await import('./core/db/litedb');
+    const lite = liteDbVersion(head);
     // Known DB extensions always attempt open (sql.js validates the header). Magic catches renamed files.
-    if (!byExt && !isSqliteFile(file.name, head)) return false;
+    if (!byExt && !lite && !isSqliteFile(file.name, head)) return false;
     const format = byExt ?? 'sqlite';
     setBusy(`Opening ${file.name}…`);
     try {
       await nextPaint();
       const { SqliteDatabase } = await import('./core/db/sqlite');
       const bytes = await fileBytes(file);
+      if (lite) {
+        // LiteDB (.NET document database): read-only import, shown as SQLite tables
+        const { readLiteDb, liteDbTables } = await import('./core/db/litedb');
+        const source = readLiteDb(bytes);
+        const db = await SqliteDatabase.open();
+        try {
+          for (const t of liteDbTables(source)) db.importTable(t.name, t.columns, t.rows);
+        } catch (err) {
+          db.close();
+          throw err;
+        }
+        setDoc({ kind: 'database', key: docKey++, name: `${baseName(file.name)}.sqlite`, format: 'sqlite', db, protection: EMPTY_PROTECTION });
+        setDirty(false);
+        const docs = source.collections.reduce((n, c) => n + c.documents.length, 0);
+        toast(
+          `Opened a LiteDB database: ${source.collections.length} ${source.collections.length === 1 ? 'collection' : 'collections'}, ${docs.toLocaleString()} documents, shown as tables. ` +
+            `This is a copy: saving writes a SQLite file and ${file.name} is not changed.${source.warnings.length ? ` Note: ${source.warnings.join('; ')}.` : ''}`,
+          'info',
+        );
+        return true;
+      }
       const db = await SqliteDatabase.open(bytes);
       const keepsName = !!byExt;
       setDoc({
@@ -1960,7 +1983,7 @@ export default function App() {
   const toast = useCallback((text: string, kind: Toast['kind'] = 'error') => {
     const id = Date.now() + Math.random();
     setToasts((t) => [...t, { id, kind, text }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'error' ? 7000 : 3500);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'error' ? 7000 : Math.min(12000, Math.max(3500, text.length * 45)));
   }, []);
 
   // ── tabs ──────────────────────────────────────────────────────────────────

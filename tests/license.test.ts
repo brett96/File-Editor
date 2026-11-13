@@ -26,6 +26,21 @@ describe('license keys', () => {
     expect(formatKeyInput('')).toBe('');
   });
 
+  it('lets the whole key be typed from the first character', () => {
+    let field = '';
+    for (const ch of 'FE-HG7KQ-2MXP4-ZT9RW-C3JN8') field = formatKeyInput(field + ch);
+    expect(field).toBe('FE-HG7KQ-2MXP4-ZT9RW-C3JN8');
+    field = '';
+    for (const ch of 'fehg7kq2mxp4zt9rwc3jn8') field = formatKeyInput(field + ch);
+    expect(field).toBe('FE-HG7KQ-2MXP4-ZT9RW-C3JN8');
+    expect(formatKeyInput('f')).toBe('F');
+    expect(formatKeyInput('fe')).toBe('FE');
+    expect(formatKeyInput('FE-')).toBe('FE');
+    // backspacing over the first group's only character leaves the prefix, then nothing
+    expect(formatKeyInput('FE-')).toBe('FE');
+    expect(formatKeyInput('F')).toBe('F');
+  });
+
   it('rejects tokens that are not signed by the license server', () => {
     const dev = 'a'.repeat(64);
     const payload = Buffer.from(JSON.stringify({ typ: 'file-editor-license', lid: 'lic_x', hint: '…-AAAAA', email: 'a@b.c', dev, iat: 1 })).toString('base64url');

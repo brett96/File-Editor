@@ -1,6 +1,8 @@
 /**
- * SQLite databases via sql.js (WebAssembly). The whole file is held in memory — fine for
- * typical app databases; very large files are refused with a clear message.
+ * SQLite databases via sql.js (WebAssembly). The whole file is held in memory (sql.js adopts
+ * the file's bytes as its in-memory file, so opening does not copy them); rows are read a
+ * page at a time, so the size of a table doesn't matter to the grid. Files past
+ * DB_MAX_BYTES are refused with a clear message.
  *
  * Works in the browser and in Electron. WASM is loaded from /sqljs/ (copied by
  * scripts/copy-runtime-assets.mjs), never from a CDN.
@@ -10,8 +12,19 @@ import type { Database, SqlJsStatic, SqlValue } from 'sql.js';
 export const DB_EXTENSIONS = ['sqlite', 'sqlite3', 'db', 'db3', 'sdb'] as const;
 export type DbFormat = (typeof DB_EXTENSIONS)[number];
 
-/** Soft ceiling: sql.js keeps the whole database in WASM memory. */
-export const DB_MAX_BYTES = 100 * 1024 * 1024;
+/** Ceiling: the whole database is held in memory, and saving needs a second copy of it. */
+export const DB_MAX_BYTES = 2 * 1024 * 1024 * 1024 - 1;
+
+/** What a file that is not SQLite appears to be, from its first bytes (for a useful message). */
+export function describeNonSqlite(head: Uint8Array): string | null {
+  const ascii = (off: number, n: number) => String.fromCharCode(...head.subarray(off, off + n));
+  if (ascii(4, 15) === 'Standard Jet DB' || ascii(4, 15) === 'Standard ACE DB') return 'a Microsoft Access database';
+  if (head[0] === 0xd0 && head[1] === 0xcf && head[2] === 0x11 && head[3] === 0xe0) return 'a Windows compound file (such as Thumbs.db), not a database File Editor can open';
+  if (ascii(0, 4) === 'PK\u0003\u0004') return 'a zip archive';
+  if (ascii(0, 6) === '-- H2 ' || ascii(0, 16).startsWith('-- H2')) return 'an H2 database';
+  if (ascii(0, 4) === 'T-DB') return 'a Realm database';
+  return null;
+}
 
 const SQLITE_MAGIC = 'SQLite format 3';
 
@@ -61,18 +74,26 @@ function sqljsAssetUrl(file: string): string {
   return new URL(`${base}sqljs/${file}`, document.baseURI).href;
 }
 
+/** sql.js is CommonJS: depending on the bundler its init function is the module or its default. */
+async function importSqlJs(): Promise<(config?: { locateFile?: (file: string) => string }) => Promise<SqlJsStatic>> {
+  const mod = (await import('sql.js')) as unknown as { default?: unknown };
+  const candidates = [mod.default, (mod.default as { default?: unknown } | undefined)?.default, mod];
+  const init = candidates.find((c) => typeof c === 'function');
+  if (!init) throw new Error('The SQLite engine could not be loaded.');
+  return init as (config?: { locateFile?: (file: string) => string }) => Promise<SqlJsStatic>;
+}
+
 async function loadSql(): Promise<SqlJsStatic> {
   if (!sqlPromise) {
     sqlPromise = (async () => {
       const inBrowser = typeof window !== 'undefined' && typeof document !== 'undefined';
+      const initSqlJs = await importSqlJs();
       if (inBrowser) {
         // Served from public/sqljs (see scripts/copy-runtime-assets.mjs) — never a CDN.
         // Vite resolves the browser export (sql-wasm-browser.js → sql-wasm-browser.wasm).
-        const initSqlJs = (await import('sql.js')).default;
         return initSqlJs({ locateFile: (file) => sqljsAssetUrl(file) });
       }
       // Node / vitest: resolve the wasm next to the package.
-      const initSqlJs = (await import('sql.js')).default;
       const { createRequire } = await import('node:module');
       const path = await import('node:path');
       const require = createRequire(import.meta.url);
@@ -117,12 +138,15 @@ export class SqliteDatabase {
 
   static async open(bytes?: Uint8Array): Promise<SqliteDatabase> {
     if (bytes && bytes.byteLength > DB_MAX_BYTES) {
-      throw new Error(`This database is ${(bytes.byteLength / (1024 * 1024)).toFixed(0)} MB. File Editor opens SQLite files up to ${DB_MAX_BYTES / (1024 * 1024)} MB.`);
+      throw new Error(`This database is ${(bytes.byteLength / (1024 * 1024 * 1024)).toFixed(1)} GB. File Editor opens SQLite files up to 2 GB.`);
     }
     if (bytes && bytes.byteLength >= 15) {
       let magic = '';
       for (let i = 0; i < 15; i++) magic += String.fromCharCode(bytes[i]);
-      if (magic !== SQLITE_MAGIC) throw new Error('This file is not a SQLite database (missing the SQLite header).');
+      if (magic !== SQLITE_MAGIC) {
+        const kind = describeNonSqlite(bytes.subarray(0, 64));
+        throw new Error(kind ? `This file is ${kind}, not a SQLite database.` : 'This file is not a SQLite or LiteDB database (it has neither header). Many apps use the .db extension for their own private formats.');
+      }
     }
     const SQL = await loadSql();
     const db = bytes?.byteLength ? new SQL.Database(bytes) : new SQL.Database();
@@ -205,6 +229,37 @@ export class SqliteDatabase {
       `INSERT INTO ${quoteIdent(table)} (${cols.map(quoteIdent).join(', ')}) VALUES (${placeholders})`,
       cols.map((c) => toSql(values[c])),
     );
+  }
+
+  /**
+   * Creates a table and fills it (used to bring another database format's data in). Column
+   * names are made unique ignoring case, as SQLite requires.
+   */
+  importTable(name: string, columns: { name: string; type: string }[], rows: DbCell[][]): void {
+    const seen = new Set<string>();
+    const names = columns.map((c, i) => {
+      let n = c.name || `column${i + 1}`;
+      for (let k = 2; seen.has(n.toLowerCase()); k++) n = `${c.name}_${k}`;
+      seen.add(n.toLowerCase());
+      return n;
+    });
+    const defs = columns.length ? names.map((n, i) => `${quoteIdent(n)} ${columns[i].type.replace(/[^A-Za-z ]/g, '')}`) : ['"value" TEXT'];
+    this.db.run('BEGIN');
+    try {
+      this.db.run(`CREATE TABLE ${quoteIdent(name)} (${defs.join(', ')})`);
+      if (columns.length && rows.length) {
+        const stmt = this.db.prepare(`INSERT INTO ${quoteIdent(name)} VALUES (${names.map(() => '?').join(', ')})`);
+        try {
+          for (const row of rows) stmt.run(row.map(toSql));
+        } finally {
+          stmt.free();
+        }
+      }
+      this.db.run('COMMIT');
+    } catch (err) {
+      this.db.run('ROLLBACK');
+      throw err;
+    }
   }
 
   deleteRows(table: string, rowids: number[]): void {

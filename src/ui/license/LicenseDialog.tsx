@@ -15,7 +15,9 @@ export function formatKeyInput(raw: string): string {
   if (hadFe) s = s.slice(2);
   s = s.slice(0, 20);
   const groups = s.match(/.{1,5}/g) ?? [];
-  if (!groups.length) return '';
+  // "FE" on its own is the start of the prefix: keep it, or the field would empty itself
+  // the moment the second character of a key typed from the start arrives.
+  if (!groups.length) return hadFe ? 'FE' : '';
   return hadFe ? ['FE', ...groups].join('-') : groups.join('-');
 }
 
