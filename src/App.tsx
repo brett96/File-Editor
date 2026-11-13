@@ -552,15 +552,17 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   /** Opens SQLite databases (.sqlite, .db, …). Returns false when the file is not a database. */
   const openDatabase = async (file: OpenedFile): Promise<boolean> => {
     const head = new Uint8Array(await file.blob.slice(0, 32).arrayBuffer());
-    if (!isSqliteFile(file.name, head)) return false;
-    const format = dbFormatFromName(file.name) ?? 'sqlite';
+    const byExt = dbFormatFromName(file.name);
+    // Known DB extensions always attempt open (sql.js validates the header). Magic catches renamed files.
+    if (!byExt && !isSqliteFile(file.name, head)) return false;
+    const format = byExt ?? 'sqlite';
     setBusy(`Opening ${file.name}…`);
     try {
       await nextPaint();
       const { SqliteDatabase } = await import('./core/db/sqlite');
       const bytes = await fileBytes(file);
       const db = await SqliteDatabase.open(bytes);
-      const keepsName = (DB_EXTENSIONS as readonly string[]).includes(file.name.split('.').pop()?.toLowerCase() ?? '');
+      const keepsName = !!byExt;
       setDoc({
         kind: 'database',
         key: docKey++,
@@ -2515,9 +2517,23 @@ function StartScreen({
       <div className="start-inner">
         <h1>File Editor</h1>
         <p className="start-lead">Create, edit, convert and protect documents, spreadsheets, photos, video and audio. Everything runs on your device; no file is uploaded.</p>
-        <button type="button" className="start-guide" onClick={onHelp}>
-          <BookOpen size={16} /> New here? Read the user guide <span>F1</span>
-        </button>
+        <div className="start-actions">
+          <button type="button" className="start-guide" onClick={onHelp}>
+            <BookOpen size={16} /> New here? Read the user guide <span>F1</span>
+          </button>
+          {showDesktopDownload && (
+            <button
+              type="button"
+              className="start-guide start-download"
+              onClick={() => void downloadDesktop()}
+              disabled={downloadBusy}
+              title="Install the desktop app for Auto-save, native menus, Studio, Pro photo tools and offline use"
+            >
+              <Download size={16} />
+              {downloadBusy ? 'Checking…' : downloadLabel}
+            </button>
+          )}
+        </div>
         <div className="start-cards">
           <button type="button" className="start-card" onClick={onNew}>
             <FilePlus size={28} />
@@ -2529,13 +2545,6 @@ function StartScreen({
             <strong>Open a file</strong>
             <span>Documents, spreadsheets, photos, video or audio — or drag one onto this window</span>
           </button>
-          {showDesktopDownload && (
-            <button type="button" className="start-card start-card-download" onClick={() => void downloadDesktop()} disabled={downloadBusy}>
-              <Download size={28} />
-              <strong>{downloadBusy ? 'Checking for the latest release…' : downloadLabel}</strong>
-              <span>Install the desktop app for Auto-save, native menus, Studio, Pro photo tools and offline use. Gets the latest production release.</span>
-            </button>
-          )}
         </div>
         {openTabs.length > 0 && (
           <div className="start-recent start-open">

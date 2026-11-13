@@ -247,7 +247,7 @@ function createWindow() {
     height: 860,
     minWidth: 720,
     minHeight: 480,
-    title: 'File Editor',
+    title: windowTitle(),
     backgroundColor: '#eef0f4',
     show: false,
     webPreferences: {
@@ -408,6 +408,17 @@ function buildMenu() {
 
 /** Help menu says "View License Info…" once this computer holds an active license. */
 let licensed = false;
+/** Last title from the renderer (without the unlicensed marker). */
+let titleBase = 'File Editor';
+
+function windowTitle(): string {
+  const base = titleBase.replace(/\s*\(UNLICENSED\)\s*$/i, '').trimEnd() || 'File Editor';
+  return licensed ? base : `${base} (UNLICENSED)`;
+}
+
+function applyWindowTitle() {
+  mainWindow?.setTitle(windowTitle().slice(0, 200));
+}
 
 async function refreshLicenseMenu() {
   const state = await getLicenseState().catch(() => null);
@@ -416,6 +427,7 @@ async function refreshLicenseMenu() {
     licensed = now;
     if (app.isReady()) buildMenu();
   }
+  applyWindowTitle();
 }
 
 // ── IPC ────────────────────────────────────────────────────────────────────
@@ -545,7 +557,8 @@ function registerIpc() {
   ipcMain.on('set-title', (e, title: string) => {
     try {
       assertSender(e);
-      mainWindow?.setTitle(String(title).slice(0, 200));
+      titleBase = String(title).slice(0, 200);
+      applyWindowTitle();
     } catch {
       /* ignore */
     }

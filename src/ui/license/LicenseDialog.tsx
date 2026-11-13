@@ -8,16 +8,18 @@ import { BadgeCheck, KeyRound, ShieldAlert } from 'lucide-react';
 import { licenseBridge, type LicenseState } from '../../platform/host';
 import { Field, Modal } from '../components';
 
-/** Live formatting as the key is typed or pasted: FE-XXXXX-XXXXX-XXXXX-XXXXX. */
+/** Live formatting as the key is typed or pasted. Does not auto-insert the FE- prefix. */
 export function formatKeyInput(raw: string): string {
   let s = raw.toUpperCase().replace(/[^A-Z0-9]/g, '');
-  if (s.startsWith('FE')) s = s.slice(2);
+  const hadFe = s.startsWith('FE');
+  if (hadFe) s = s.slice(2);
   s = s.slice(0, 20);
   const groups = s.match(/.{1,5}/g) ?? [];
-  return groups.length ? ['FE', ...groups].join('-') : '';
+  if (!groups.length) return '';
+  return hadFe ? ['FE', ...groups].join('-') : groups.join('-');
 }
 
-const COMPLETE = /^FE-[2-9A-HJ-NP-Z]{5}-[2-9A-HJ-NP-Z]{5}-[2-9A-HJ-NP-Z]{5}-[2-9A-HJ-NP-Z]{5}$/;
+const COMPLETE = /^(?:FE-)?[2-9A-HJ-NP-Z]{5}-[2-9A-HJ-NP-Z]{5}-[2-9A-HJ-NP-Z]{5}-[2-9A-HJ-NP-Z]{5}$/;
 
 export function LicenseDialog({ onClose, onActivated }: { onClose: () => void; onActivated?: (state: LicenseState) => void }) {
   const bridge = licenseBridge();

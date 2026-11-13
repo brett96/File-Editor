@@ -56,15 +56,20 @@ export function isSqliteFile(name: string, head?: Uint8Array): boolean {
 
 let sqlPromise: Promise<SqlJsStatic> | null = null;
 
+function sqljsAssetUrl(file: string): string {
+  const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
+  return new URL(`${base}sqljs/${file}`, document.baseURI).href;
+}
+
 async function loadSql(): Promise<SqlJsStatic> {
   if (!sqlPromise) {
     sqlPromise = (async () => {
       const inBrowser = typeof window !== 'undefined' && typeof document !== 'undefined';
       if (inBrowser) {
         // Served from public/sqljs (see scripts/copy-runtime-assets.mjs) — never a CDN.
+        // Vite resolves the browser export (sql-wasm-browser.js → sql-wasm-browser.wasm).
         const initSqlJs = (await import('sql.js')).default;
-        const base = (import.meta.env.BASE_URL || '/').replace(/\/?$/, '/');
-        return initSqlJs({ locateFile: (file) => `${base}sqljs/${file}` });
+        return initSqlJs({ locateFile: (file) => sqljsAssetUrl(file) });
       }
       // Node / vitest: resolve the wasm next to the package.
       const initSqlJs = (await import('sql.js')).default;
@@ -73,7 +78,10 @@ async function loadSql(): Promise<SqlJsStatic> {
       const require = createRequire(import.meta.url);
       const dist = path.dirname(require.resolve('sql.js'));
       return initSqlJs({ locateFile: (file) => path.join(dist, file) });
-    })();
+    })().catch((err) => {
+      sqlPromise = null;
+      throw err;
+    });
   }
   return sqlPromise;
 }

@@ -1137,10 +1137,6 @@ body {
   cursor: wait;
 }
 
-.start-card-download {
-  grid-column: 1 / -1;
-}
-
 .start-license {
   margin: 32px 0 0;
   padding-top: 20px;
@@ -2329,11 +2325,19 @@ button.brand:focus-visible {
   min-width: 270px;
 }
 
+.start-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 18px;
+}
+
 .start-guide {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  margin: 0 0 18px;
+  margin: 0;
   padding: 7px 12px;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -2344,8 +2348,13 @@ button.brand:focus-visible {
   cursor: pointer;
 }
 
-.start-guide:hover {
+.start-guide:hover:not(:disabled) {
   border-color: var(--accent);
+}
+
+.start-guide:disabled {
+  opacity: 0.7;
+  cursor: wait;
 }
 
 .start-guide span {
@@ -2354,4 +2363,8 @@ button.brand:focus-visible {
   border-radius: 4px;
   color: var(--muted);
   font-size: 11px;
+}
+
+.start-download {
+  color: var(--text);
 }

@@ -53,7 +53,8 @@ const sqljsDest = join(root, 'public', 'sqljs');
 rmSync(sqljsDest, { recursive: true, force: true });
 mkdirSync(sqljsDest, { recursive: true });
 const sqlDist = join(nm, 'sql.js', 'dist');
-for (const f of ['sql-wasm.wasm', 'sql-wasm.js']) {
+// Browser resolves sql.js to sql-wasm-browser.js (wants sql-wasm-browser.wasm); Node uses sql-wasm.js.
+for (const f of ['sql-wasm.wasm', 'sql-wasm.js', 'sql-wasm-browser.wasm', 'sql-wasm-browser.js']) {
   if (existsSync(join(sqlDist, f))) cpSync(join(sqlDist, f), join(sqljsDest, f));
 }
 console.log('runtime assets copied to public/pdfjs, public/ffmpeg and public/sqljs');

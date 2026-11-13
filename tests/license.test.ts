@@ -19,7 +19,8 @@ describe('license keys', () => {
     expect(normalizeKey(42)).toBeNull();
   });
 
-  it('formats the key while it is typed', () => {
+  it('formats the key while it is typed without auto-inserting FE-', () => {
+    expect(formatKeyInput('hg7kq2mx')).toBe('HG7KQ-2MX');
     expect(formatKeyInput('fehg7kq2mx')).toBe('FE-HG7KQ-2MX');
     expect(formatKeyInput('FE-HG7KQ-2MXP4-ZT9RW-C3JN8-EXTRA')).toBe('FE-HG7KQ-2MXP4-ZT9RW-C3JN8');
     expect(formatKeyInput('')).toBe('');
