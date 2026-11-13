@@ -72,9 +72,11 @@ import type { MediaInfo } from './core/media/video-engine';
 import { createPixels, type Pixels } from './core/media/image-ops';
 import { SHEET_EXTENSIONS, SHEET_FORMATS, blankWorkbook, sheetFormatFromName, usedRange, type IWorkbookData, type SheetFormat } from './core/sheet/workbook';
 import { SheetEditor, type SheetEditorHandle } from './ui/sheet/SheetEditor';
-import { SheetExportModal, SheetSecurityModal, type SheetExportChoice } from './ui/sheet/sheet-dialogs';
+import { SheetExportModal, SheetHeadersModal, SheetSecurityModal, type SheetExportChoice } from './ui/sheet/sheet-dialogs';
+import { columnsFromRow, type SheetTablePlan } from './core/sheet/to-database';
 import { DB_EXTENSIONS, dbFormatFromName, isSqliteFile, type DbFormat, type SqliteDatabase } from './core/db/sqlite';
 import { DbEditor, type DbEditorHandle } from './ui/db/DbEditor';
+import type { LiteWriteContext, WriteTable } from './core/db/litedb-write';
 
 // Pro editors are desktop-only and loaded on demand, so the web build never downloads them.
 const ProImageEditor = lazy(() => import('./ui/pro-image/ProImageEditor').then((m) => ({ default: m.ProImageEditor })));
@@ -122,7 +124,7 @@ type OpenDoc =
   /** origin: the file Studio was opened from (null for a .fstudio project); handle: the project file */
   | { kind: 'studio'; key: number; name: string; project: StudioProject; blobs: Map<string, Blob>; origin: MediaDoc | null; protection: ProtectionDraft; handle?: unknown }
   | { kind: 'sheet'; key: number; name: string; format: SheetFormat; workbook: IWorkbookData; /** too big to re-save after every edit */ large?: boolean; handle?: unknown; protection: ProtectionDraft }
-  | { kind: 'database'; key: number; name: string; format: DbFormat; db: SqliteDatabase; /** too big to re-save after every edit */ large?: boolean; handle?: unknown; protection: ProtectionDraft };
+  | { kind: 'database'; key: number; name: string; format: DbFormat; db: SqliteDatabase; /** too big to re-save after every edit */ large?: boolean; /** a LiteDB file: saved back in LiteDB's format */ lite?: LiteState; handle?: unknown; protection: ProtectionDraft };
 
 const PRIMARY_SWITCH: Array<DocFormat | 'image'> = ['docx', 'txt', 'html', 'css', 'js', 'pdf', 'image'];
 const SECONDARY_SWITCH: FlowFormat[] = ['odt', 'rtf', 'md', 'doc'];
@@ -149,6 +151,12 @@ function blankCanvasImage(): DecodedImage {
 /** Workbooks with more filled cells than this are saved on demand rather than after every edit. */
 const LARGE_SHEET_CELLS = 400_000;
 const LARGE_DB_BYTES = 48 * 1024 * 1024;
+
+/** What writing a LiteDB file back needs; `original` is the file as opened, until a backup of it exists. */
+interface LiteState {
+  context: LiteWriteContext;
+  original: Uint8Array | null;
+}
 
 interface Progress {
   title: string;
@@ -595,8 +603,9 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       const { SqliteDatabase } = await import('./core/db/sqlite');
       const bytes = await fileBytes(file);
       if (lite) {
-        // LiteDB (.NET document database): read-only import, shown as SQLite tables
+        // LiteDB (.NET document database): its collections are shown as SQLite tables
         const { readLiteDb, liteDbTables } = await import('./core/db/litedb');
+        const { prepareWriteBack } = await import('./core/db/litedb-write');
         const source = readLiteDb(bytes);
         const db = await SqliteDatabase.open();
         try {
@@ -605,28 +614,24 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
           db.close();
           throw err;
         }
-        setDoc({ kind: 'database', key: docKey++, name: `${baseName(file.name)}.sqlite`, format: 'sqlite', db, protection: EMPTY_PROTECTION });
-        setDirty(false);
         const docs = source.collections.reduce((n, c) => n + c.documents.length, 0);
-        toast(
-          `Opened a LiteDB database: ${source.collections.length} ${source.collections.length === 1 ? 'collection' : 'collections'}, ${docs.toLocaleString()} documents, shown as tables. ` +
-            `This is a copy: saving writes a SQLite file and ${file.name} is not changed.${source.warnings.length ? ` Note: ${source.warnings.join('; ')}.` : ''}`,
-          'info',
-        );
+        const summary = `Opened a LiteDB database: ${source.collections.length} ${source.collections.length === 1 ? 'collection' : 'collections'}, ${docs.toLocaleString()} documents, shown as tables.`;
+        const writable = prepareWriteBack(source);
+        if ('context' in writable) {
+          // edits go back into the same file, in LiteDB's own format
+          setDoc({ kind: 'database', key: docKey++, name: file.name, format: byExt ?? 'db', db, lite: { context: writable.context, original: bytes }, handle: file.handle, protection: EMPTY_PROTECTION });
+          setDirty(false);
+          toast(`${summary} Save writes your changes back to ${file.name} as LiteDB; the first save keeps the original as ${file.name}.bak.`, 'info');
+        } else {
+          setDoc({ kind: 'database', key: docKey++, name: `${baseName(file.name)}.sqlite`, format: 'sqlite', db, protection: EMPTY_PROTECTION });
+          setDirty(false);
+          toast(`${summary} This is a copy, because ${writable.reason}: saving writes a SQLite file and ${file.name} is not changed.`, 'info');
+        }
         return true;
       }
       const db = await SqliteDatabase.open(bytes);
-      const keepsName = !!byExt;
-      setDoc({
-        kind: 'database',
-        key: docKey++,
-        name: keepsName ? file.name : `${baseName(file.name)}.sqlite`,
-        format: keepsName ? format : 'sqlite',
-        db,
-        large: bytes.byteLength > LARGE_DB_BYTES,
-        handle: keepsName ? file.handle : undefined,
-        protection: EMPTY_PROTECTION,
-      });
+      // a SQLite file is saved back where it came from, whatever its extension
+      setDoc({ kind: 'database', key: docKey++, name: file.name, format, db, large: bytes.byteLength > LARGE_DB_BYTES, handle: file.handle, protection: EMPTY_PROTECTION });
       setDirty(false);
     } finally {
       setBusy(null);
@@ -1221,15 +1226,59 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   };
 
   // ── databases ────────────────────────────────────────────────────────────
-  const saveDatabase = async (handle: unknown | undefined, adopt: boolean, quiet = false, fileName?: string) => {
+  /** Asks which format to save a LiteDB database as (Save as). */
+  const [dbSaveAs, setDbSaveAs] = useState(false);
+
+  /** Writes the open LiteDB database in LiteDB's format (see core/db/litedb-write.ts). */
+  const saveLiteDb = async (d: Extract<OpenDoc, { kind: 'database' }>, lite: LiteState, handle: unknown | undefined, quiet: boolean) => {
+    const { writeLiteDb, prepareWriteBack } = await import('./core/db/litedb-write');
+    const { readLiteDb } = await import('./core/db/litedb');
+    const tables: WriteTable[] = d.db.listObjects().filter((o) => o.kind === 'table').map((o) => ({ name: o.name, ...d.db.readAll(o.name) }));
+    const out = writeLiteDb(lite.context, tables);
+    // the file as it was before File Editor first changed it stays beside it
+    const inPlace = handle !== undefined && handle === d.handle;
+    const backup = inPlace && lite.original ? await host.backup(handle, d.name, lite.original) : null;
+    const name = /\.[A-Za-z0-9]+$/.test(d.name) ? d.name : `${d.name}.db`;
+    const ext = name.split('.').pop()!.toLowerCase();
+    const res = await host.save({ suggestedName: name, bytes: out.bytes, mime: 'application/octet-stream', ext, description: 'LiteDB database', handle, quiet });
+    if (!res) return null;
+    if (out.assignedIds.length) {
+      for (const a of out.assignedIds) d.db.updateCell(a.table, a.rowid, '_id', a.value);
+      dbRef.current?.refresh();
+    }
+    if (inPlace || handle === undefined) {
+      // what was just written is the new starting point for the next save
+      const next = prepareWriteBack(readLiteDb(out.bytes));
+      if ('context' in next) lite.context = next.context;
+      if (inPlace) lite.original = null;
+    }
+    const notes = [
+      `${out.documents.toLocaleString()} documents`,
+      ...(backup ? [`the original was kept as ${backup}`] : []),
+      ...(out.retyped ? [`${out.retyped} ${out.retyped === 1 ? 'value no longer fits its field\'s type and was' : 'values no longer fit their fields\' types and were'} stored as entered`] : []),
+    ];
+    return { res, note: ` as LiteDB (${notes.join('; ')})`, ext };
+  };
+
+  const saveDatabase = async (handle: unknown | undefined, adopt: boolean, quiet = false, fileName?: string, as?: 'litedb' | 'sqlite') => {
     const d = docRef.current;
     if (d?.kind !== 'database' || !dbRef.current) return;
     const seq = editSeq.current;
     if (!quiet) setBusy('Saving…');
     try {
       await nextPaint();
+      if (d.lite && as !== 'sqlite') {
+        const saved = await saveLiteDb(d, d.lite, handle, quiet);
+        if (!saved) return;
+        if (adopt) {
+          if (!quiet) setDoc((cur) => (cur && cur.kind === 'database' ? { ...cur, name: saved.res.name, handle: saved.res.handle } : cur));
+          markClean(seq);
+        }
+        if (!quiet) toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${saved.res.name}${saved.note}`, 'info');
+        return;
+      }
       const bytes = dbRef.current.export();
-      const name = fileName ?? d.name;
+      const name = fileName ?? (d.lite ? `${baseName(d.name)}.sqlite` : d.name);
       const ext = (name.split('.').pop()?.toLowerCase() as DbFormat | undefined) && (DB_EXTENSIONS as readonly string[]).includes(name.split('.').pop()!.toLowerCase())
         ? (name.split('.').pop()!.toLowerCase() as DbFormat)
         : d.format;
@@ -1244,7 +1293,8 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       });
       if (!res) return;
       if (adopt) {
-        if (!quiet) setDoc((cur) => (cur && cur.kind === 'database' ? { ...cur, name: res.name, format: ext, handle: res.handle } : cur));
+        // a LiteDB database saved as SQLite carries on as an ordinary SQLite file
+        if (!quiet) setDoc((cur) => (cur && cur.kind === 'database' ? { ...cur, name: res.name, format: ext, handle: res.handle, lite: undefined } : cur));
         markClean(seq);
       }
       if (!quiet) toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${res.name}`, 'info');
@@ -1311,6 +1361,68 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       toast(`Could not save: ${errorText(err)}`);
     } finally {
       if (!quiet) setBusy(null);
+    }
+  };
+
+  // ── spreadsheet → database (each sheet becomes a table) ──────────────────
+  const [headerAsk, setHeaderAsk] = useState<{ workbook: IWorkbookData; plans: SheetTablePlan[]; fileName: string } | null>(null);
+
+  const startSheetToDatabase = async (fileName: string) => {
+    const d = docRef.current;
+    if (d?.kind !== 'sheet' || !sheetRef.current) return;
+    setBusy('Reading the sheets…');
+    try {
+      await nextPaint();
+      const workbook = sheetRef.current.getWorkbook();
+      if (!workbook) throw new Error('The spreadsheet is still loading.');
+      const { planTables } = await import('./core/sheet/to-database');
+      const plans = planTables(workbook);
+      if (!plans.length) throw new Error('This workbook has no data to put in a database.');
+      setBusy(null);
+      // a sheet whose heading row is a guess: ask before using it
+      if (plans.some((p) => !p.confident)) setHeaderAsk({ workbook, plans, fileName });
+      else await sheetToDatabase(workbook, plans, fileName);
+    } catch (err) {
+      toast(`Could not convert: ${errorText(err)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sheetToDatabase = async (workbook: IWorkbookData, plans: SheetTablePlan[], fileName: string) => {
+    setBusy('Creating the database…');
+    try {
+      await nextPaint();
+      const [{ buildTable }, { SqliteDatabase }] = await Promise.all([import('./core/sheet/to-database'), import('./core/db/sqlite')]);
+      const db = await SqliteDatabase.open();
+      let rows = 0;
+      let bytes: Uint8Array;
+      try {
+        for (const plan of plans) {
+          const table = buildTable(workbook, plan);
+          db.importTable(table.name, table.columns, table.rows);
+          rows += table.rows.length;
+          await nextPaint();
+        }
+        bytes = db.export();
+      } catch (err) {
+        db.close();
+        throw err;
+      }
+      setBusy(null);
+      const res = await host.save({ suggestedName: fileName, bytes, mime: 'application/vnd.sqlite3', ext: 'sqlite', description: 'SQLite database' });
+      if (!res) {
+        db.close();
+        return;
+      }
+      // carry on in the database editor, on the file that was just written
+      setDoc({ kind: 'database', key: docKey++, name: res.name, format: 'sqlite', db, large: bytes.byteLength > LARGE_DB_BYTES, handle: res.handle, protection: EMPTY_PROTECTION });
+      setDirty(false);
+      toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${res.name}: ${plans.length} ${plans.length === 1 ? 'table' : 'tables'}, ${rows.toLocaleString()} rows.`, 'info');
+    } catch (err) {
+      toast(`Could not convert: ${errorText(err)}`);
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -1406,6 +1518,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   /** Why the open file can't be saved automatically right now, or null if it can. */
   const autoSaveBlocker = (d: OpenDoc): string | null => {
     if (d.kind === 'media') return 'Video and audio are re-encoded when saved, so they are saved when you press Save.';
+    if (d.kind === 'database' && d.lite) return 'LiteDB databases are saved when you press Save, so another program\'s data file is never rewritten in the background.';
     if ((d.kind === 'sheet' || d.kind === 'database') && d.large) return `This ${d.kind === 'sheet' ? 'workbook' : 'database'} is large, so it is saved when you press Save rather than after every edit.`;
     if (host.kind === 'web' && !host.canSaveInPlace) return 'Auto-save needs the desktop app or a browser that can save files in place (Chrome, Edge).';
     if (d.handle === undefined) return 'Save once to choose a file; after that, changes are saved automatically.';
@@ -1580,7 +1693,12 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   const actions = useRef<TabApi>(null!);
   actions.current = {
     save,
-    saveAs: () => setExportOpen('save-as'),
+    saveAs: () => {
+      const d = docRef.current;
+      if (d?.kind !== 'database') setExportOpen('save-as');
+      else if (d.lite) setDbSaveAs(true);
+      else void saveDatabase(undefined, true);
+    },
     print,
     protect: () => setSecurityOpen(true),
     pause: () => studioRef.current?.stop(),
@@ -1642,7 +1760,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     : doc?.kind === 'sheet'
       ? SHEET_FORMATS[doc.format].label
       : doc?.kind === 'database'
-      ? 'SQLite database'
+      ? (doc.lite ? 'LiteDB database' : 'SQLite database')
       : doc?.kind === 'proimage'
       ? doc.format === 'psd' ? 'Photoshop document' : `${IMAGE_FORMATS[doc.format].label} · layers`
       : doc?.kind === 'image'
@@ -1658,7 +1776,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   const docActions = doc && (
     <>
       <IconButton label={host.canSaveInPlace || host.kind === 'desktop' ? 'Save' : 'Download'} text onClick={save}><Save size={16} /></IconButton>
-      <IconButton label={isDatabase ? 'Save as' : 'Save as / Convert'} text onClick={() => (isDatabase ? void saveDatabase(undefined, true) : setExportOpen('save-as'))}><FileDown size={16} /></IconButton>
+      <IconButton label={isDatabase ? 'Save as' : 'Save as / Convert'} text onClick={() => (isDatabase ? (doc.kind === 'database' && doc.lite ? setDbSaveAs(true) : void saveDatabase(undefined, true)) : setExportOpen('save-as'))}><FileDown size={16} /></IconButton>
       {!isMediaDoc && !isDatabase && (
         <IconButton label="Protect" text active={doc.protection.enabled} onClick={() => setSecurityOpen(true)}>
           {doc.protection.enabled ? <ShieldCheck size={16} /> : <LockOpen size={16} />}
@@ -1947,9 +2065,50 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
               setExportOpen(null);
               void saveSheet(c, undefined, true);
             }}
+            onDatabase={(fileName) => {
+              setExportOpen(null);
+              void startSheetToDatabase(fileName);
+            }}
           />
         );
       })()}
+      {dbSaveAs && doc?.kind === 'database' && (
+        <Modal
+          title="Save as"
+          width={460}
+          onClose={() => setDbSaveAs(false)}
+          footer={
+            <>
+              <span className="spacer" />
+              <button type="button" className="btn btn-text" onClick={() => setDbSaveAs(false)}>Cancel</button>
+            </>
+          }
+        >
+          <p className="dialog-text">This is a LiteDB database. Save the copy in which format?</p>
+          <div className="choice-list">
+            <button type="button" className="choice" onClick={() => { setDbSaveAs(false); void saveDatabase(undefined, true, false, undefined, 'litedb'); }}>
+              <strong>LiteDB database (.db)</strong>
+              <span>For the program that uses this database. Documents keep their types.</span>
+            </button>
+            <button type="button" className="choice" onClick={() => { setDbSaveAs(false); void saveDatabase(undefined, true, false, undefined, 'sqlite'); }}>
+              <strong>SQLite database (.sqlite)</strong>
+              <span>The tables as you see them, for SQLite tools. Editing then continues in the SQLite file.</span>
+            </button>
+          </div>
+        </Modal>
+      )}
+      {headerAsk && doc?.kind === 'sheet' && (
+        <SheetHeadersModal
+          plans={headerAsk.plans}
+          namesFor={(plan, row) => columnsFromRow(headerAsk.workbook, plan, row)}
+          onClose={() => setHeaderAsk(null)}
+          onSubmit={(plans) => {
+            const ask = headerAsk;
+            setHeaderAsk(null);
+            void sheetToDatabase(ask.workbook, plans, ask.fileName);
+          }}
+        />
+      )}
       {securityOpen && doc?.kind === 'sheet' && (
         <SheetSecurityModal format={doc.format} initial={doc.protection} onClose={() => setSecurityOpen(false)} onApply={applySecurity} />
       )}

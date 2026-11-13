@@ -31,9 +31,25 @@ export type LiteValue =
 
 export type LiteDocument = { [key: string]: LiteValue };
 
+export interface LiteIndex {
+  /** Slot in the collection's index list (0 is always `_id`). */
+  slot: number;
+  field: string;
+  /** The indexed expression, usually `$.field`. */
+  expression: string;
+  unique: boolean;
+  /** Positions in `documents`, in the order this index lists them (v4 files; used to check key ordering). */
+  order?: number[];
+}
+
 export interface LiteCollection {
   name: string;
   documents: LiteDocument[];
+  /** Each document's stored bytes (BSON), parallel to `documents`. Kept for writing the file back. */
+  raw?: Uint8Array[];
+  indexes?: LiteIndex[];
+  /** The collection's auto-id counter. */
+  sequence?: bigint;
 }
 
 export interface LiteDatabase {
@@ -42,6 +58,8 @@ export interface LiteDatabase {
   collections: LiteCollection[];
   /** Problems that did not stop the read (e.g. a damaged document that was skipped). */
   warnings: string[];
+  /** v4 files: header values carried over when the file is written back. */
+  header?: { changeId: number; userVersion: number; salt: Uint8Array };
 }
 
 function asciiAt(b: Uint8Array, off: number, text: string): boolean {
@@ -170,6 +188,10 @@ function dateValue(ms: bigint): Date {
 // ── BSON (documents, as both layouts store them) ─────────────────────────────
 const MAX_DEPTH = 64;
 
+export function decodeBson(bytes: Uint8Array): LiteDocument {
+  return readBsonDocument(new Reader(bytes));
+}
+
 function readBsonDocument(r: Reader, depth = 0): LiteDocument {
   if (depth > MAX_DEPTH) throw new Error('Document is nested too deeply.');
   const start = r.pos;
@@ -265,12 +287,14 @@ function readV4(bytes: Uint8Array): LiteDatabase {
   const header = new Reader(bytes.subarray(0, V4_PAGE), V4_HEADER + MARKER.length);
   const fileVersion = header.u8();
   if (fileVersion !== 7) throw new UnsupportedError(`This LiteDB file uses storage version ${fileVersion}, which File Editor can't read (it reads LiteDB 3, 4 and 5 files).`);
-  header.pos += 2 + 4 + 4 + 2; // change id, free-page list, last page, user version
+  const changeId = header.u16();
+  header.pos += 4 + 4; // free-page list, last page
+  const userVersion = header.u16();
   const passwordHash = header.take(20);
   if (passwordHash.some((b) => b !== 0)) {
     throw new UnsupportedError('This LiteDB database is password protected (encrypted), so its contents can\'t be read here. Open it in the app that created it and export the data.');
   }
-  header.pos += 16; // salt
+  const salt = header.take(16).slice();
   const collectionCount = header.u8();
   const directory: { name: string; page: number }[] = [];
   for (let i = 0; i < collectionCount; i++) {
@@ -300,7 +324,7 @@ function readV4(bytes: Uint8Array): LiteDatabase {
     return blocks;
   };
 
-  const documentAt = (pageId: number, slot: number): LiteDocument => {
+  const documentBytes = (pageId: number, slot: number): Uint8Array => {
     const block = dataBlocks(pageId).get(slot);
     if (!block) throw new Error(`Missing data block ${pageId}:${slot}.`);
     let data = block.data;
@@ -326,7 +350,7 @@ function readV4(bytes: Uint8Array): LiteDatabase {
         o += p.length;
       }
     }
-    return readBsonDocument(new Reader(data));
+    return data;
   };
 
   /** Index nodes of a page: slot → [data block address, next node at level 0]. */
@@ -368,6 +392,9 @@ function readV4(bytes: Uint8Array): LiteDatabase {
   const collections: LiteCollection[] = [];
   for (const entry of directory) {
     const documents: LiteDocument[] = [];
+    const raw: Uint8Array[] = [];
+    const indexes: LiteIndex[] = [];
+    let sequence = 0n;
     let expected = 0;
     try {
       const page = pageAt(entry.page);
@@ -376,34 +403,67 @@ function readV4(bytes: Uint8Array): LiteDatabase {
       r.text(r.i32()); // collection name
       expected = Number(r.i64());
       r.pos += 4; // free data page list
-      r.text(r.i32()); // first index (always _id): "field=expression"
-      r.pos += 1; // unique
-      let nodePage = r.u32();
-      let nodeSlot = r.u16();
-      let skipped = 0;
-      const limit = pageCount * 256; // more nodes than could fit in the file means a loop
-      for (let steps = 0; nodePage !== NONE && steps < limit; steps++) {
-        const node = indexNodes(nodePage).get(nodeSlot);
-        if (!node) throw new Error(`index node ${nodePage}:${nodeSlot} is missing`);
-        // the list's head and tail are sentinels that point at no document
-        if (node.dataPage !== NONE) {
-          try {
-            documents.push(documentAt(node.dataPage, node.dataSlot));
-          } catch {
-            skipped++;
-          }
-        }
-        nodePage = node.nextPage;
-        nodeSlot = node.nextSlot;
+      const heads: { page: number; slot: number }[] = [];
+      for (let slot = 0; slot < 16; slot++) {
+        const def = r.text(r.i32()); // "field=expression"
+        const unique = r.u8() !== 0;
+        const headPage = r.u32();
+        const headSlot = r.u16();
+        r.pos += 6 + 4; // tail node, free index page list
+        if (!def) continue;
+        const eq = def.indexOf('=');
+        indexes.push({ slot, field: eq < 0 ? def : def.slice(0, eq), expression: eq < 0 ? `$.${def}` : def.slice(eq + 1), unique });
+        heads.push({ page: headPage, slot: headSlot });
       }
+      sequence = new Reader(bytes.subarray(entry.page * V4_PAGE, (entry.page + 1) * V4_PAGE), V4_PAGE - 8).i64();
+      if (!indexes.length || indexes[0].slot !== 0) throw new Error('its _id index is missing');
+
+      const limit = pageCount * 256; // more nodes than could fit in the file means a loop
+      /** Data block addresses in the order an index lists them (its lowest level). */
+      const walk = (head: { page: number; slot: number }): [number, number][] => {
+        const out: [number, number][] = [];
+        let nodePage = head.page;
+        let nodeSlot = head.slot;
+        for (let steps = 0; nodePage !== NONE && steps < limit; steps++) {
+          const node = indexNodes(nodePage).get(nodeSlot);
+          if (!node) throw new Error(`index node ${nodePage}:${nodeSlot} is missing`);
+          // the list's head and tail are sentinels that point at no document
+          if (node.dataPage !== NONE) out.push([node.dataPage, node.dataSlot]);
+          nodePage = node.nextPage;
+          nodeSlot = node.nextSlot;
+        }
+        return out;
+      };
+
+      let skipped = 0;
+      const position = new Map<string, number>();
+      for (const [dataPage, dataSlot] of walk(heads[0])) {
+        try {
+          const data = documentBytes(dataPage, dataSlot);
+          documents.push(readBsonDocument(new Reader(data)));
+          raw.push(data);
+          position.set(`${dataPage}:${dataSlot}`, documents.length - 1);
+        } catch {
+          skipped++;
+        }
+      }
+      for (let i = 1; i < indexes.length; i++) {
+        try {
+          const order = walk(heads[i]).map(([p, s]) => position.get(`${p}:${s}`));
+          if (order.length === documents.length && order.every((o) => o !== undefined)) indexes[i].order = order as number[];
+        } catch {
+          /* a damaged secondary index: the documents are still readable */
+        }
+      }
+      indexes[0].order = documents.map((_d, i) => i);
       if (skipped) warnings.push(`${skipped} damaged document${skipped === 1 ? '' : 's'} in "${entry.name}" could not be read`);
       if (!skipped && expected !== documents.length) warnings.push(`"${entry.name}" lists ${expected} documents but ${documents.length} were found`);
     } catch (err) {
       warnings.push(`"${entry.name}" could not be read completely (${err instanceof Error ? err.message : 'damaged'})`);
     }
-    collections.push({ name: entry.name, documents });
+    collections.push({ name: entry.name, documents, raw, indexes, sequence });
   }
-  return { version: 4, collections, warnings };
+  return { version: 4, collections, warnings, header: { changeId, userVersion, salt } };
 }
 
 /** Skips an index key (see LiteDB's ByteReader.ReadBsonValue). `length` only matters for text and binary keys. */
@@ -552,7 +612,7 @@ function btoaBytes(b: Uint8Array): string {
   return btoa(s);
 }
 
-function toCell(v: LiteValue | undefined): LiteCell {
+export function toCell(v: LiteValue | undefined): LiteCell {
   if (v === null || v === undefined) return null;
   if (typeof v === 'number' || typeof v === 'string') return v;
   if (typeof v === 'boolean') return v ? 1 : 0;
@@ -595,6 +655,7 @@ export function liteDbTables(db: LiteDatabase): LiteTable[] {
       const type = k.size === 1 ? ([...k][0] as LiteTable['columns'][number]['type']) : k.size === 2 && k.has('INTEGER') && k.has('REAL') ? 'REAL' : k.has('BLOB') && k.size === 1 ? 'BLOB' : 'TEXT';
       return { name, type };
     });
-    return { name: col.name, columns, rows };
+    // an empty collection still needs the one field every document has
+    return { name: col.name, columns: columns.length ? columns : [{ name: '_id', type: 'TEXT' as const }], rows };
   });
 }

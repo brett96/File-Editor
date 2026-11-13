@@ -19,6 +19,8 @@ const PAGE_SIZE = 200;
 export interface DbEditorHandle {
   /** Current database bytes (after edits). */
   export(): Uint8Array;
+  /** Re-reads the table list and the rows on screen (after the database was changed from outside). */
+  refresh(): void;
 }
 
 interface Props {
@@ -45,8 +47,10 @@ export const DbEditor = forwardRef<DbEditorHandle, Props>(function DbEditor({ db
   const dbRef = useRef(db);
   dbRef.current = db;
 
+  const refreshRef = useRef<() => void>(() => {});
   useImperativeHandle(ref, () => ({
     export: () => dbRef.current.export(),
+    refresh: () => refreshRef.current(),
   }));
 
   const refreshObjects = useCallback(() => {
@@ -87,6 +91,11 @@ export const DbEditor = forwardRef<DbEditorHandle, Props>(function DbEditor({ db
     }
     loadPage(activeObj.name, activeObj.kind, 0);
   }, [activeObj?.name, activeObj?.kind, loadPage]);
+
+  refreshRef.current = () => {
+    refreshObjects();
+    if (activeObj && !sqlResult) loadPage(activeObj.name, activeObj.kind, offset);
+  };
 
   const markChanged = () => onChange();
 

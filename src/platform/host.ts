@@ -71,6 +71,12 @@ export interface FileHost {
   requestWrite(handle: unknown): Promise<boolean>;
   /** Keeps the desktop File menu's Auto Save checkbox in step. */
   setAutoSave?(on: boolean): void;
+  /**
+   * Keeps a copy of a file as it is now, before it is overwritten in a way that can't be
+   * undone: "<name>.bak" beside it on desktop, a download in the browser. Resolves to the
+   * backup's name, or null when one was already there (the oldest copy is the one to keep).
+   */
+  backup(handle: unknown, name: string, original: Uint8Array): Promise<string | null>;
 }
 
 /** License state reported by the desktop app's main process (electron/license.ts). */
@@ -106,6 +112,8 @@ export interface DesktopBridge {
     onChange(callback: () => void): () => void;
   };
   setAutoSave?(on: boolean): void;
+  /** Copies a granted file to "<name>.bak" beside it, unless that already exists. */
+  backupFile?(token: string): Promise<string | null>;
   /** Resolves a file dropped on the window to a token so Save writes back to it. */
   openDropped?(file: File): Promise<{ name: string; bytes: Uint8Array; token: string } | null>;
   /** Desktop license activation (see electron/license.ts). */
@@ -306,6 +314,10 @@ function createWebHost(): FileHost {
       if (now === 'granted') return true;
       return ((await h.requestPermission?.({ mode: 'readwrite' }).catch(() => 'denied')) ?? 'denied') === 'granted';
     },
+    async backup(_handle, name, original) {
+      download(original, `${name}.bak`, 'application/octet-stream');
+      return `${name}.bak`;
+    },
     async openFiles({ extensions, multiple = false, description = 'Documents' }) {
       if (fsAccess) {
         try {
@@ -392,6 +404,11 @@ function createDesktopHost(bridge: DesktopBridge): FileHost {
     canWriteSilently: async (handle) => typeof handle === 'string',
     requestWrite: async (handle) => typeof handle === 'string',
     setAutoSave: (on) => bridge.setAutoSave?.(on),
+    async backup(handle, name, original) {
+      if (typeof handle === 'string' && bridge.backupFile) return bridge.backupFile(handle);
+      download(original, `${name}.bak`, 'application/octet-stream');
+      return `${name}.bak`;
+    },
     async save(req) {
       if (req.quiet && typeof req.handle !== 'string') throw new Error('This file has no location to save to.');
       const res = typeof req.handle === 'string'

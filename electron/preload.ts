@@ -55,6 +55,7 @@ const bridge = {
     },
   },
   setAutoSave: (on: boolean) => ipcRenderer.send('set-autosave', on),
+  backupFile: (token: string): Promise<string | null> => ipcRenderer.invoke('backup-file', token),
   // Only a real dropped File has a path; one constructed by page script resolves to null.
   openDropped: async (file: File): Promise<FilePayload | null> => {
     const path = webUtils.getPathForFile(file);

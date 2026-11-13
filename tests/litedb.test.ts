@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { liteDbTables, liteDbVersion, readLiteDb } from '../src/core/db/litedb';
+import { prepareWriteBack, splitDocument, writeLiteDb, type LiteWriteContext, type WriteTable } from '../src/core/db/litedb-write';
 import { SqliteDatabase, describeNonSqlite } from '../src/core/db/sqlite';
 
 // ── a tiny writer for LiteDB's v4 layout (file version 7), enough to build fixtures ──
@@ -159,8 +160,8 @@ describe('LiteDB', () => {
 
   it('handles an empty collection and refuses encrypted files', () => {
     const empty = readLiteDb(buildV4('nothing', []));
-    expect(empty.collections).toEqual([{ name: 'nothing', documents: [] }]);
-    expect(liteDbTables(empty)[0]).toEqual({ name: 'nothing', columns: [], rows: [] });
+    expect(empty.collections).toMatchObject([{ name: 'nothing', documents: [] }]);
+    expect(liteDbTables(empty)[0]).toEqual({ name: 'nothing', columns: [{ name: '_id', type: 'TEXT' }], rows: [] });
     expect(() => readLiteDb(buildV4('cases', DOCS, { password: true }))).toThrow(/password protected/);
     expect(() => readLiteDb(new Uint8Array(100))).toThrow(/not a LiteDB/);
   });
@@ -182,3 +183,143 @@ describe('LiteDB', () => {
   });
 });
 
+
+// ── writing back ─────────────────────────────────────────────────────────────
+const ORDERS: Doc[] = [
+  { _id: 1, ref: 'B-200', total: { $decimal: [1999, 0, 0, 2 << 16] }, paid: true, when: new Date(Date.UTC(2026, 0, 5)), big: 9007199254740993n, who: GUID, items: [{ sku: 'x', qty: 2 }], note: null },
+  { _id: 2, ref: 'A-100', total: { $decimal: [500, 0, 0, 2 << 16] }, paid: false, when: new Date(Date.UTC(2026, 0, 6)), long: 'y'.repeat(9000) },
+  { _id: 3, ref: 'C-300', paid: true },
+];
+
+function opened(docs: Doc[] = ORDERS) {
+  const source = readLiteDb(buildV4('orders', docs));
+  const prep = prepareWriteBack(source);
+  if (!('context' in prep)) throw new Error(prep.reason);
+  const tables: WriteTable[] = liteDbTables(source).map((t) => ({ name: t.name, columns: t.columns.map((c) => c.name), rowids: t.rows.map((_r, i) => i + 1), rows: t.rows.map((r) => [...r]) }));
+  return { source, context: prep.context, tables };
+}
+const col = (t: WriteTable, name: string) => t.columns.indexOf(name);
+const types = (raw: Uint8Array) => Object.fromEntries(splitDocument(raw).map((e) => [e.name, e.type]));
+
+describe('LiteDB write-back', () => {
+  it('writes untouched documents back byte for byte', () => {
+    const { source, context, tables } = opened();
+    const out = writeLiteDb(context, tables);
+    expect(out).toMatchObject({ documents: 3, retyped: 0, assignedIds: [] });
+    expect(out.bytes.length % 4096).toBe(0);
+    const back = readLiteDb(out.bytes);
+    expect(back.warnings).toEqual([]);
+    expect(back.header!.changeId).toBe(source.header!.changeId + 1);
+    expect(back.collections[0].raw!.map((r) => [...r])).toEqual(source.collections[0].raw!.map((r) => [...r]));
+    expect(back.collections[0].documents[1].long).toHaveLength(9000); // spans extend pages again
+    // and the result is itself writable: saving twice changes nothing
+    const again = prepareWriteBack(back);
+    expect('context' in again).toBe(true);
+  });
+
+  it('keeps each field in its type when a row is edited', () => {
+    const { source, context, tables } = opened();
+    const t = tables[0];
+    t.rows[0][col(t, 'ref')] = 'B-201';
+    t.rows[0][col(t, 'total')] = 25.5;
+    t.rows[0][col(t, 'paid')] = 0;
+    t.rows[0][col(t, 'when')] = '2026-03-01T08:30:00.000Z';
+    t.rows[0][col(t, 'big')] = '9007199254740995';
+    t.rows[0][col(t, 'who')] = '00112233-4455-6677-8899-aabbccddeeff';
+    t.rows[0][col(t, 'items')] = '[{"sku":"z","qty":7}]';
+    t.rows[0][col(t, 'note')] = 'now set';
+    const out = writeLiteDb(context, tables);
+    expect(out.retyped).toBe(0);
+    const back = readLiteDb(out.bytes).collections[0];
+    const before = types(source.collections[0].raw![0]);
+    const after = types(back.raw![0]);
+    expect(after).toEqual({ ...before, note: 0x02 });
+    expect(back.documents[0]).toMatchObject({ _id: 1, ref: 'B-201', total: 25.5, paid: false, big: 9007199254740995n, who: '00112233-4455-6677-8899-aabbccddeeff', items: [{ sku: 'z', qty: 7 }], note: 'now set' });
+    expect((back.documents[0].when as Date).toISOString()).toBe('2026-03-01T08:30:00.000Z');
+    // the other documents were not touched
+    expect([...back.raw![1]]).toEqual([...source.collections[0].raw![1]]);
+  });
+
+  it('stores a value that no longer fits its type as what it is, and says so', () => {
+    const { context, tables } = opened();
+    const t = tables[0];
+    t.rows[2][col(t, 'paid')] = 'maybe';
+    const out = writeLiteDb(context, tables);
+    expect(out.retyped).toBe(1);
+    expect(readLiteDb(out.bytes).collections[0].documents[2].paid).toBe('maybe');
+  });
+
+  it('adds and removes documents, generating ids in the collection\'s own type', () => {
+    const { context, tables } = opened();
+    const t = tables[0];
+    t.rows.splice(1, 1);
+    t.rowids.splice(1, 1);
+    const fresh = new Array(t.columns.length).fill(null);
+    fresh[col(t, 'ref')] = 'D-400';
+    fresh[col(t, 'paid')] = 1;
+    fresh[col(t, 'when')] = '2026-04-01';
+    t.rows.push(fresh);
+    t.rowids.push(9);
+    const out = writeLiteDb(context, tables);
+    expect(out.assignedIds).toEqual([{ table: 'orders', rowid: 9, value: 4 }]);
+    const back = readLiteDb(out.bytes).collections[0];
+    expect(back.documents.map((d) => d._id)).toEqual([1, 3, 4]);
+    expect(back.documents[2]).toMatchObject({ ref: 'D-400', paid: true });
+    expect((back.documents[2].when as Date).toISOString()).toBe('2026-04-01T00:00:00.000Z');
+    expect(Object.keys(back.documents[2])).toEqual(['_id', 'ref', 'paid', 'when']); // empty cells add no fields
+    expect(back.sequence).toBe(4n);
+  });
+
+  it('keeps secondary indexes sorted and enforces unique ones', () => {
+    const { context, tables } = opened();
+    context.collections.get('orders')!.indexes.push({ slot: 1, field: 'ref', expression: '$.ref', unique: true });
+    const back = readLiteDb(writeLiteDb(context, tables).bytes).collections[0];
+    expect(back.indexes!.map((i) => [i.field, i.unique])).toEqual([['_id', true], ['ref', true]]);
+    // A-100 (doc 1), B-200 (doc 0), C-300 (doc 2)
+    expect(back.indexes![1].order).toEqual([1, 0, 2]);
+    const t = tables[0];
+    t.rows[2][col(t, 'ref')] = 'A-100';
+    expect(() => writeLiteDb(context, tables)).toThrow(/"ref" must be different/);
+  });
+
+  it('handles new tables, renamed-away columns and many documents', () => {
+    const { context, tables } = opened();
+    // a column dropped from the table disappears from every document
+    const t = tables[0];
+    const drop = col(t, 'paid');
+    t.columns.splice(drop, 1);
+    for (const r of t.rows) r.splice(drop, 1);
+    // a table created with SQL becomes a collection; rows without _id get ObjectIds
+    const rows = Array.from({ length: 3000 }, (_v, i) => [null, `name ${i}`, i]);
+    tables.push({ name: 'people', columns: ['_id', 'name', 'n'], rowids: rows.map((_r, i) => i + 1), rows });
+    const out = writeLiteDb(context, tables);
+    expect(out.assignedIds).toHaveLength(3000);
+    const back = readLiteDb(out.bytes);
+    expect(back.collections.map((c) => [c.name, c.documents.length])).toEqual([['orders', 3], ['people', 3000]]);
+    expect(back.collections[0].documents.every((d) => !('paid' in d))).toBe(true);
+    const people = back.collections[1];
+    expect(types(people.raw![0])).toEqual({ _id: 0x07, name: 0x02, n: 0x10 });
+    expect(new Set(people.documents.map((d) => d._id)).size).toBe(3000);
+    expect(people.documents.map((d) => d.n as number).sort((a, b) => a - b)[2999]).toBe(2999);
+    expect('context' in prepareWriteBack(back)).toBe(true);
+  });
+
+  it('refuses data that cannot be a LiteDB database, with a plain reason', () => {
+    const { context, tables } = opened();
+    const t = tables[0];
+    t.rows[1][col(t, '_id')] = 1;
+    expect(() => writeLiteDb(context, tables)).toThrow(/same _id/);
+    expect(() => writeLiteDb(context, [{ name: 'orders', columns: ['ref'], rowids: [1], rows: [['x']] }])).toThrow(/no _id column/);
+    expect(() => writeLiteDb(context, [{ name: 'bad name!', columns: ['_id'], rowids: [], rows: [] }])).toThrow(/collection name/);
+  });
+
+  it('declines files it could not rewrite faithfully', () => {
+    // ids stored in an order this module would not produce (a Guid before the numbers)
+    const odd = prepareWriteBack(readLiteDb(buildV4('cases', DOCS)));
+    expect(odd).toMatchObject({ reason: expect.stringMatching(/sorted in a way/) });
+    const v5 = prepareWriteBack({ version: 5, collections: [], warnings: [] });
+    expect(v5).toMatchObject({ reason: expect.stringMatching(/LiteDB 5/) });
+    const ctx: LiteWriteContext = (prepareWriteBack(readLiteDb(buildV4('empty', []))) as { context: LiteWriteContext }).context;
+    expect(readLiteDb(writeLiteDb(ctx, [{ name: 'empty', columns: ['_id'], rowids: [], rows: [] }]).bytes).collections[0].documents).toEqual([]);
+  });
+});

@@ -14,7 +14,8 @@
  */
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell, type MenuItemConstructorOptions } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { appendFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { constants as fsConstants } from 'node:fs';
+import { appendFile, copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { activateLicense, getLicenseState, refreshLicenseStatus } from './license';
@@ -464,6 +465,20 @@ function registerIpc() {
     if (!path) throw new Error('This file can no longer be written. Use Save As.');
     await writeFile(path, toBytes(data));
     return { name: basename(path), token };
+  });
+
+  // "<file>.bak" beside a granted file, made once: the copy from before the first overwrite is the one worth keeping
+  ipcMain.handle('backup-file', async (e, token: unknown) => {
+    assertSender(e);
+    const path = grants.get(String(token));
+    if (!path) throw new Error('This file can no longer be read.');
+    try {
+      await copyFile(path, `${path}.bak`, fsConstants.COPYFILE_EXCL);
+      return `${basename(path)}.bak`;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'EEXIST') return null;
+      throw err;
+    }
   });
 
   ipcMain.handle('save-file-as', async (e, opts: { suggestedName?: string; ext?: string; description?: string }, data: unknown) => {

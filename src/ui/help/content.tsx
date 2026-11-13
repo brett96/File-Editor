@@ -272,6 +272,13 @@ export const SECTIONS: GuideSection[] = [
           pictures, comments, conditional formatting and macros are not kept; the app tells you when a file you open uses them. CSV and TSV save
           only the values of the current sheet.
         </p>
+        <h3>Save as a database</h3>
+        <p>
+          <Ui>Save as / Convert</Ui> → <Ui>SQLite database</Ui> turns the workbook into a database with one table per sheet. The row of column
+          headings becomes the column names. Where a sheet's heading row is not clear (every column is text, the first row has numbers or gaps, a
+          title sits above the headings), you are asked: pick the row that holds the names, choose <Ui>No heading row</Ui>, or type the names
+          yourself. Values are saved (formula results rather than formulas), dates as ISO text; the new database then opens for editing.
+        </p>
         <h3>Large workbooks</h3>
         <p>
           Big Excel files (tens of megabytes, hundreds of thousands of rows) are read and written as a stream, with a progress bar. A 150 MB workbook
@@ -295,8 +302,12 @@ export const SECTIONS: GuideSection[] = [
         </p>
         <p>
           <strong>LiteDB</strong> files (the <code>.db</code> files many Windows apps keep their data in) open too: each collection is shown as a
-          table with a column per field, and nested values as JSON text you can query with <code>json_extract()</code>. This is a copy for viewing,
-          querying and exporting: saving writes a new SQLite file and leaves the LiteDB file untouched. Password-protected LiteDB files can't be read.
+          table with a column per field, and nested values as JSON text you can query with <code>json_extract()</code>. <Ui>Save</Ui> writes your
+          changes back to the same file in LiteDB's own format, so the program that owns it keeps working: rows you did not touch are written back
+          exactly as they were, edited fields keep their type (dates, Guids, whole numbers), new rows get an <code>_id</code> of the collection's
+          kind, and indexes are rebuilt. The first save keeps the original beside it as <code>.bak</code> (a download in the browser). Close the
+          other program before saving. <Ui>Save as</Ui> offers a LiteDB copy or a SQLite one. LiteDB 5 files, password-protected files and
+          databases with expression indexes open as a copy that saves to SQLite instead.
         </p>
         <Defs
           rows={[
