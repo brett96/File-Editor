@@ -9,3 +9,4 @@ release
 *.p12
 public/pdfjs
 public/ffmpeg
+release-test/
