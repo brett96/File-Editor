@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { TabActiveContext } from './ui/tab-active';
 import {
@@ -34,7 +34,9 @@ import { buildPdf } from './core/pdf/apply-edits';
 import type { PdfProtection } from './core/pdf/types';
 import { PasswordError, UnsupportedError, isCodeFormat, type CodeLanguage, type DocFormat, type FlowFormat, type RichDocument } from './core/types';
 import { escapeHtml, utf8Encode } from './core/dom';
-import { fileBytes, getHost, readDroppedFile, type OpenedFile, type RecentEntry, type UpdateStatus } from './platform/host';
+import { fileBytes, getHost, readDroppedFile, type FileHost, type OpenedFile, type RecentEntry, type UpdateStatus } from './platform/host';
+import { ownedExtensions } from './core/conversions';
+import { WorkbookTooLargeError, memoryProfile, sheetCellBudget } from './core/memory';
 import {
   LICENSE_PURCHASE_URL,
   detectDesktopOs,
@@ -43,7 +45,7 @@ import {
   startInstallerDownload,
   type InstallerOption,
 } from './platform/desktop-download';
-import { IconButton, Divider, Modal, cx, Popover, MenuItem } from './ui/components';
+import { IconButton, Divider, Modal, cx, Popover, MenuItem, nextPaint } from './ui/components';
 import {
   EMPTY_PROTECTION,
   ExportModal,
@@ -129,7 +131,8 @@ type OpenDoc =
 const PRIMARY_SWITCH: Array<DocFormat | 'image'> = ['docx', 'txt', 'html', 'css', 'js', 'pdf', 'image'];
 const SECONDARY_SWITCH: FlowFormat[] = ['odt', 'rtf', 'md', 'doc'];
 const SHEET_SWITCH: SheetFormat[] = ['xlsx', 'csv', 'tsv'];
-type SwitchTarget = DocFormat | 'image' | SheetFormat;
+/** 'database': a new, empty SQLite database (or, from a spreadsheet with data, its sheets as tables). */
+type SwitchTarget = DocFormat | 'image' | SheetFormat | 'database';
 const isSheetFormat = (t: SwitchTarget): t is SheetFormat => (SHEET_SWITCH as string[]).includes(t);
 
 async function codeToRich(language: CodeLanguage, text: string): Promise<RichDocument> {
@@ -214,11 +217,6 @@ function formatSpeed(bytesPerSecond: number): string {
   return mb >= 1 ? `${mb.toFixed(1)} MB/s` : `${Math.max(1, Math.round(bytesPerSecond / 1024))} KB/s`;
 }
 
-/** Resolves after the browser has painted pending UI (e.g. a busy indicator). */
-function nextPaint(): Promise<void> {
-  return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
-}
-
 function errorText(err: unknown): string {
   if (err instanceof Error) return err.message;
   // workers (ffmpeg.wasm) reject with plain strings
@@ -228,7 +226,7 @@ function errorText(err: unknown): string {
 
 // ── tabs ─────────────────────────────────────────────────────────────────
 /** What a new tab starts with. */
-type TabStart = { kind: 'open'; file: OpenedFile } | { kind: 'new' } | { kind: 'new-sheet' };
+type TabStart = { kind: 'open'; file: OpenedFile } | { kind: 'new' } | { kind: 'new-sheet' } | { kind: 'new-db' };
 
 /** What the tab bar and window title show for a tab. */
 interface TabInfo {
@@ -269,7 +267,7 @@ interface TabProps {
  * scroll position.
  */
 function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSave, actionsSlot, onInfo, onEmpty, register }: TabProps) {
-  const host = getHost();
+  const rawHost = getHost();
   const [doc, setDoc] = useState<OpenDoc | null>(null);
   const [dirty, setDirty] = useState(false);
   const [zoom, setZoom] = useState(1);
@@ -295,6 +293,12 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   const dbRef = useRef<DbEditorHandle>(null);
   const docRef = useRef(doc);
   docRef.current = doc;
+  // Every save says what kind of document is open and which extensions its format owns, so a
+  // name typed with another kind's extension ("budget.mp4" for a workbook) is refused.
+  const host = useMemo<FileHost>(
+    () => ({ ...rawHost, save: (req) => rawHost.save({ kind: docRef.current?.kind, extensions: ownedExtensions(req.ext), ...req }) }),
+    [rawHost],
+  );
   const dirtyRef = useRef(dirty);
   dirtyRef.current = dirty;
   const activeRef = useRef(active);
@@ -355,7 +359,8 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     void (async () => {
       if (start.kind === 'new') return newDocument();
       if (start.kind === 'new-sheet') return newSpreadsheet();
-      await openFile(start.file);
+      if (start.kind === 'new-db') await newDatabase();
+      else await openFile(start.file);
       // let React apply the opened document before looking for it
       await new Promise((r) => setTimeout(r, 0));
       // the file couldn't be opened (an error was shown) or the password prompt was cancelled
@@ -500,34 +505,74 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     setBusy(`Opening ${file.name}…`);
     try {
       await nextPaint();
-      let workbook: IWorkbookData;
+      // how many cells the grid can be given on this device (less on a phone or an old laptop)
+      const profile = memoryProfile();
+      const budget = sheetCellBudget(profile);
+      let workbook: IWorkbookData | null = null;
       let warnings: string[] = [];
       let cells = 0;
+      /** set when the file holds more than the grid can: it is opened as database tables instead */
+      let tooLarge: number | null = null;
+      const mb = Math.max(1, Math.round(blob.size / 1024 / 1024));
       if (format === 'xlsx') {
         const stream = await import('./core/sheet/xlsx-stream');
-        if (await stream.needsStreamRead(blob)) {
-          setBusy(null);
-          const mb = (blob.size / 1024 / 1024).toFixed(0);
-          setProgress({ title: `Opening ${file.name}`, phase: `Reading ${mb} MB`, progress: 0 });
-          try {
-            ({ workbook, warnings } = await stream.readXlsxStream(blob, baseName(file.name), (p) =>
-              setProgress((cur) => cur && { ...cur, phase: `Reading ${mb} MB · ${p.cells.toLocaleString()} cells`, progress: p.fraction }),
-            ));
-            setProgress((cur) => cur && { ...cur, phase: 'Preparing the grid', progress: 1 });
-            await nextPaint();
-          } finally {
-            setProgress(null);
+        if (await stream.needsStreamRead(blob, profile.lowMemory)) {
+          // far past the limit by the size of its sheets alone: don't read it twice
+          const estimate = await stream.estimateCells(blob);
+          if (estimate !== null && estimate > budget * 2) tooLarge = estimate;
+          else {
+            setBusy(null);
+            setProgress({ title: `Opening ${file.name}`, phase: `Reading ${mb} MB`, progress: 0 });
+            try {
+              ({ workbook, warnings } = await stream.readXlsxStream(
+                blob,
+                baseName(file.name),
+                (p) => setProgress((cur) => cur && { ...cur, phase: `Reading ${mb} MB · ${p.cells.toLocaleString()} cells`, progress: p.fraction }),
+                { maxCells: budget },
+              ));
+              setProgress((cur) => cur && { ...cur, phase: 'Preparing the grid', progress: 1 });
+              await nextPaint();
+            } catch (err) {
+              if (!(err instanceof WorkbookTooLargeError)) throw err;
+              tooLarge = budget;
+            } finally {
+              setProgress(null);
+            }
           }
         } else {
           const { readXlsx } = await import('./core/sheet/xlsx');
           ({ workbook, warnings } = await readXlsx(new Uint8Array(await blob.arrayBuffer()), baseName(file.name)));
         }
-        cells = stream.countCells(workbook, LARGE_SHEET_CELLS);
+        if (workbook) cells = stream.countCells(workbook, LARGE_SHEET_CELLS);
       } else {
-        const { readDelimited } = await import('./core/sheet/csv');
-        workbook = readDelimited(await fileBytes(file), file.name, format === 'tsv' ? '\t' : undefined);
-        const first = workbook.sheets[workbook.sheetOrder[0]];
-        cells = Object.keys(first?.cellData ?? {}).length * Math.max(1, (first?.columnCount ?? 31) - 5);
+        const csv = await import('./core/sheet/csv');
+        const delimiter = format === 'tsv' ? '\t' : undefined;
+        if (blob.size >= csv.STREAM_DELIMITED_BYTES * (profile.lowMemory ? 0.25 : 1)) {
+          // large text files are read and parsed a piece at a time
+          setBusy(null);
+          setProgress({ title: `Opening ${file.name}`, phase: `Reading ${mb} MB`, progress: 0 });
+          try {
+            ({ workbook, cells } = await csv.readDelimitedStream(blob, file.name, delimiter, {
+              maxCells: budget,
+              onProgress: (p) => setProgress((cur) => cur && { ...cur, phase: `Reading ${mb} MB · ${p.rows.toLocaleString()} rows`, progress: p.fraction }),
+            }));
+            setProgress((cur) => cur && { ...cur, phase: 'Preparing the grid', progress: 1 });
+            await nextPaint();
+          } catch (err) {
+            if (!(err instanceof WorkbookTooLargeError)) throw err;
+            tooLarge = budget;
+          } finally {
+            setProgress(null);
+          }
+        } else {
+          workbook = csv.readDelimited(await fileBytes(file), file.name, delimiter);
+          const first = workbook.sheets[workbook.sheetOrder[0]];
+          cells = Object.keys(first?.cellData ?? {}).length * Math.max(1, (first?.columnCount ?? 31) - 5);
+        }
+      }
+      if (tooLarge !== null || !workbook) {
+        await openSheetAsDatabase(file, blob, format, budget);
+        return true;
       }
       // .xlsm / .xltx are saved as plain .xlsx (macros are not kept)
       const ext = file.name.split('.').pop()?.toLowerCase();
@@ -551,6 +596,69 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       setBusy(null);
     }
     return true;
+  };
+
+  /**
+   * A workbook with more cells than the grid can hold on this device: its sheets are read a
+   * row at a time into database tables (stored outside the JavaScript heap and shown a page
+   * at a time), so it can still be browsed, edited, queried and saved.
+   */
+  const openSheetAsDatabase = async (file: OpenedFile, blob: Blob, format: SheetFormat, budget: number) => {
+    setBusy(null);
+    const limit = `${(budget / 1e6).toFixed(budget < 1e7 ? 1 : 0)} million`;
+    const go = window.confirm(
+      `${file.name} is too large for the spreadsheet grid on this device (the grid can hold about ${limit} filled cells here).\n\n` +
+        `Open it as a database instead? ${format === 'xlsx' ? 'Each sheet becomes a table' : 'It becomes a table'} that you can page through, edit, search with SQL and save as a SQLite file. ` +
+        `Values are kept (formula results rather than formulas); formatting is not. ${file.name} itself is not changed.`,
+    );
+    if (!go) return;
+    const mb = Math.max(1, Math.round(blob.size / 1024 / 1024));
+    setProgress({ title: `Opening ${file.name}`, phase: `Reading ${mb} MB into tables`, progress: 0 });
+    const [{ SqliteDatabase }, { tableSink }] = await Promise.all([import('./core/db/sqlite'), import('./core/db/import-rows')]);
+    const db = await SqliteDatabase.open();
+    try {
+      const sink = tableSink(db);
+      if (format === 'xlsx') {
+        const { readXlsxRows } = await import('./core/sheet/xlsx-stream');
+        await readXlsxRows(blob, sink, (p) => setProgress((cur) => cur && { ...cur, phase: `Reading ${mb} MB · ${p.cells.toLocaleString()} cells`, progress: p.fraction }));
+      } else {
+        const { readDelimitedRows } = await import('./core/sheet/csv');
+        await readDelimitedRows(blob, file.name, sink, () => sink.abort(), format === 'tsv' ? '\t' : undefined, {
+          onProgress: (p) => setProgress((cur) => cur && { ...cur, phase: `Reading ${mb} MB · ${p.rows.toLocaleString()} rows`, progress: p.fraction }),
+        });
+      }
+      if (!sink.tables.length) throw new Error('This file has no data.');
+      const rows = sink.tables.reduce((n, t) => n + t.rows, 0);
+      setDoc({ kind: 'database', key: docKey++, name: `${baseName(file.name)}.sqlite`, format: 'sqlite', db, large: true, protection: EMPTY_PROTECTION });
+      // nothing has been written anywhere yet: closing the tab would lose the import
+      setDirty(true);
+      toast(
+        `Opened ${file.name} as a database: ${sink.tables.length} ${sink.tables.length === 1 ? 'table' : 'tables'}, ${rows.toLocaleString()} rows. Save writes a SQLite file; ${file.name} is not changed.`,
+        'info',
+      );
+    } catch (err) {
+      db.close();
+      throw err instanceof Error && /out of memory|memory access|allocation/i.test(err.message)
+        ? new Error('This file is too large to open on this device, even as a database. Open it on a computer with more memory, or split it into smaller files.')
+        : err;
+    } finally {
+      setProgress(null);
+    }
+  };
+
+  /** A new, empty SQLite database (tables are made in the editor). */
+  const newDatabase = async () => {
+    setBusy('Creating the database…');
+    try {
+      const { SqliteDatabase } = await import('./core/db/sqlite');
+      const db = await SqliteDatabase.open();
+      setDoc({ kind: 'database', key: docKey++, name: 'Untitled.sqlite', format: 'sqlite', db, protection: EMPTY_PROTECTION });
+      setDirty(false);
+    } catch (err) {
+      toast(`Could not create a database: ${errorText(err)}`);
+    } finally {
+      setBusy(null);
+    }
   };
 
   /** Photoshop files: layered in the desktop pro editor. Returns false when the file is not a PSD. */
@@ -785,6 +893,23 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     }
   };
 
+  /**
+   * True while the open document is still the blank one it started as (nothing typed, no file
+   * behind it). Only a blank document can be swapped for a kind its content could not be
+   * carried into (a canvas, a database).
+   */
+  const docIsBlank = (): boolean => {
+    const d = docRef.current;
+    if (!d || d.handle !== undefined) return false;
+    if (d.kind === 'flow') {
+      const html = currentFlow()?.html ?? '';
+      return !/<(img|table|hr)\b/i.test(html) && html.replace(/<[^>]*>/g, '').replace(/&nbsp;|\s/g, '') === '';
+    }
+    if (d.kind === 'code') return (codeRef.current?.getText() ?? d.text).trim() === '';
+    if (d.kind === 'sheet') return !d.large && (sheetRef.current?.isEmpty() ?? false);
+    return false;
+  };
+
   /** Changes the open document's format / kind from the status-bar switcher. */
   const switchFormat = async (target: SwitchTarget) => {
     const d = docRef.current;
@@ -792,7 +917,19 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     if (target === d.format) return;
     const title = baseName(d.name);
 
+    if (target === 'database') {
+      if (docIsBlank()) await newDatabase();
+      // a spreadsheet's data carries over: each sheet becomes a table (and a file is saved)
+      else if (d.kind === 'sheet') await startSheetToDatabase(`${title}.sqlite`);
+      else toast('Only a blank document can become a database. To put this text in a database, switch to a spreadsheet first, then choose SQLite database.', 'info');
+      return;
+    }
+
     if (target === 'image') {
+      if (!docIsBlank()) {
+        toast('A blank canvas starts empty, so only a blank document can become one. Use New for a separate canvas.', 'info');
+        return;
+      }
       setDoc({
         kind: 'image',
         key: docKey++,
@@ -1075,6 +1212,15 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     const codecs = await import('./core/media/image-codecs');
     const src = c.scale !== 1 ? codecs.resizePixels(px, px.width * c.scale, px.height * c.scale) : px;
     if (c.format === 'pdf') return { bytes: await codecs.imageToPdf(src, title, c.quality), mime: 'application/pdf', ext: 'pdf', label: 'PDF' };
+    if (c.format === 'docx') {
+      // a Word document with the picture on its first page, sized to fit between the margins
+      const png = await codecs.encodeImage(src, 'png', { quality: 100, lossless: true, background: c.background });
+      let binary = '';
+      for (let i = 0; i < png.length; i += 0x8000) binary += String.fromCharCode(...png.subarray(i, i + 0x8000));
+      const scale = Math.min(1, 624 / src.width, 864 / src.height);
+      const html = `<p><img src="data:image/png;base64,${btoa(binary)}" width="${Math.max(1, Math.round(src.width * scale))}" height="${Math.max(1, Math.round(src.height * scale))}" alt="${escapeHtml(title)}"></p><p></p>`;
+      return { bytes: await exportFlow({ html, title }, 'docx'), mime: FORMATS.docx.mime, ext: 'docx', label: FORMATS.docx.label };
+    }
     if (c.format === 'psd') throw new Error('Use the pro photo editor to save Photoshop files.');
     const info = IMAGE_FORMATS[c.format];
     return { bytes: await codecs.encodeImage(src, c.format, { quality: c.quality, lossless: c.lossless, background: c.background }), mime: info.mime, ext: info.ext, label: info.label };
@@ -1098,11 +1244,12 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       }
       const res = await host.save({ suggestedName: c.fileName, bytes: out.bytes, mime: out.mime, ext: out.ext, description: out.label, handle, quiet });
       if (!res) return;
-      if (adopt && d?.kind === 'image' && c.format !== 'pdf' && c.format !== 'psd') {
+      // a PDF or Word copy of a photo is a different kind of file: the photo stays the open document
+      if (adopt && d?.kind === 'image' && c.format !== 'pdf' && c.format !== 'psd' && c.format !== 'docx') {
         if (!quiet) setDoc((cur) => (cur && cur.kind === 'image' ? { ...cur, name: res.name, format: c.format as ImageFormat, handle: res.handle } : cur));
         markClean(seq);
       }
-      if (adopt && d?.kind === 'proimage' && c.format !== 'pdf') {
+      if (adopt && d?.kind === 'proimage' && c.format !== 'pdf' && c.format !== 'docx') {
         // keep the editor (and its undo history) mounted: same key, new file details
         if (!quiet) setDoc((cur) => (cur && cur.kind === 'proimage' ? { ...cur, name: res.name, format: c.format as ImageFormat | 'psd', handle: res.handle } : cur));
         const layers = pro?.getDocument().layers.length ?? 1;
@@ -1318,17 +1465,24 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       let bytes: Uint8Array;
       let note = '';
       if (c.format === 'xlsx') {
-        const wb = sheetRef.current.getWorkbook();
+        // a large workbook is written from the cells as the editor holds them: copying
+        // millions of cells first would need the memory twice
+        const live = d.large ? sheetRef.current.getLiveWorkbook() : null;
+        const wb = live?.workbook ?? sheetRef.current.getWorkbook();
         if (!wb) throw new Error('The spreadsheet is still loading.');
         const stream = await import('./core/sheet/xlsx-stream');
-        if (stream.countCells(wb, stream.STREAM_WRITE_CELLS) > stream.STREAM_WRITE_CELLS) {
+        if (live || stream.countCells(wb, stream.STREAM_WRITE_CELLS) > stream.STREAM_WRITE_CELLS) {
           // large workbook: written a block of rows at a time
           if (!quiet) {
             setBusy(null);
             setProgress({ title: `Saving ${c.fileName}`, phase: 'Writing the workbook', progress: 0 });
           }
           try {
-            bytes = await stream.writeXlsxStream({ ...wb, name: baseName(c.fileName) }, (f) => !quiet && setProgress((cur) => cur && { ...cur, progress: f }));
+            bytes = await stream.writeXlsxStream(
+              { ...wb, name: baseName(c.fileName) },
+              (f) => !quiet && setProgress((cur) => cur && { ...cur, progress: f }),
+              live ? { formulaOf: live.formulaOf } : {},
+            );
           } finally {
             if (!quiet) setProgress(null);
           }
@@ -1373,7 +1527,8 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     setBusy('Reading the sheets…');
     try {
       await nextPaint();
-      const workbook = sheetRef.current.getWorkbook();
+      // only read from here on, so a large workbook is used as the editor holds it
+      const workbook = d.large ? sheetRef.current.getLiveWorkbook()?.workbook : sheetRef.current.getWorkbook();
       if (!workbook) throw new Error('The spreadsheet is still loading.');
       const { planTables } = await import('./core/sheet/to-database');
       const plans = planTables(workbook);
@@ -1410,7 +1565,10 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
         throw err;
       }
       setBusy(null);
-      const res = await host.save({ suggestedName: fileName, bytes, mime: 'application/vnd.sqlite3', ext: 'sqlite', description: 'SQLite database' });
+      const res = await host.save({ suggestedName: fileName, bytes, mime: 'application/vnd.sqlite3', ext: 'sqlite', description: 'SQLite database' }).catch((err) => {
+        db.close();
+        throw err;
+      });
       if (!res) {
         db.close();
         return;
@@ -1848,17 +2006,20 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
               text
               button={<span className="format-switch-label">{formatLabel}</span>}
             >
-              {(close) => (
+              {(close) => {
+                // a canvas or a database can't take a document's content: blank documents only
+                const blank = docIsBlank();
+                return (
                 <div className="format-menu">
                   {PRIMARY_SWITCH.map((id) => {
                     const label = id === 'image' ? 'Blank canvas (PNG)' : FORMATS[id].label;
-                    const hint = id === 'image' ? '800×600' : `.${FORMATS[id].ext}`;
+                    const hint = id === 'image' ? (blank ? '800×600' : 'blank documents only') : `.${FORMATS[id].ext}`;
                     const active = id !== 'image' && currentFormat === id;
                     return (
                       <MenuItem
                         key={id}
                         hint={hint}
-                        disabled={active}
+                        disabled={active || (id === 'image' && !blank)}
                         onClick={() => {
                           close();
                           void switchFormat(id);
@@ -1884,6 +2045,18 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
                     </MenuItem>
                   ))}
                   <div className="format-menu-sep" role="separator" />
+                  <div className="format-menu-group">Databases</div>
+                  <MenuItem
+                    hint={blank || doc.kind === 'sheet' ? '.sqlite' : 'blank documents only'}
+                    disabled={!blank && doc.kind !== 'sheet'}
+                    onClick={() => {
+                      close();
+                      void switchFormat('database');
+                    }}
+                  >
+                    {blank || doc.kind !== 'sheet' ? 'SQLite database' : 'SQLite database (sheets become tables)'}
+                  </MenuItem>
+                  <div className="format-menu-sep" role="separator" />
                   <div className="format-menu-group">More formats</div>
                   {SECONDARY_SWITCH.map((id) => (
                     <MenuItem
@@ -1899,7 +2072,8 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
                     </MenuItem>
                   ))}
                 </div>
-              )}
+                );
+              }}
             </Popover>
           ) : (
             <span>{formatLabel}</span>
@@ -2148,7 +2322,8 @@ function tabIcon(kind: TabInfo['kind']) {
   }
 }
 
-const startName = (start: TabStart) => (start.kind === 'open' ? start.file.name : start.kind === 'new-sheet' ? 'Untitled.xlsx' : 'Untitled.docx');
+const startName = (start: TabStart) =>
+  start.kind === 'open' ? start.file.name : start.kind === 'new-sheet' ? 'Untitled.xlsx' : start.kind === 'new-db' ? 'Untitled.sqlite' : 'Untitled.docx';
 
 export default function App() {
   const host = getHost();
@@ -2229,6 +2404,7 @@ export default function App() {
   const openFile = (file: OpenedFile) => openTab({ kind: 'open', file });
   const newDocument = () => openTab({ kind: 'new' });
   const newSpreadsheet = () => openTab({ kind: 'new-sheet' });
+  const newDatabase = () => openTab({ kind: 'new-db' });
 
   const pickAndOpen = async () => {
     try {
@@ -2322,8 +2498,8 @@ export default function App() {
   }, [toast]);
 
   // ── shortcuts, OS file-open events, native menu ──────────────────────────
-  const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, openFile, closeTab, activate });
-  shell.current = { pickAndOpen, newDocument, newSpreadsheet, openFile, closeTab, activate };
+  const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, newDatabase, openFile, closeTab, activate });
+  shell.current = { pickAndOpen, newDocument, newSpreadsheet, newDatabase, openFile, closeTab, activate };
 
   useEffect(() => {
     const cycle = (step: number) => {
@@ -2367,6 +2543,7 @@ export default function App() {
       const s = shell.current;
       if (cmd === 'new') s.newDocument();
       else if (cmd === 'new-spreadsheet') s.newSpreadsheet();
+      else if (cmd === 'new-database') s.newDatabase();
       else if (cmd === 'open') void s.pickAndOpen();
       else if (cmd === 'license') setLicenseOpen(true);
       else if (cmd === 'toggle-autosave') setAutoSave((v) => !v);
@@ -2452,7 +2629,15 @@ export default function App() {
           <span>File Editor</span>
         </button>
         <nav className="topbar-actions" aria-label="File">
-          <IconButton label="New" text onClick={newDocument}><FilePlus size={16} /></IconButton>
+          <Popover label="New file" text align="left" button={<><FilePlus size={16} /><span>New</span></>}>
+            {(close) => (
+              <div className="format-menu" role="menu" aria-label="New file">
+                <MenuItem hint=".docx" onClick={() => { close(); newDocument(); }}>Blank document</MenuItem>
+                <MenuItem hint=".xlsx" onClick={() => { close(); newSpreadsheet(); }}>Blank spreadsheet</MenuItem>
+                <MenuItem hint=".sqlite" onClick={() => { close(); newDatabase(); }}>Blank database</MenuItem>
+              </div>
+            )}
+          </Popover>
           <IconButton label="Open" text onClick={pickAndOpen}><FolderOpen size={16} /></IconButton>
           {host.recent && (
             <Popover label="Open recent" text align="left" button={<><History size={16} /><span>Recent</span></>}>
@@ -2578,6 +2763,8 @@ export default function App() {
         <main className="main">
           <StartScreen
             onNew={newDocument}
+            onNewSheet={newSpreadsheet}
+            onNewDatabase={newDatabase}
             onOpen={pickAndOpen}
             recents={host.recent ? recents : null}
             onOpenRecent={(id) => void openRecent(id)}
@@ -2689,6 +2876,8 @@ export default function App() {
 
 function StartScreen({
   onNew,
+  onNewSheet,
+  onNewDatabase,
   onOpen,
   recents,
   onOpenRecent,
@@ -2700,6 +2889,8 @@ function StartScreen({
   onToast,
 }: {
   onNew: () => void;
+  onNewSheet: () => void;
+  onNewDatabase: () => void;
   onOpen: () => void;
   recents: RecentEntry[] | null;
   onOpenRecent: (id: string) => void;
@@ -2767,7 +2958,17 @@ function StartScreen({
           <button type="button" className="start-card" onClick={onNew}>
             <FilePlus size={28} />
             <strong>Blank document</strong>
-            <span>Starts as Word (.docx) — use the format label in the status bar to switch to a spreadsheet (Excel, CSV), text, HTML, CSS, JS, PDF or a blank canvas</span>
+            <span>Starts as Word (.docx) — use the format label in the status bar to switch to a spreadsheet (Excel, CSV), a database, text, HTML, CSS, JS, PDF or a blank canvas</span>
+          </button>
+          <button type="button" className="start-card" onClick={onNewSheet}>
+            <SheetIcon size={28} />
+            <strong>Blank spreadsheet</strong>
+            <span>An Excel workbook (.xlsx) with formulas, formatting, sorting and filters — save as CSV, TSV or a database</span>
+          </button>
+          <button type="button" className="start-card" onClick={onNewDatabase}>
+            <Database size={28} />
+            <strong>Blank database</strong>
+            <span>A SQLite database (.sqlite): make tables, add rows and run SQL</span>
           </button>
           <button type="button" className="start-card" onClick={onOpen}>
             <FolderOpen size={28} />
@@ -2821,11 +3022,11 @@ function StartScreen({
             <tbody>
               <tr><th>Edit</th><td>Word (.docx, .doc), PDF, OpenDocument (.odt), Rich Text (.rtf), Markdown, HTML, CSS, JavaScript, plain text</td></tr>
               <tr><th><SheetIcon size={14} /> Spreadsheets</th><td>Excel (.xlsx, .xlsm), CSV, TSV — formulas (400+ functions), formatting, number formats, merge, freeze panes, sort, filter, find &amp; replace, multiple sheets</td></tr>
-              <tr><th><Database size={14} /> Databases</th><td>SQLite (.sqlite, .sqlite3, .db, .db3) — browse tables and views, edit cells, add or delete rows, run SQL; everything stays on this device</td></tr>
+              <tr><th><Database size={14} /> Databases</th><td>SQLite (.sqlite, .sqlite3, .db, .db3) — start a new database or open one; make tables, browse tables and views, edit cells, add or delete rows, resize and rearrange columns, run SQL; everything stays on this device</td></tr>
               <tr><th>PDF</th><td>Edit existing text, add text, images, links, shapes and drawings; insert, delete, reorder and rotate pages; merge files</td></tr>
               <tr><th><ImageIcon size={14} /> Photos</th><td>JPEG, PNG, WebP, AVIF, HEIC (iPhone), JPEG XL, GIF, TIFF, BMP, ICO, SVG — crop, rotate, resize, adjust colour, filters, text, drawing, redact faces or plates</td></tr>
               <tr><th><Film size={14} /> Video &amp; audio</th><td>MP4, MOV, WebM, MKV, AVI, WMV, FLV, MPEG, 3GP, MP3, M4A, WAV, FLAC, OGG and more — trim, crop, rotate, resize, colour, text, fades, volume, extract sound, GIFs</td></tr>
-              <tr><th>Convert</th><td>Save any file in any format of its kind: documents ↔ documents, photo ↔ photo (or PDF), video ↔ video ↔ audio</td></tr>
+              <tr><th>Convert</th><td>Save any file in any format of its kind: documents ↔ documents ↔ spreadsheets, spreadsheet → database, photo ↔ photo (or a PDF or Word document), video ↔ video ↔ audio. A file is never saved under another kind's extension</td></tr>
               <tr><th>Protect</th><td>Open and save password-protected Word, Excel and PDF files</td></tr>
             </tbody>
           </table>

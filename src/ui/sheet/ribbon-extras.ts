@@ -50,20 +50,28 @@ export function commonDelimiter(values: CellValue[]): string | null {
   return best;
 }
 
-export function installSheetRibbon(api: FUniver, notify: Notify): void {
+/**
+ * `slow(label, fn)` runs a tool that goes through every row; on a large sheet the editor
+ * shows a spinner for it (see SheetEditor).
+ */
+export function installSheetRibbon(api: FUniver, notify: Notify, slow: (label: string, fn: () => void) => void = (_label, fn) => fn()): void {
   const context = (): { ws: Worksheet; range: Range } | null => {
     const ws = api.getActiveWorkbook()?.getActiveSheet();
     const range = ws?.getActiveRange();
     return ws && range ? { ws, range } : null;
   };
-  const guard = (fn: (ctx: { ws: Worksheet; range: Range }) => void) => () => {
+  const guard = (fn: (ctx: { ws: Worksheet; range: Range }) => void, busyLabel?: string) => () => {
     const ctx = context();
     if (!ctx) return notify('Click a cell in the sheet first.');
-    try {
-      fn(ctx);
-    } catch (err) {
-      notify(err instanceof Error ? err.message : 'That could not be done here.');
-    }
+    const run = () => {
+      try {
+        fn(ctx);
+      } catch (err) {
+        notify(err instanceof Error ? err.message : 'That could not be done here.');
+      }
+    };
+    if (busyLabel) slow(busyLabel, run);
+    else run();
   };
   /** The selection, or the whole used area when only one cell is selected. */
   const dataRange = ({ ws, range }: { ws: Worksheet; range: Range }): Range | null => {
@@ -151,7 +159,7 @@ export function installSheetRibbon(api: FUniver, notify: Notify): void {
       // sort by the column the active cell is in
       const column = Math.max(0, Math.min(range.getWidth() - 1, ctx.range.getColumn() - range.getColumn()));
       (range as Range & { sort(spec: { column: number; ascending: boolean }): unknown }).sort({ column, ascending });
-    });
+    }, 'Sorting…');
   item('ribbon.data.organization', 'sort-asc', 'Sort A→Z', "Sort the selection (or the whole sheet under its heading row) by the active cell's column, smallest first", sort(true));
   item('ribbon.data.organization', 'sort-desc', 'Sort Z→A', "Sort the selection (or the whole sheet under its heading row) by the active cell's column, largest first", sort(false));
   item('ribbon.data.rules', 'remove-duplicates', 'Remove duplicates', 'Delete rows of the selection (or the whole sheet) that repeat an earlier row', guard((ctx) => {
@@ -166,7 +174,7 @@ export function installSheetRibbon(api: FUniver, notify: Notify): void {
     const blank = (): CellValue[] => new Array(range.getWidth()).fill('');
     range.setValues([...unique, ...Array.from({ length: removed }, blank)] as never);
     notify(`${removed.toLocaleString()} duplicate ${removed === 1 ? 'row' : 'rows'} removed; ${unique.length.toLocaleString()} unique ${unique.length === 1 ? 'row remains' : 'rows remain'}.`);
-  }));
+  }, 'Removing duplicates…'));
   item('ribbon.data.rules', 'text-to-columns', 'Text to columns', 'Split the selected column into columns at commas, tabs, semicolons, pipes or spaces', guard(({ ws, range }) => {
     if (range.getWidth() !== 1) return notify('Select the cells of one column to split.');
     if (tooBig(range)) return;
@@ -181,7 +189,7 @@ export function installSheetRibbon(api: FUniver, notify: Notify): void {
       return typeof v === 'string' && numeric.test(v) && v.length < 16 ? Number(v) : v ?? '';
     }));
     ws.getRange(range.getRow(), range.getColumn(), rows.length, width).setValues(rows as never);
-  }));
+  }, 'Splitting the column…'));
   item('ribbon.data.rules', 'trim-spaces', 'Trim spaces', 'Remove spaces at the start and end of the selected text, and doubled spaces inside it', guard((ctx) => {
     const range = dataRange(ctx);
     if (!range) return;
@@ -199,7 +207,7 @@ export function installSheetRibbon(api: FUniver, notify: Notify): void {
       }),
     );
     notify(changed ? `Trimmed ${changed.toLocaleString()} ${changed === 1 ? 'cell' : 'cells'}.` : 'No extra spaces found.');
-  }));
+  }, 'Trimming spaces…'));
 
   // ── View ▸ freeze panes ──
   item('ribbon.view.display', 'freeze-panes', 'Freeze panes', 'Keep the rows above and the columns left of the selected cell in view while scrolling', guard(({ ws, range }) => {

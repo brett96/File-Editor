@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { ChevronDown, X } from 'lucide-react';
 
 export function cx(...parts: (string | false | null | undefined)[]): string {
@@ -357,4 +357,45 @@ export function PromptModal({
       </form>
     </Modal>
   );
+}
+
+/** Resolves after the browser has painted pending UI (e.g. a busy indicator). */
+export function nextPaint(): Promise<void> {
+  return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+}
+
+/**
+ * "Working…" pill with a spinner. The spinner turns on the compositor, so it keeps moving
+ * while the page itself is busy (filtering a million rows blocks everything else). `delayed`
+ * keeps it invisible for the first moments, so work that is over at once never flashes it.
+ */
+export function BusyPill({ label, delayed }: { label: string | null; delayed?: boolean }) {
+  if (!label) return null;
+  return (
+    <div className={cx('busy', delayed && 'busy-delayed')} role="status" aria-live="polite">
+      <span className="spinner" /> {label}
+    </div>
+  );
+}
+
+/**
+ * Runs slow work behind a BusyPill: `run(label, fn)` shows the label, lets it paint, then
+ * calls `fn` (which may block). Work started while other work is running joins it.
+ */
+export function useBusy(): { label: string | null; run: <T>(label: string, fn: () => T | Promise<T>) => Promise<T> } {
+  const [label, setLabel] = useState<string | null>(null);
+  const depth = useRef(0);
+  const run = useCallback(async <T,>(text: string, fn: () => T | Promise<T>): Promise<T> => {
+    if (depth.current > 0) return fn();
+    depth.current++;
+    setLabel(text);
+    try {
+      await nextPaint();
+      return await fn();
+    } finally {
+      depth.current--;
+      setLabel(null);
+    }
+  }, []);
+  return { label, run };
 }

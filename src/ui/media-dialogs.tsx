@@ -15,7 +15,8 @@ import {
 import { QUALITY_LABELS, encodableCodecs, type MediaExportOptions, type MediaInfo, type QualityLevel } from '../core/media/video-engine';
 import { Field, Modal } from './components';
 
-export type ImageTarget = ImageOutputFormat | 'pdf' | 'psd';
+/** 'docx': a Word document with the picture on its first page. */
+export type ImageTarget = ImageOutputFormat | 'pdf' | 'psd' | 'docx';
 
 export interface ImageExportChoice {
   format: ImageTarget;
@@ -53,8 +54,8 @@ export function ImageExportModal({
   const [lossless, setLossless] = useState(false);
   const [background, setBackground] = useState('#ffffff');
   const [scale, setScale] = useState(1);
-  const info = format === 'pdf' || format === 'psd' ? null : IMAGE_FORMATS[format];
-  const ext = format === 'pdf' ? 'pdf' : format === 'psd' ? 'psd' : info!.ext;
+  const info = format === 'pdf' || format === 'psd' || format === 'docx' ? null : IMAGE_FORMATS[format];
+  const ext = info ? info.ext : format;
   const lossy = format === 'pdf' || (info?.lossy ?? false);
   const canLossless = format === 'webp' || format === 'avif' || format === 'jxl';
   const noAlpha = format === 'jpeg' || format === 'pdf';
@@ -92,6 +93,7 @@ export function ImageExportModal({
               {allowPsd && <option value="psd">Photoshop, with layers (.psd)</option>}
               {IMAGE_OUTPUT_ORDER.map((f) => <option key={f} value={f}>{IMAGE_FORMATS[f].label} (.{IMAGE_FORMATS[f].ext})</option>)}
               <option value="pdf">PDF document (.pdf)</option>
+              <option value="docx">Word document with this picture (.docx)</option>
             </select>
           </Field>
         </div>
@@ -118,6 +120,7 @@ export function ImageExportModal({
         </Field>}
         {info?.note && <p className="dialog-hint">{info.note}</p>}
         {format === 'pdf' && <p className="dialog-hint">The image is placed on a page of its own size. Open the PDF afterwards to add pages or text.</p>}
+        {format === 'docx' && <p className="dialog-hint">A new Word document is made with the picture on its first page, sized to fit between the margins. Open it afterwards to write around the picture. The photo stays open here.</p>}
         <p className="dialog-hint">Camera details and GPS location are not copied into the saved file.</p>
       </form>
     </Modal>

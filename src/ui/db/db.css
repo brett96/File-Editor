@@ -18,7 +18,11 @@
 
 .db-sidebar-head {
   flex: none;
-  padding: 12px 14px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 8px 14px;
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -105,12 +109,14 @@
   flex: 1;
   min-height: 0;
   overflow: auto;
+  position: relative;
 }
 
+/* every column has a width of its own (see columns.tsx), so the table is laid out from them */
 .db-grid {
-  border-collapse: collapse;
-  width: max-content;
-  min-width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
   font-size: 13px;
 }
 
@@ -120,18 +126,77 @@
   border-right: 1px solid var(--border);
   padding: 0;
   vertical-align: top;
-  max-width: 280px;
+  overflow: hidden;
 }
 
 .db-grid th {
   position: sticky;
   top: 0;
-  z-index: 1;
+  z-index: 2;
   background: var(--surface);
   font-weight: 600;
   text-align: left;
   padding: 8px 10px;
   white-space: nowrap;
+}
+
+.db-grid th.db-col {
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+  text-overflow: ellipsis;
+}
+
+.db-col-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* the strip at a heading's right edge: drag to resize, double-click to fit */
+.db-col-resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 9px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.db-col-resize::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  right: 0;
+  width: 3px;
+  background: transparent;
+  transition: background 0.1s;
+}
+
+.db-col-resize:hover::after,
+.db-col.is-resizing .db-col-resize::after {
+  background: var(--accent);
+}
+
+.db-col.is-dragging {
+  opacity: 0.55;
+  cursor: grabbing;
+}
+
+/* where a dragged column will land */
+.db-col.drop-before {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.db-col.drop-after {
+  box-shadow: inset -3px 0 0 var(--accent);
+}
+
+body.db-col-gesture,
+body.db-col-gesture * {
+  user-select: none !important;
 }
 
 .db-grid th .db-col-type {
@@ -149,6 +214,7 @@
   width: 36px;
   text-align: center;
   padding: 6px 4px !important;
+  cursor: default;
 }
 
 .db-cell {
@@ -188,6 +254,15 @@
   padding: 48px 24px;
   text-align: center;
   color: var(--muted);
+}
+
+.db-empty .btn {
+  margin-top: 8px;
+}
+
+.db-empty-side {
+  padding: 16px;
+  font-size: 13px;
 }
 
 .db-sql {

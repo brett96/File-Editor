@@ -4,6 +4,8 @@
  * Electron preload bridge (native dialogs; paths stay in the main process).
  */
 
+import { saveNameProblem, type DocKind } from '../core/conversions';
+
 export interface OpenedFile {
   name: string;
   /** The file's content. A File on the web, so large media is read lazily rather than up front. */
@@ -18,6 +20,10 @@ export interface SaveRequest {
   mime: string;
   /** Extension without dot, used for dialog filters. */
   ext: string;
+  /** Every extension the format owns (jpg / jpeg); the saved name must end in one of them. Defaults to `ext`. */
+  extensions?: readonly string[];
+  /** The kind of document being saved, for a clearer message when the name asks for another kind of file. */
+  kind?: DocKind;
   description: string;
   /** Write straight to this handle (no dialog) when possible. */
   handle?: unknown;
@@ -95,7 +101,7 @@ export interface DesktopBridge {
   version: string;
   openFiles(options: { extensions: string[]; multiple: boolean; description: string }): Promise<{ name: string; bytes: Uint8Array; token: string }[]>;
   saveFile(token: string, bytes: Uint8Array): Promise<{ name: string; token: string }>;
-  saveFileAs(options: { suggestedName: string; ext: string; description: string }, bytes: Uint8Array): Promise<{ name: string; token: string } | null>;
+  saveFileAs(options: { suggestedName: string; ext: string; extensions?: string[]; description: string }, bytes: Uint8Array): Promise<{ name: string; token: string } | null>;
   onOpenFile(callback: (file: { name: string; bytes: Uint8Array; token: string }) => void): () => void;
   onMenuCommand(callback: (command: string) => void): () => void;
   onUpdateStatus?(callback: (status: UpdateStatus) => void): () => void;
@@ -141,6 +147,22 @@ declare global {
     showOpenFilePicker?: (options?: unknown) => Promise<FileSystemFileHandle[]>;
     showSaveFilePicker?: (options?: unknown) => Promise<FileSystemFileHandle>;
   }
+}
+
+/** The name chosen in a save window ends in an extension the format being written does not own. */
+export class SaveNameError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SaveNameError';
+  }
+}
+
+/** Why `name` can't hold what `req` writes (wrong extension for the format), or null. */
+function nameProblem(req: SaveRequest, name: string): string | null {
+  const owned = [req.ext, ...(req.extensions ?? [])].map((e) => e.toLowerCase());
+  if (req.kind) return saveNameProblem(req.kind, name, req.ext, owned);
+  const ext = /\.([A-Za-z0-9]+)$/.exec(name)?.[1]?.toLowerCase() ?? '';
+  return owned.includes(ext) ? null : `This file is being saved as ${req.description}, so its name has to end in .${req.ext}.`;
 }
 
 function isAbort(err: unknown): boolean {
@@ -354,15 +376,25 @@ function createWebHost(): FileHost {
       if (fsAccess) {
         try {
           if (req.handle) return await write(req.handle as FileSystemFileHandle);
+          const owned = [...new Set([req.ext, ...(req.extensions ?? [])])];
           const handle = await window.showSaveFilePicker!({
             suggestedName: req.suggestedName,
-            types: [{ description: req.description, accept: { [req.mime]: ['.' + req.ext] } }],
+            // only this format's extensions: a workbook is never written into "name.mp4"
+            excludeAcceptAllOption: true,
+            types: [{ description: req.description, accept: { [req.mime]: owned.map((e) => '.' + e) } }],
           });
+          const problem = nameProblem(req, handle.name);
+          if (problem) {
+            // the picker has already made an empty file under that name: take it away again
+            await (handle as FileSystemFileHandle & { remove?: () => Promise<void> }).remove?.().catch(() => undefined);
+            throw new SaveNameError(problem);
+          }
           const res = await write(handle);
           void rememberRecent(handle);
           return res;
         } catch (err) {
           if (isAbort(err)) return null;
+          if (err instanceof SaveNameError) throw err;
           // e.g. permission revoked — fall back to a download
         }
       }
@@ -413,7 +445,7 @@ function createDesktopHost(bridge: DesktopBridge): FileHost {
       if (req.quiet && typeof req.handle !== 'string') throw new Error('This file has no location to save to.');
       const res = typeof req.handle === 'string'
         ? await bridge.saveFile(req.handle, req.bytes)
-        : await bridge.saveFileAs({ suggestedName: req.suggestedName, ext: req.ext, description: req.description }, req.bytes);
+        : await bridge.saveFileAs({ suggestedName: req.suggestedName, ext: req.ext, extensions: [...new Set([req.ext, ...(req.extensions ?? [])])], description: req.description }, req.bytes);
       return res ? { name: res.name, handle: res.token } : null;
     },
     onOpenRequest(callback) {

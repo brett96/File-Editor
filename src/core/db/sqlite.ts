@@ -52,6 +52,17 @@ export interface DbPage {
   total: number;
 }
 
+/** See SqliteDatabase.bulkInsert. */
+export interface BulkInsert {
+  /** Number of columns the table has now. */
+  readonly width: number;
+  addColumn(name: string): void;
+  /** Missing trailing values are stored as NULL. */
+  add(row: DbCell[]): void;
+  commit(): void;
+  rollback(): void;
+}
+
 export function dbFormatFromName(name: string): DbFormat | null {
   const ext = name.split('.').pop()?.toLowerCase() ?? '';
   return (DB_EXTENSIONS as readonly string[]).includes(ext) ? (ext as DbFormat) : null;
@@ -187,9 +198,25 @@ export class SqliteDatabase {
     return cols;
   }
 
-  /** Page of rows for a table/view. Tables include an internal rowid for edits. */
-  readPage(table: string, kind: 'table' | 'view', limit = 200, offset = 0): DbPage {
-    const total = Number(this.db.exec(`SELECT COUNT(*) FROM ${quoteIdent(table)}`)[0]?.values[0]?.[0] ?? 0);
+  /**
+   * The longest values of a column as text (blobs left out), longest first: what a column has
+   * to be wide enough for. Reads the whole column, so it can take a moment on a large table.
+   */
+  longestValues(table: string, column: string, limit = 8): string[] {
+    const col = quoteIdent(column);
+    const rs = this.db.exec(
+      `SELECT CAST(${col} AS TEXT) FROM ${quoteIdent(table)} WHERE ${col} IS NOT NULL AND typeof(${col}) != 'blob' ORDER BY length(CAST(${col} AS TEXT)) DESC LIMIT ${limit | 0}`,
+    );
+    return rs.length ? rs[0].values.map((r) => String(r[0] ?? '')) : [];
+  }
+
+  /**
+   * Page of rows for a table/view. Tables include an internal rowid for edits. `knownTotal`
+   * skips counting the rows again (counting a table of millions of rows takes a while, and
+   * the number only changes when rows are added or deleted).
+   */
+  readPage(table: string, kind: 'table' | 'view', limit = 200, offset = 0, knownTotal?: number): DbPage {
+    const total = knownTotal ?? Number(this.db.exec(`SELECT COUNT(*) FROM ${quoteIdent(table)}`)[0]?.values[0]?.[0] ?? 0);
     if (kind === 'view') {
       const rs = this.db.exec(`SELECT * FROM ${quoteIdent(table)} LIMIT ${limit | 0} OFFSET ${offset | 0}`);
       if (!rs.length) return { columns: this.columnsOf(table).map((c) => c.name), rowids: [], rows: [], total };
@@ -278,6 +305,64 @@ export class SqliteDatabase {
       this.db.run('ROLLBACK');
       throw err;
     }
+  }
+
+  /** Creates an empty table. Column types are SQLite type names (or empty for "any"). */
+  createTable(name: string, columns: { name: string; type?: string; pk?: boolean }[]): void {
+    const defs = columns.map((c) => `${quoteIdent(c.name)} ${(c.type ?? '').replace(/[^A-Za-z ]/g, '')}${c.pk ? ' PRIMARY KEY' : ''}`.trim());
+    this.db.run(`CREATE TABLE ${quoteIdent(name)} (${defs.join(', ')})`);
+  }
+
+  addColumn(table: string, name: string, type = ''): void {
+    this.db.run(`ALTER TABLE ${quoteIdent(table)} ADD COLUMN ${quoteIdent(name)} ${type.replace(/[^A-Za-z ]/g, '')}`.trim());
+  }
+
+  /**
+   * Fills a new table a row at a time inside one transaction, for data that is too large to
+   * build as an array first. Columns can be added while rows are coming in (a later row may
+   * be wider than every row before it).
+   */
+  bulkInsert(table: string, columns: string[]): BulkInsert {
+    const db = this.db;
+    const names = [...columns];
+    let stmt: ReturnType<Database['prepare']> | null = null;
+    const prepare = () => {
+      stmt?.free();
+      stmt = db.prepare(`INSERT INTO ${quoteIdent(table)} VALUES (${names.map(() => '?').join(', ')})`);
+    };
+    db.run('BEGIN');
+    try {
+      db.run(`CREATE TABLE ${quoteIdent(table)} (${names.map(quoteIdent).join(', ')})`);
+      prepare();
+    } catch (err) {
+      db.run('ROLLBACK');
+      throw err;
+    }
+    let open = true;
+    const end = (sql: string) => {
+      if (!open) return;
+      open = false;
+      stmt?.free();
+      stmt = null;
+      db.run(sql);
+    };
+    return {
+      get width() {
+        return names.length;
+      },
+      addColumn(name: string) {
+        db.run(`ALTER TABLE ${quoteIdent(table)} ADD COLUMN ${quoteIdent(name)}`);
+        names.push(name);
+        prepare();
+      },
+      add(row: DbCell[]) {
+        const values: SqlValue[] = new Array(names.length);
+        for (let i = 0; i < names.length; i++) values[i] = toSql(row[i] ?? null);
+        stmt!.run(values);
+      },
+      commit: () => end('COMMIT'),
+      rollback: () => end('ROLLBACK'),
+    };
   }
 
   deleteRows(table: string, rowids: number[]): void {

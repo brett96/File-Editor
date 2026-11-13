@@ -327,6 +327,7 @@ function buildMenu() {
       submenu: [
         { label: 'New', accelerator: 'CmdOrCtrl+N', click: () => send('new') },
         { label: 'New Spreadsheet', accelerator: 'CmdOrCtrl+Shift+N', click: () => send('new-spreadsheet') },
+        { label: 'New Database', click: () => send('new-database') },
         { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: () => send('open') },
         {
           label: 'Open Recent',
@@ -485,14 +486,29 @@ function registerIpc() {
     assertSender(e);
     const ext = /^[a-z0-9]{1,10}$/i.test(opts?.ext ?? '') ? opts.ext! : 'bin';
     const name = basename(String(opts?.suggestedName ?? `Document.${ext}`)).replace(/[<>:"|?*\u0000-\u001f]/g, '_');
-    const res = await dialog.showSaveDialog(mainWindow!, {
-      defaultPath: join(app.getPath('documents'), name),
-      filters: [{ name: String(opts?.description ?? ext.toUpperCase()).slice(0, 60), extensions: [ext] }],
-    });
-    if (res.canceled || !res.filePath) return null;
-    await writeFile(res.filePath, toBytes(data));
-    addRecent(res.filePath);
-    return { name: basename(res.filePath), token: grant(res.filePath) };
+    // every extension the format owns (jpg / jpeg): the file is never written under another one
+    const extra = Array.isArray((opts as { extensions?: unknown })?.extensions) ? ((opts as { extensions: unknown[] }).extensions.filter((x) => typeof x === 'string') as string[]) : [];
+    const owned = [...new Set([ext, ...extra].filter((x) => /^[a-z0-9]{1,10}$/i.test(x)).map((x) => x.toLowerCase()))];
+    const description = String(opts?.description ?? ext.toUpperCase()).slice(0, 60);
+    let defaultPath = join(app.getPath('documents'), name);
+    for (;;) {
+      const res = await dialog.showSaveDialog(mainWindow!, { defaultPath, filters: [{ name: description, extensions: owned }] });
+      if (res.canceled || !res.filePath) return null;
+      const typed = extname(res.filePath).slice(1).toLowerCase();
+      if (owned.includes(typed)) {
+        await writeFile(res.filePath, toBytes(data));
+        addRecent(res.filePath);
+        return { name: basename(res.filePath), token: grant(res.filePath) };
+      }
+      // "budget.mp4" for a workbook: say why not, and ask again with the right extension
+      await dialog.showMessageBox(mainWindow!, {
+        type: 'warning',
+        title: 'Save As',
+        message: `This file is being saved as ${description}, so its name has to end in .${ext}.`,
+        detail: `"${basename(res.filePath)}" ends in ${typed ? `.${typed}` : 'no extension'}. To save in another format, cancel and pick the format under Save As / Convert.`,
+      });
+      defaultPath = join(dirname(res.filePath), `${basename(res.filePath, extname(res.filePath))}.${ext}`);
+    }
   });
 
   // a file dropped on the window (path resolved by the preload from the real File object)

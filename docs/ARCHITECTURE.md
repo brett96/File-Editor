@@ -103,6 +103,36 @@ browser cannot decode (AVI, WMV, FLV, MPEG-PS, 3GP…) are converted once to MP4
 ffmpeg.wasm on open, edited normally, and can be written back to the legacy format on save.
 Every image save re-encodes from pixels, so EXIF/GPS metadata is never copied.
 
+### Spreadsheets, databases and large files
+
+Spreadsheets are edited as a Univer snapshot (`core/sheet/workbook.ts`); databases as a SQLite
+file in sql.js (`core/db/sqlite.ts`), read a page of rows at a time.
+
+The grid keeps every filled cell as a JavaScript object, and the JavaScript heap is capped (4 GB
+in Chromium, less on small machines), so large files are handled by never holding more than
+one representation at once:
+
+- **Reading** — `.xlsx` packages are inflated and scanned as a stream (`sheet/xlsx-stream.ts`),
+  CSV/TSV are decoded and parsed about 4 MB at a time (`sheet/csv.ts`). Cells are built with
+  exactly their own fields, and strings are detached from the decode buffer and pooled
+  (`core/memory.ts`), which is what keeps a sheet's XML from staying alive behind its cells.
+- **Limit** — `sheetCellBudget()` derives the most cells the grid may be given from the heap
+  limit and the RAM the device reports, instead of one fixed number.
+- **Past the limit** — the same readers run in row mode (`readXlsxRows`, `readDelimitedRows`)
+  and feed `db/import-rows.ts`, which writes each row straight into a SQLite table. sql.js keeps
+  its pages in WebAssembly memory, outside the JavaScript heap, and the grid only ever asks for
+  200 rows.
+- **Saving** — a large workbook is written from the snapshot the editor holds
+  (`getLiveWorkbook`), not from a deep copy of it.
+
+Work that blocks the page (filtering or sorting a large sheet, counting or measuring a large
+table) is started one frame late behind a spinner whose animation runs on the compositor
+(`BusyPill` / `useBusy` in `ui/components.tsx`), so it keeps turning while the page is busy.
+
+`core/conversions.ts` is the one table of which kinds of document can be saved as which
+families of format; the save path refuses a file name whose extension the chosen format does
+not own, in the browser (`platform/host.ts`) and in the desktop main process.
+
 ## Technology choices
 
 | Concern | Choice | Reason |

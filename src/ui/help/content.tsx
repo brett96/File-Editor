@@ -281,9 +281,26 @@ export const SECTIONS: GuideSection[] = [
         </p>
         <h3>Large workbooks</h3>
         <p>
-          Big Excel files (tens of megabytes, hundreds of thousands of rows) are read and written as a stream, with a progress bar. A 150 MB workbook
-          with a million rows opens in well under a minute on a recent computer and needs about 2 GB of memory; the limit is roughly 25 million filled
-          cells. Auto-save is paused for workbooks this size: press <Keys k="Ctrl+S" /> to save.
+          Big Excel and CSV files (tens of megabytes, hundreds of thousands of rows) are read and written a piece at a time, with a progress bar, so
+          the file, its text and its cells are never all in memory at once. A 150 MB workbook with a million rows opens in well under a minute on a
+          recent computer. Auto-save is paused for workbooks this size: press <Keys k="Ctrl+S" /> to save.
+        </p>
+        <p>
+          How much the grid can hold depends on the device: about 40 million filled cells on a computer with 8 GB of memory or more, fewer on an
+          older laptop or a phone (the limit is worked out from the memory the device reports, so it stops before the page runs out). A file past
+          that limit is not refused: File Editor offers to open it as a <strong>database</strong> instead. Each sheet becomes a table, read straight
+          from the file a row at a time, which you can page through, edit, search with SQL and save as a SQLite file. Values are kept (formula
+          results rather than formulas, dates as ISO text); formatting is not, and the original file is not changed.
+        </p>
+        <p>
+          On a large sheet, anything that has to go through every row (filtering, sorting, replacing, removing duplicates, inserting or deleting
+          rows, undo) shows a spinner while it runs, so you can see that the editor is working.
+        </p>
+        <h3>Column widths</h3>
+        <p>
+          Drag the line at the right of a column's letter to resize it. Double-click that line (or right-click the letter and choose{' '}
+          <Ui>Fit for data</Ui>) to fit the column to its widest value: every row of the column is measured, not just the rows on screen. Select
+          several columns first to fit them all.
         </p>
         <Tip>On a phone the sheet opens zoomed to fit. Drag with one finger to scroll, tap to select a cell, and double-tap to edit it.</Tip>
       </>
@@ -301,6 +318,11 @@ export const SECTIONS: GuideSection[] = [
           cells, add or delete rows, and run SQL. The database is loaded entirely into memory on this device; nothing is uploaded.
         </p>
         <p>
+          To start a database from scratch, choose <Ui>New</Ui> → <Ui>Blank database</Ui> (or, in a blank document, click the format label in the
+          status bar and pick <Ui>SQLite database</Ui>). Press <Ui>New table</Ui>, name it and list its columns; the first <Ui>Save</Ui> asks where to
+          keep the <code>.sqlite</code> file.
+        </p>
+        <p>
           <strong>LiteDB</strong> files (the <code>.db</code> files many Windows apps keep their data in) open too: each collection is shown as a
           table with a column per field, and nested values as JSON text you can query with <code>json_extract()</code>. <Ui>Save</Ui> writes your
           changes back to the same file in LiteDB's own format, so the program that owns it keeps working: rows you did not touch are written back
@@ -314,6 +336,9 @@ export const SECTIONS: GuideSection[] = [
             [<>Tables list</>, <>Pick a table or view on the left. Views are read-only; tables can be edited.</>],
             [<>Edit cells</>, <>Click a cell, change the value, then leave the cell (or press Enter). Empty text becomes NULL when the cell was empty or null.</>],
             [<>Add / delete rows</>, <><Ui>Add row</Ui> inserts a new row. Select rows with the checkboxes and press <Ui>Delete</Ui>.</>],
+            [<>New table / Add column</>, <>The <Ui>+</Ui> above the tables list makes a table (name, columns, and an optional numbered <code>id</code> column). <Ui>Add column</Ui> adds a column at the end of the table on screen.</>],
+            [<>Resize a column</>, <>Drag the right edge of its heading. Double-click that edge to fit the column to its widest value in the whole table, not just the page on screen.</>],
+            [<>Rearrange columns</>, <>Press a heading and drag it left or right; a line shows where it will land. This changes how the table is shown, not how it is stored. SQL results can be resized and rearranged the same way.</>],
             [<>SQL</>, <><Ui>SQL</Ui> opens a console. Run statements with the button or <Keys k="Ctrl+Enter" />. SELECT results appear in the grid; other statements refresh the schema.</>],
             [<>Save</>, <>Save writes the whole database file back (or downloads a copy in the browser). Auto-save works once the file has a place to write.</>],
           ]}

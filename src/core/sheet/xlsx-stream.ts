@@ -13,7 +13,9 @@
  * zoom, gridlines and hyperlinks.
  */
 import { ZipWriter, readZipDirectory, zipEntryString, zipEntryText, type ZipEntry } from '../zip-stream';
+import { StringPool, WorkbookTooLargeError, detach, sheetCellBudget } from '../memory';
 import { cssToArgb, excelColorToHex, parseThemeColors, type ExcelColor } from './colors';
+import { isDateFormat, serialToIso } from './to-database';
 import {
   DEFAULT_COL_WIDTH_PX,
   DEFAULT_ROW_HEIGHT_PX,
@@ -38,8 +40,6 @@ export const STREAM_SHEET_XML_BYTES = 48 * 1024 * 1024;
 export const STREAM_PACKAGE_BYTES = 24 * 1024 * 1024;
 /** Workbooks with more cells than this are written by the streaming writer. */
 export const STREAM_WRITE_CELLS = 250_000;
-/** More cells than the editor can hold in memory at once. */
-export const MAX_CELLS = 25_000_000;
 
 const CELL_STRING = 1;
 const CELL_NUMBER = 2;
@@ -157,6 +157,24 @@ const on = (v: string | null): boolean => v !== null && v !== '0' && v !== 'fals
 export interface StreamReadResult {
   workbook: IWorkbookData;
   warnings: string[];
+}
+
+/** A database value: what a cell becomes when a workbook is read row by row. */
+export type RowValue = string | number | null;
+
+/**
+ * Receives a workbook a row at a time instead of as a snapshot, for workbooks too large for
+ * the grid. Rows arrive in file order; `values` may have gaps (empty cells).
+ */
+export interface RowSink {
+  beginSheet(name: string): void;
+  row(index: number, values: RowValue[]): void;
+  endSheet(): void | Promise<void>;
+}
+
+export interface ReadOptions {
+  /** Stop with WorkbookTooLargeError past this many filled cells (default: what this device can hold). */
+  maxCells?: number;
 }
 
 export interface ReadProgress {
@@ -349,19 +367,59 @@ function resolvePart(base: string, target: string): string {
   return parts.join('/');
 }
 
-/** Whether a package is big enough that it should be read with the streaming reader. */
-export async function needsStreamRead(blob: Blob): Promise<boolean> {
-  if (blob.size >= STREAM_PACKAGE_BYTES) return true;
+/**
+ * Whether a package is big enough that it should be read with the streaming reader. On a
+ * device with little memory the ordinary reader's object model is too costly much sooner, so
+ * the thresholds are a quarter of the usual ones.
+ */
+export async function needsStreamRead(blob: Blob, lowMemory = false): Promise<boolean> {
+  const scale = lowMemory ? 0.25 : 1;
+  if (blob.size >= STREAM_PACKAGE_BYTES * scale) return true;
   try {
     const entries = await readZipDirectory(blob);
-    return entries.some((e) => /^xl\/(worksheets\/[^/]+\.xml|sharedStrings\.xml)$/i.test(e.name) && e.size >= STREAM_SHEET_XML_BYTES);
+    return entries.some((e) => /^xl\/(worksheets\/[^/]+\.xml|sharedStrings\.xml)$/i.test(e.name) && e.size >= STREAM_SHEET_XML_BYTES * scale);
   } catch {
     return false;
   }
 }
 
+/**
+ * A rough count of the filled cells in a package, from the size of its worksheet XML (a cell
+ * is about 30 bytes of it), without reading any of it. Null when the file is not a zip.
+ */
+export async function estimateCells(blob: Blob): Promise<number | null> {
+  try {
+    const entries = await readZipDirectory(blob);
+    const xml = entries.reduce((n, e) => (/^xl\/worksheets\/[^/]+\.xml$/i.test(e.name) ? n + e.size : n), 0);
+    return Math.round(xml / 30);
+  } catch {
+    return null;
+  }
+}
+
 /** Reads an .xlsx package (already decrypted) without building it in memory first. */
-export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?: (p: ReadProgress) => void): Promise<StreamReadResult> {
+export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?: (p: ReadProgress) => void, options: ReadOptions = {}): Promise<StreamReadResult> {
+  const result = await readPackage(blob, name, onProgress, options.maxCells ?? sheetCellBudget(), null);
+  return { workbook: result.workbook!, warnings: result.warnings };
+}
+
+/**
+ * Reads an .xlsx package a row at a time into `sink`, holding only the shared strings and the
+ * row being read: the way to get at a workbook that is too large for the grid. Values are
+ * database values (dates as ISO text, TRUE/FALSE as 1/0, formulas as their last results).
+ */
+export async function readXlsxRows(blob: Blob, sink: RowSink, onProgress?: (p: ReadProgress) => void): Promise<{ sheets: number; cells: number }> {
+  const result = await readPackage(blob, 'Workbook', onProgress, Infinity, sink);
+  return { sheets: result.sheetCount, cells: result.cells };
+}
+
+async function readPackage(
+  blob: Blob,
+  name: string,
+  onProgress: ((p: ReadProgress) => void) | undefined,
+  maxCells: number,
+  sink: RowSink | null,
+): Promise<{ workbook: IWorkbookData | null; warnings: string[]; sheetCount: number; cells: number }> {
   let entries: ZipEntry[];
   try {
     entries = await readZipDirectory(blob);
@@ -403,6 +461,9 @@ export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?:
   const styles: Record<string, IStyleData> = {};
   const styleIds: (string | null | undefined)[] = [];
   const styleKeys = new Map<string, string>();
+  // row mode: which cell formats show their number as a date or time
+  const xfDate = sink ? xfStyles.map((st) => isDateFormat(st?.n?.pattern)) : [];
+  const pool = new StringPool();
   const styleIdOf = (xf: number): string | null => {
     let id = styleIds[xf];
     if (id === undefined) {
@@ -470,7 +531,7 @@ export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?:
           scanner.capture = false;
         } else if (tag === 'rPh') phonetic = Math.max(0, phonetic - 1);
         else if (tag === 'si') {
-          strings.push(xmlText(acc));
+          strings.push(detach(xmlText(acc)));
           inSi = false;
         }
       },
@@ -484,11 +545,17 @@ export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?:
   const sheets: Record<string, SheetData> = {};
   const order: string[] = [];
   let sharedSeq = 0;
+  let sheetCount = 0;
 
   for (let si = 0; si < sheetList.length; si++) {
     const info = sheetList[si];
     const entry = sheetEntries[si];
     if (!entry) continue;
+    sheetCount++;
+    sink?.beginSheet(info.name);
+    let rowValues: RowValue[] = [];
+    let rowFilled = false;
+    let cXf = 0;
     const id = newId('sheet');
     const cellData: Record<number, Record<number, ICellData>> = {};
     const rowData: Record<number, { h?: number; hd?: 0 | 1; ia?: 0 | 1 }> = {};
@@ -520,47 +587,60 @@ export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?:
     let capturing: 'v' | 'f' | 't' | null = null;
 
     const finishCell = () => {
-      const out: ICellData = {};
+      let v: string | number | undefined;
+      let t = 0;
       if (cValue !== null) {
         switch (cType) {
           case 's':
-            out.v = strings[Number(cValue)] ?? '';
-            out.t = CELL_STRING;
+            v = strings[Number(cValue)] ?? '';
+            t = CELL_STRING;
             break;
           case 'str':
           case 'inlineStr':
           case 'e':
-            out.v = xmlText(cValue);
-            out.t = CELL_STRING;
+            v = pool.get(xmlText(cValue));
+            t = CELL_STRING;
             break;
           case 'b':
-            out.v = cValue === '1' || cValue === 'true' ? 1 : 0;
-            out.t = CELL_BOOLEAN;
+            v = cValue === '1' || cValue === 'true' ? 1 : 0;
+            t = CELL_BOOLEAN;
             break;
           case 'd': {
             const ms = Date.parse(cValue);
             if (Number.isNaN(ms)) {
-              out.v = cValue;
-              out.t = CELL_STRING;
+              v = detach(cValue);
+              t = CELL_STRING;
             } else {
-              out.v = Math.round(((ms - Date.UTC(1899, 11, 30)) / 86_400_000) * 1e10) / 1e10;
-              out.t = CELL_NUMBER;
+              v = Math.round(((ms - Date.UTC(1899, 11, 30)) / 86_400_000) * 1e10) / 1e10;
+              t = CELL_NUMBER;
             }
             break;
           }
           default: {
             const n = Number(cValue);
             if (cValue !== '' && !Number.isNaN(n)) {
-              out.v = n;
-              out.t = CELL_NUMBER;
+              v = n;
+              t = CELL_NUMBER;
             }
           }
         }
       }
+      if (sink) {
+        // row mode: only the value matters (a formula's is its last result)
+        if (v === undefined || v === '') return;
+        rowValues[colIndex] = t === CELL_NUMBER && xfDate[cXf] ? serialToIso(v as number) : v;
+        rowFilled = true;
+        cellCount++;
+        return;
+      }
+      // Cells are built with all their fields at once: the engine then gives each exactly the
+      // room it needs, where a cell grown field by field reserves room for four.
+      let out: ICellData;
       if (cFormula !== null || cShared !== null) {
         // a formula's cached result has no type of its own in the snapshot (as in xlsx.ts)
-        delete out.t;
-        if (cFormula) out.f = `=${xmlText(cFormula)}`;
+        out = {};
+        if (v !== undefined) out.v = v;
+        if (cFormula) out.f = detach(`=${xmlText(cFormula)}`);
         if (cShared !== null) {
           // shared formulas: the first cell carries the text, the rest only the shared id
           let sid = sharedIds.get(cShared);
@@ -570,15 +650,19 @@ export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?:
           }
           out.si = sid;
         }
+        if (cStyle !== null) out.s = cStyle;
+        if (out.v === undefined && !out.f && !out.si && !out.s) return;
+      } else if (v !== undefined) {
+        out = cStyle !== null ? { v, t, s: cStyle } : { v, t };
+      } else if (cStyle !== null) {
+        out = { s: cStyle };
+      } else {
+        return;
       }
-      if (cStyle !== null) out.s = cStyle;
-      if (out.v === undefined && !out.f && !out.si && !out.s) return;
       if (!row) row = cellData[rowIndex] = {};
       row[colIndex] = out;
       cellCount++;
-      if (cellCount > MAX_CELLS) {
-        throw new Error(`This workbook has more than ${(MAX_CELLS / 1e6).toFixed(0)} million filled cells, which is more than File Editor can hold in memory. Split it into smaller workbooks, or export the sheets you need as CSV.`);
-      }
+      if (cellCount > maxCells) throw new WorkbookTooLargeError(maxCells);
       if (rowIndex > lastRow) lastRow = rowIndex;
       if (colIndex > lastCol) lastCol = colIndex;
     };
@@ -593,7 +677,8 @@ export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?:
             cType = attr(a, 't') ?? '';
             const s = attr(a, 's');
             // format 0 is the workbook default: no style of its own (as in xlsx.ts)
-            cStyle = s === null || s === '0' ? null : styleIdOf(Number(s));
+            if (sink) cXf = s === null ? 0 : Number(s);
+            else cStyle = s === null || s === '0' ? null : styleIdOf(Number(s));
             cValue = null;
             cFormula = null;
             cShared = null;
@@ -636,6 +721,7 @@ export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?:
             rowIndex = r ? Number(r) - 1 : rowIndex + 1;
             row = null;
             colIndex = -1;
+            if (sink) return;
             const entryRow: { h?: number; hd?: 0 | 1; ia?: 0 | 1 } = {};
             const ht = attr(a, 'ht');
             if (ht && on(attr(a, 'customHeight'))) {
@@ -647,6 +733,7 @@ export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?:
             return;
           }
           case 'col': {
+            if (sink) return;
             const min = Number(attr(a, 'min') ?? 1);
             const max = Math.min(16_384, Number(attr(a, 'max') ?? min));
             const width = attr(a, 'width');
@@ -692,7 +779,7 @@ export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?:
             return;
           case 'mergeCell': {
             const ref = attr(a, 'ref');
-            if (!ref) return;
+            if (!ref || sink) return;
             const [from, to] = ref.split(':');
             const [r1, c1] = parseRef(from);
             const [r2, c2] = parseRef(to ?? from);
@@ -702,7 +789,7 @@ export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?:
           case 'hyperlink': {
             const ref = attr(a, 'ref');
             const rid = attr(a, 'id');
-            if (ref && rid) links.push({ ref, rid });
+            if (ref && rid && !sink) links.push({ ref, rid });
             return;
           }
           case 'conditionalFormatting':
@@ -726,6 +813,12 @@ export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?:
           inInline = false;
         } else if (tag === 'is') {
           inInline = false;
+        } else if (tag === 'row') {
+          if (sink && rowFilled) {
+            sink.row(rowIndex, rowValues);
+            rowValues = [];
+            rowFilled = false;
+          }
         } else if (tag === 'sheetView') {
           firstView = false;
         }
@@ -734,6 +827,10 @@ export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?:
     for await (const chunk of zipEntryText(blob, entry)) {
       scanner.push(chunk);
       report(chunk.length);
+    }
+    if (sink) {
+      await sink.endSheet();
+      continue;
     }
 
     // cells covered by a merge belong to its top-left cell
@@ -780,10 +877,13 @@ export async function readXlsxStream(blob: Blob, name = 'Workbook', onProgress?:
     };
     order.push(id);
   }
-  if (!order.length) throw new Error('This workbook has no sheets.');
+  if (!sheetCount) throw new Error('This workbook has no sheets.');
   onProgress?.({ fraction: 1, cells: cellCount });
+  if (sink) return { workbook: null, warnings: [...warnings], sheetCount, cells: cellCount };
 
   return {
+    sheetCount,
+    cells: cellCount,
     workbook: {
       id: newId('workbook'),
       name,
@@ -942,8 +1042,17 @@ class StyleTable {
   }
 }
 
+export interface WriteOptions {
+  /**
+   * The formula of a cell that only refers to a shared one (`si` without `f`), for snapshots
+   * that are written as the editor holds them rather than from a copy with every formula
+   * filled in.
+   */
+  formulaOf?: (sheetId: string, row: number, column: number) => string | null | undefined;
+}
+
 /** Writes the workbook as an .xlsx package (unencrypted), a block of rows at a time. */
-export async function writeXlsxStream(data: IWorkbookData, onProgress?: (fraction: number) => void): Promise<Uint8Array> {
+export async function writeXlsxStream(data: IWorkbookData, onProgress?: (fraction: number) => void, options: WriteOptions = {}): Promise<Uint8Array> {
   const zip = new ZipWriter();
   const styleTable = new StyleTable();
   const strings = new Map<string, number>();
@@ -1026,8 +1135,9 @@ export async function writeXlsxStream(data: IWorkbookData, onProgress?: (fractio
             const v = rich ?? cell.v;
             const link = (cell.custom as { hyperlink?: unknown } | undefined)?.hyperlink;
             if (typeof link === 'string' && /^(https?:|mailto:)/i.test(link)) links.push({ ref, url: link });
-            if (cell.f) {
-              const f = esc(cell.f.replace(/^=/, ''));
+            const formula = cell.f || (cell.si && options.formulaOf ? options.formulaOf(sheetIds[n], r, Number(c)) : null);
+            if (formula) {
+              const f = esc(formula.replace(/^=/, ''));
               if (typeof v === 'number') rowXml += `<c r="${ref}"${sAttr}><f>${f}</f><v>${v}</v></c>`;
               else if (typeof v === 'boolean') rowXml += `<c r="${ref}"${sAttr} t="b"><f>${f}</f><v>${v ? 1 : 0}</v></c>`;
               else if (typeof v === 'string') rowXml += `<c r="${ref}"${sAttr} t="str"><f>${f}</f><v>${esc(v)}</v></c>`;

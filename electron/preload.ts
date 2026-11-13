@@ -13,7 +13,7 @@ const bridge = {
   openFiles: (options: { extensions: string[]; multiple: boolean; description: string }): Promise<FilePayload[]> =>
     ipcRenderer.invoke('open-files', options),
   saveFile: (token: string, bytes: Uint8Array): Promise<{ name: string; token: string }> => ipcRenderer.invoke('save-file', token, bytes),
-  saveFileAs: (options: { suggestedName: string; ext: string; description: string }, bytes: Uint8Array): Promise<{ name: string; token: string } | null> =>
+  saveFileAs: (options: { suggestedName: string; ext: string; extensions?: string[]; description: string }, bytes: Uint8Array): Promise<{ name: string; token: string } | null> =>
     ipcRenderer.invoke('save-file-as', options, bytes),
   onOpenFile: (callback: (file: FilePayload) => void) => {
     const listener = (_e: IpcRendererEvent, file: FilePayload) => callback(file);

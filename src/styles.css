@@ -1545,6 +1545,26 @@ body {
   }
 }
 
+/* Runs on the compositor, so the spinner keeps turning while the page is busy. */
+.spinner {
+  flex: none;
+  will-change: transform;
+}
+
+/* Work that may be over at once: stay hidden for the first moments, then fade in. */
+.busy-delayed {
+  opacity: 0;
+  animation: busy-in 0.12s linear 0.2s forwards;
+  will-change: opacity;
+  pointer-events: none;
+}
+
+@keyframes busy-in {
+  to {
+    opacity: 1;
+  }
+}
+
 .toasts {
   position: fixed;
   right: 16px;
