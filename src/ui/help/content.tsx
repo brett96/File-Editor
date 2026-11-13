@@ -272,6 +272,13 @@ export const SECTIONS: GuideSection[] = [
           pictures, comments, conditional formatting and macros are not kept; the app tells you when a file you open uses them. CSV and TSV save
           only the values of the current sheet.
         </p>
+        <h3>Save as a database</h3>
+        <p>
+          <Ui>Save as / Convert</Ui> → <Ui>SQLite database</Ui> turns the workbook into a database with one table per sheet. The row of column
+          headings becomes the column names. Where a sheet's heading row is not clear (every column is text, the first row has numbers or gaps, a
+          title sits above the headings), you are asked: pick the row that holds the names, choose <Ui>No heading row</Ui>, or type the names
+          yourself. Values are saved (formula results rather than formulas), dates as ISO text; the new database then opens for editing.
+        </p>
         <h3>Large workbooks</h3>
         <p>
           Big Excel files (tens of megabytes, hundreds of thousands of rows) are read and written as a stream, with a progress bar. A 150 MB workbook

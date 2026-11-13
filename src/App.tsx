@@ -72,7 +72,8 @@ import type { MediaInfo } from './core/media/video-engine';
 import { createPixels, type Pixels } from './core/media/image-ops';
 import { SHEET_EXTENSIONS, SHEET_FORMATS, blankWorkbook, sheetFormatFromName, usedRange, type IWorkbookData, type SheetFormat } from './core/sheet/workbook';
 import { SheetEditor, type SheetEditorHandle } from './ui/sheet/SheetEditor';
-import { SheetExportModal, SheetSecurityModal, type SheetExportChoice } from './ui/sheet/sheet-dialogs';
+import { SheetExportModal, SheetHeadersModal, SheetSecurityModal, type SheetExportChoice } from './ui/sheet/sheet-dialogs';
+import { columnsFromRow, type SheetTablePlan } from './core/sheet/to-database';
 import { DB_EXTENSIONS, dbFormatFromName, isSqliteFile, type DbFormat, type SqliteDatabase } from './core/db/sqlite';
 import { DbEditor, type DbEditorHandle } from './ui/db/DbEditor';
 
@@ -616,17 +617,8 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
         return true;
       }
       const db = await SqliteDatabase.open(bytes);
-      const keepsName = !!byExt;
-      setDoc({
-        kind: 'database',
-        key: docKey++,
-        name: keepsName ? file.name : `${baseName(file.name)}.sqlite`,
-        format: keepsName ? format : 'sqlite',
-        db,
-        large: bytes.byteLength > LARGE_DB_BYTES,
-        handle: keepsName ? file.handle : undefined,
-        protection: EMPTY_PROTECTION,
-      });
+      // a SQLite file is saved back where it came from, whatever its extension
+      setDoc({ kind: 'database', key: docKey++, name: file.name, format, db, large: bytes.byteLength > LARGE_DB_BYTES, handle: file.handle, protection: EMPTY_PROTECTION });
       setDirty(false);
     } finally {
       setBusy(null);
@@ -1314,6 +1306,68 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     }
   };
 
+  // ── spreadsheet → database (each sheet becomes a table) ──────────────────
+  const [headerAsk, setHeaderAsk] = useState<{ workbook: IWorkbookData; plans: SheetTablePlan[]; fileName: string } | null>(null);
+
+  const startSheetToDatabase = async (fileName: string) => {
+    const d = docRef.current;
+    if (d?.kind !== 'sheet' || !sheetRef.current) return;
+    setBusy('Reading the sheets…');
+    try {
+      await nextPaint();
+      const workbook = sheetRef.current.getWorkbook();
+      if (!workbook) throw new Error('The spreadsheet is still loading.');
+      const { planTables } = await import('./core/sheet/to-database');
+      const plans = planTables(workbook);
+      if (!plans.length) throw new Error('This workbook has no data to put in a database.');
+      setBusy(null);
+      // a sheet whose heading row is a guess: ask before using it
+      if (plans.some((p) => !p.confident)) setHeaderAsk({ workbook, plans, fileName });
+      else await sheetToDatabase(workbook, plans, fileName);
+    } catch (err) {
+      toast(`Could not convert: ${errorText(err)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const sheetToDatabase = async (workbook: IWorkbookData, plans: SheetTablePlan[], fileName: string) => {
+    setBusy('Creating the database…');
+    try {
+      await nextPaint();
+      const [{ buildTable }, { SqliteDatabase }] = await Promise.all([import('./core/sheet/to-database'), import('./core/db/sqlite')]);
+      const db = await SqliteDatabase.open();
+      let rows = 0;
+      let bytes: Uint8Array;
+      try {
+        for (const plan of plans) {
+          const table = buildTable(workbook, plan);
+          db.importTable(table.name, table.columns, table.rows);
+          rows += table.rows.length;
+          await nextPaint();
+        }
+        bytes = db.export();
+      } catch (err) {
+        db.close();
+        throw err;
+      }
+      setBusy(null);
+      const res = await host.save({ suggestedName: fileName, bytes, mime: 'application/vnd.sqlite3', ext: 'sqlite', description: 'SQLite database' });
+      if (!res) {
+        db.close();
+        return;
+      }
+      // carry on in the database editor, on the file that was just written
+      setDoc({ kind: 'database', key: docKey++, name: res.name, format: 'sqlite', db, large: bytes.byteLength > LARGE_DB_BYTES, handle: res.handle, protection: EMPTY_PROTECTION });
+      setDirty(false);
+      toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${res.name}: ${plans.length} ${plans.length === 1 ? 'table' : 'tables'}, ${rows.toLocaleString()} rows.`, 'info');
+    } catch (err) {
+      toast(`Could not convert: ${errorText(err)}`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
   /**
    * Writes the open file back to where it came from, in its own format. Returns false when it
    * has no such place (a new file, a converted one, or a format that can't be written).
@@ -1947,9 +2001,25 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
               setExportOpen(null);
               void saveSheet(c, undefined, true);
             }}
+            onDatabase={(fileName) => {
+              setExportOpen(null);
+              void startSheetToDatabase(fileName);
+            }}
           />
         );
       })()}
+      {headerAsk && doc?.kind === 'sheet' && (
+        <SheetHeadersModal
+          plans={headerAsk.plans}
+          namesFor={(plan, row) => columnsFromRow(headerAsk.workbook, plan, row)}
+          onClose={() => setHeaderAsk(null)}
+          onSubmit={(plans) => {
+            const ask = headerAsk;
+            setHeaderAsk(null);
+            void sheetToDatabase(ask.workbook, plans, ask.fileName);
+          }}
+        />
+      )}
       {securityOpen && doc?.kind === 'sheet' && (
         <SheetSecurityModal format={doc.format} initial={doc.protection} onClose={() => setSecurityOpen(false)} onApply={applySecurity} />
       )}
