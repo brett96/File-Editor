@@ -121,8 +121,8 @@ type OpenDoc =
   | MediaDoc
   /** origin: the file Studio was opened from (null for a .fstudio project); handle: the project file */
   | { kind: 'studio'; key: number; name: string; project: StudioProject; blobs: Map<string, Blob>; origin: MediaDoc | null; protection: ProtectionDraft; handle?: unknown }
-  | { kind: 'sheet'; key: number; name: string; format: SheetFormat; workbook: IWorkbookData; handle?: unknown; protection: ProtectionDraft }
-  | { kind: 'database'; key: number; name: string; format: DbFormat; db: SqliteDatabase; handle?: unknown; protection: ProtectionDraft };
+  | { kind: 'sheet'; key: number; name: string; format: SheetFormat; workbook: IWorkbookData; /** too big to re-save after every edit */ large?: boolean; handle?: unknown; protection: ProtectionDraft }
+  | { kind: 'database'; key: number; name: string; format: DbFormat; db: SqliteDatabase; /** too big to re-save after every edit */ large?: boolean; handle?: unknown; protection: ProtectionDraft };
 
 const PRIMARY_SWITCH: Array<DocFormat | 'image'> = ['docx', 'txt', 'html', 'css', 'js', 'pdf', 'image'];
 const SECONDARY_SWITCH: FlowFormat[] = ['odt', 'rtf', 'md', 'doc'];
@@ -145,6 +145,10 @@ function blankCanvasImage(): DecodedImage {
   pixels.data.fill(255);
   return { pixels, format: 'png', warnings: [] };
 }
+
+/** Workbooks with more filled cells than this are saved on demand rather than after every edit. */
+const LARGE_SHEET_CELLS = 400_000;
+const LARGE_DB_BYTES = 48 * 1024 * 1024;
 
 interface Progress {
   title: string;
@@ -457,25 +461,30 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   const openSheet = async (file: OpenedFile): Promise<boolean> => {
     const format = sheetFormatFromName(file.name);
     if (!format) return false;
-    let bytes = await fileBytes(file);
+    // Large workbooks are read from the file as a stream; only small ones are loaded whole.
+    let blob: Blob = file.blob;
     let password: string | undefined;
     if (format === 'xlsx') {
       const { isCfb, isOfficeEncrypted, decryptOffice } = await import('./core/crypto/office-crypto');
-      if (isCfb(bytes) && isOfficeEncrypted(bytes)) {
-        let incorrect = false;
-        for (;;) {
-          const pw = await requestPassword(file.name, 'This workbook is password protected.', incorrect);
-          if (pw === null) return true;
-          setBusy(`Opening ${file.name}…`);
-          try {
-            bytes = await decryptOffice(bytes, pw);
-            password = pw;
-            break;
-          } catch (err) {
-            if (!(err instanceof PasswordError)) throw err;
-            incorrect = true;
-          } finally {
-            setBusy(null);
+      const head = new Uint8Array(await blob.slice(0, 8).arrayBuffer());
+      if (isCfb(head)) {
+        const packed = await fileBytes(file);
+        if (isOfficeEncrypted(packed)) {
+          let incorrect = false;
+          for (;;) {
+            const pw = await requestPassword(file.name, 'This workbook is password protected.', incorrect);
+            if (pw === null) return true;
+            setBusy(`Opening ${file.name}…`);
+            try {
+              blob = new Blob([(await decryptOffice(packed, pw)) as BlobPart]);
+              password = pw;
+              break;
+            } catch (err) {
+              if (!(err instanceof PasswordError)) throw err;
+              incorrect = true;
+            } finally {
+              setBusy(null);
+            }
           }
         }
       }
@@ -485,12 +494,32 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       await nextPaint();
       let workbook: IWorkbookData;
       let warnings: string[] = [];
+      let cells = 0;
       if (format === 'xlsx') {
-        const { readXlsx } = await import('./core/sheet/xlsx');
-        ({ workbook, warnings } = await readXlsx(bytes, baseName(file.name)));
+        const stream = await import('./core/sheet/xlsx-stream');
+        if (await stream.needsStreamRead(blob)) {
+          setBusy(null);
+          const mb = (blob.size / 1024 / 1024).toFixed(0);
+          setProgress({ title: `Opening ${file.name}`, phase: `Reading ${mb} MB`, progress: 0 });
+          try {
+            ({ workbook, warnings } = await stream.readXlsxStream(blob, baseName(file.name), (p) =>
+              setProgress((cur) => cur && { ...cur, phase: `Reading ${mb} MB · ${p.cells.toLocaleString()} cells`, progress: p.fraction }),
+            ));
+            setProgress((cur) => cur && { ...cur, phase: 'Preparing the grid', progress: 1 });
+            await nextPaint();
+          } finally {
+            setProgress(null);
+          }
+        } else {
+          const { readXlsx } = await import('./core/sheet/xlsx');
+          ({ workbook, warnings } = await readXlsx(new Uint8Array(await blob.arrayBuffer()), baseName(file.name)));
+        }
+        cells = stream.countCells(workbook, LARGE_SHEET_CELLS);
       } else {
         const { readDelimited } = await import('./core/sheet/csv');
-        workbook = readDelimited(bytes, file.name, format === 'tsv' ? '\t' : undefined);
+        workbook = readDelimited(await fileBytes(file), file.name, format === 'tsv' ? '\t' : undefined);
+        const first = workbook.sheets[workbook.sheetOrder[0]];
+        cells = Object.keys(first?.cellData ?? {}).length * Math.max(1, (first?.columnCount ?? 31) - 5);
       }
       // .xlsm / .xltx are saved as plain .xlsx (macros are not kept)
       const ext = file.name.split('.').pop()?.toLowerCase();
@@ -501,10 +530,12 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
         name: keepsName ? file.name : `${baseName(file.name)}.${SHEET_FORMATS[format].ext}`,
         format,
         workbook,
+        large: cells > LARGE_SHEET_CELLS,
         handle: keepsName ? file.handle : undefined,
         protection: password ? { ...EMPTY_PROTECTION, enabled: true, password, confirm: password } : EMPTY_PROTECTION,
       });
       setDirty(false);
+      if (cells > LARGE_SHEET_CELLS) toast('This is a large workbook, so auto-save is paused for it: press Save (Ctrl+S) to write your changes.', 'info');
       if (password) toast('Unlocked. The password will be kept when you save — change it under Protect.', 'info');
       if (ext === 'xlsm') warnings.push('Macros (saved as a macro-free .xlsx)');
       if (warnings.length) toast(`Opened. Not shown and not kept when saved: ${warnings.join(', ')}.`, 'info');
@@ -549,18 +580,41 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     return true;
   };
 
-  /** Opens SQLite databases (.sqlite, .db, …). Returns false when the file is not a database. */
+  /** Opens SQLite and LiteDB databases (.sqlite, .db, …). Returns false when the file is not a database. */
   const openDatabase = async (file: OpenedFile): Promise<boolean> => {
-    const head = new Uint8Array(await file.blob.slice(0, 32).arrayBuffer());
+    const head = new Uint8Array(await file.blob.slice(0, 64).arrayBuffer());
     const byExt = dbFormatFromName(file.name);
+    const { liteDbVersion } = await import('./core/db/litedb');
+    const lite = liteDbVersion(head);
     // Known DB extensions always attempt open (sql.js validates the header). Magic catches renamed files.
-    if (!byExt && !isSqliteFile(file.name, head)) return false;
+    if (!byExt && !lite && !isSqliteFile(file.name, head)) return false;
     const format = byExt ?? 'sqlite';
     setBusy(`Opening ${file.name}…`);
     try {
       await nextPaint();
       const { SqliteDatabase } = await import('./core/db/sqlite');
       const bytes = await fileBytes(file);
+      if (lite) {
+        // LiteDB (.NET document database): read-only import, shown as SQLite tables
+        const { readLiteDb, liteDbTables } = await import('./core/db/litedb');
+        const source = readLiteDb(bytes);
+        const db = await SqliteDatabase.open();
+        try {
+          for (const t of liteDbTables(source)) db.importTable(t.name, t.columns, t.rows);
+        } catch (err) {
+          db.close();
+          throw err;
+        }
+        setDoc({ kind: 'database', key: docKey++, name: `${baseName(file.name)}.sqlite`, format: 'sqlite', db, protection: EMPTY_PROTECTION });
+        setDirty(false);
+        const docs = source.collections.reduce((n, c) => n + c.documents.length, 0);
+        toast(
+          `Opened a LiteDB database: ${source.collections.length} ${source.collections.length === 1 ? 'collection' : 'collections'}, ${docs.toLocaleString()} documents, shown as tables. ` +
+            `This is a copy: saving writes a SQLite file and ${file.name} is not changed.${source.warnings.length ? ` Note: ${source.warnings.join('; ')}.` : ''}`,
+          'info',
+        );
+        return true;
+      }
       const db = await SqliteDatabase.open(bytes);
       const keepsName = !!byExt;
       setDoc({
@@ -569,6 +623,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
         name: keepsName ? file.name : `${baseName(file.name)}.sqlite`,
         format: keepsName ? format : 'sqlite',
         db,
+        large: bytes.byteLength > LARGE_DB_BYTES,
         handle: keepsName ? file.handle : undefined,
         protection: EMPTY_PROTECTION,
       });
@@ -1215,8 +1270,22 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       if (c.format === 'xlsx') {
         const wb = sheetRef.current.getWorkbook();
         if (!wb) throw new Error('The spreadsheet is still loading.');
-        const { writeXlsx } = await import('./core/sheet/xlsx');
-        bytes = await writeXlsx({ ...wb, name: baseName(c.fileName) });
+        const stream = await import('./core/sheet/xlsx-stream');
+        if (stream.countCells(wb, stream.STREAM_WRITE_CELLS) > stream.STREAM_WRITE_CELLS) {
+          // large workbook: written a block of rows at a time
+          if (!quiet) {
+            setBusy(null);
+            setProgress({ title: `Saving ${c.fileName}`, phase: 'Writing the workbook', progress: 0 });
+          }
+          try {
+            bytes = await stream.writeXlsxStream({ ...wb, name: baseName(c.fileName) }, (f) => !quiet && setProgress((cur) => cur && { ...cur, progress: f }));
+          } finally {
+            if (!quiet) setProgress(null);
+          }
+        } else {
+          const { writeXlsx } = await import('./core/sheet/xlsx');
+          bytes = await writeXlsx({ ...wb, name: baseName(c.fileName) });
+        }
         if (c.protection.enabled && c.protection.password) {
           const { encryptOffice } = await import('./core/crypto/office-crypto');
           bytes = await encryptOffice(bytes, c.protection.password);
@@ -1337,6 +1406,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   /** Why the open file can't be saved automatically right now, or null if it can. */
   const autoSaveBlocker = (d: OpenDoc): string | null => {
     if (d.kind === 'media') return 'Video and audio are re-encoded when saved, so they are saved when you press Save.';
+    if ((d.kind === 'sheet' || d.kind === 'database') && d.large) return `This ${d.kind === 'sheet' ? 'workbook' : 'database'} is large, so it is saved when you press Save rather than after every edit.`;
     if (host.kind === 'web' && !host.canSaveInPlace) return 'Auto-save needs the desktop app or a browser that can save files in place (Chrome, Edge).';
     if (d.handle === undefined) return 'Save once to choose a file; after that, changes are saved automatically.';
     if (d.kind === 'image' && !IMAGE_FORMATS[d.format].canWrite) return `${IMAGE_FORMATS[d.format].label} can't be written. Save as another format to turn on auto-save.`;
@@ -1623,7 +1693,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       <TabActiveContext.Provider value={activeRef}>
       {active && actionsSlot && docActions && createPortal(docActions, actionsSlot)}
       <main className="main">
-        {doc?.kind === 'sheet' && <SheetEditor key={doc.key} ref={sheetRef} initial={doc.workbook} onChange={markDirty} onError={toast} onNotice={(m) => toast(m, 'info')} />}
+        {doc?.kind === 'sheet' && <SheetEditor key={doc.key} ref={sheetRef} initial={doc.workbook} large={doc.large} onChange={markDirty} onError={toast} onNotice={(m) => toast(m, 'info')} />}
         {doc?.kind === 'database' && <DbEditor key={doc.key} ref={dbRef} db={doc.db} onChange={markDirty} onError={toast} />}
         {doc?.kind === 'flow' && (
           <RichEditor key={doc.key} ref={richRef} initial={doc.initial} zoom={zoom} onZoom={setZoom} onChange={markDirty} onStats={setStats} onPageCount={setPageCount} onError={toast} />
@@ -1960,7 +2030,7 @@ export default function App() {
   const toast = useCallback((text: string, kind: Toast['kind'] = 'error') => {
     const id = Date.now() + Math.random();
     setToasts((t) => [...t, { id, kind, text }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'error' ? 7000 : 3500);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), kind === 'error' ? 7000 : Math.min(12000, Math.max(3500, text.length * 45)));
   }, []);
 
   // ── tabs ──────────────────────────────────────────────────────────────────

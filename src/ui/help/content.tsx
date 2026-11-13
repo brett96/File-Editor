@@ -34,7 +34,7 @@ export const SECTIONS: GuideSection[] = [
             [<>Documents</>, <>Word (.docx, .doc), OpenDocument, Rich Text, Markdown, HTML, CSS, JavaScript and plain text. See <Go to="documents">Documents</Go>.</>],
             [<>PDF</>, <>Edit existing text, add text, images, links, shapes and signatures; insert, reorder, rotate and delete pages. See <Go to="pdf">PDF editing</Go>.</>],
             [<>Spreadsheets</>, <>Excel (.xlsx), CSV and TSV with 400+ formula functions. See <Go to="spreadsheets">Spreadsheets</Go>.</>],
-            [<>Databases</>, <>SQLite (.sqlite, .db, …): browse tables, edit rows and run SQL. See <Go to="databases">SQLite databases</Go>.</>],
+            [<>Databases</>, <>SQLite and LiteDB (.sqlite, .db, …): browse tables, edit rows and run SQL. See <Go to="databases">Databases</Go>.</>],
             [<>Photos</>, <>Quick edits for any photo; a layered Photoshop-style editor in the desktop app. See <Go to="photo-quick">Photos</Go> and <Go to="photo-pro">Pro Photo</Go>.</>],
             [<>Video &amp; audio</>, <>Quick trims and conversions; a multi-track editor with a mixing console (Studio) in the desktop app. See <Go to="video-quick">Video &amp; audio</Go> and <Go to="studio">Studio</Go>.</>],
           ]}
@@ -173,9 +173,16 @@ export const SECTIONS: GuideSection[] = [
     keywords: 'docx word text formatting styles heading font table image link page break margins header footer find replace draw format painter',
     body: (
       <>
-        <p>Documents look and work like a word processor: the page is shown at its real size and the toolbar sits above it.</p>
+        <p>
+          Documents look and work like a word processor: the page is shown at its real size under a ribbon with five tabs, <Ui>Home</Ui>,{' '}
+          <Ui>Insert</Ui>, <Ui>Draw</Ui>, <Ui>Design</Ui> and <Ui>Layout</Ui>.
+        </p>
         <Defs
           rows={[
+            [<>Home</>, <>Clipboard, fonts, text and paragraph formatting, lists, alignment, spacing, shading, borders and find &amp; replace.</>],
+            [<>Insert</>, <><Ui>Table</Ui> (drag over the grid to pick its size), <Ui>Picture</Ui>, <Ui>Link</Ui>, <Ui>Page break</Ui>, <Ui>Horizontal line</Ui>, <Ui>Header &amp; footer</Ui>, <Ui>Date &amp; time</Ui>, <Ui>Symbol</Ui>, <Ui>Quote</Ui> and <Ui>Code block</Ui>.</>],
+            [<>Design</>, <><Ui>Themes</Ui> set the fonts and heading colour of the whole document in one click; <Ui>Fonts</Ui>, <Ui>Heading font</Ui>, <Ui>Colours</Ui> and <Ui>Paragraph spacing</Ui> change one of those at a time. They format the text that is in the document, so every file format keeps them.</>],
+            [<>Layout</>, <><Ui>Margins</Ui> (Normal, Narrow, Moderate, Wide or custom), <Ui>Orientation</Ui>, <Ui>Size</Ui>, indents, and space before / after the paragraph in points.</>],
             [<>Text formatting</>, <>Paragraph style (headings), font, size, <Ui>Grow/Shrink font</Ui>, bold, italic, underline, strikethrough, sub/superscript, text colour, highlight, <Ui>Change case</Ui>, <Ui>Clear formatting</Ui>.</>],
             [<>Format painter</>, <>Click inside formatted text, click the brush, then select other text to give it the same look.</>],
             [<>Paragraphs</>, <>Alignment, bulleted and numbered lists, indents, <Ui>Line and paragraph spacing</Ui>, <Ui>Sort</Ui> (A → Z or Z → A, for selected paragraphs or list items).</>],
@@ -243,6 +250,15 @@ export const SECTIONS: GuideSection[] = [
           Spreadsheets work like Excel or Google Sheets: a formula bar, sheet tabs along the bottom, a formatting toolbar and right-click menus on
           cells, rows and columns.
         </p>
+        <Defs
+          rows={[
+            [<>Home</>, <>Fonts, colours, borders, alignment, wrapping, merging and number formats.</>],
+            [<>Insert</>, <>Rows and columns around the selection, a new sheet, today's date and the current time.</>],
+            [<>Formulas</>, <><Ui>AutoSum</Ui> totals the selected numbers in the row below them (<Ui>Average</Ui>, <Ui>Count</Ui>, <Ui>Max</Ui> and <Ui>Min</Ui> work the same way), followed by the function library by category.</>],
+            [<>Data</>, <><Ui>Sort A→Z</Ui> / <Ui>Sort Z→A</Ui> by the active cell's column (a heading row and total rows stay put), filter, <Ui>Remove duplicates</Ui>, <Ui>Text to columns</Ui> and <Ui>Trim spaces</Ui>.</>],
+            [<>View</>, <><Ui>Freeze panes</Ui> keeps the rows above and columns left of the selected cell in view; <Ui>Freeze top row</Ui>, <Ui>Freeze first column</Ui> and <Ui>Unfreeze panes</Ui> do what they say. Zoom and gridlines are here too.</>],
+          ]}
+        />
         <ul>
           <li>Type <K>=</K> to start a formula, for example <code>=SUM(B2:B20)</code>. More than 400 functions are available.</li>
           <li>Drag the small square at the corner of a selection (the fill handle) to continue a series or copy a formula.</li>
@@ -256,6 +272,12 @@ export const SECTIONS: GuideSection[] = [
           pictures, comments, conditional formatting and macros are not kept; the app tells you when a file you open uses them. CSV and TSV save
           only the values of the current sheet.
         </p>
+        <h3>Large workbooks</h3>
+        <p>
+          Big Excel files (tens of megabytes, hundreds of thousands of rows) are read and written as a stream, with a progress bar. A 150 MB workbook
+          with a million rows opens in well under a minute on a recent computer and needs about 2 GB of memory; the limit is roughly 25 million filled
+          cells. Auto-save is paused for workbooks this size: press <Keys k="Ctrl+S" /> to save.
+        </p>
         <Tip>On a phone the sheet opens zoomed to fit. Drag with one finger to scroll, tap to select a cell, and double-tap to edit it.</Tip>
       </>
     ),
@@ -263,13 +285,18 @@ export const SECTIONS: GuideSection[] = [
   {
     id: 'databases',
     group: 'Documents',
-    title: 'SQLite databases',
-    keywords: 'sqlite database db table sql query row column edit',
+    title: 'Databases (SQLite, LiteDB)',
+    keywords: 'sqlite litedb database db table sql query row column edit collection large',
     body: (
       <>
         <p>
           Open a local SQLite file (<code>.sqlite</code>, <code>.sqlite3</code>, <code>.db</code>, <code>.db3</code>) to browse tables and views, edit
           cells, add or delete rows, and run SQL. The database is loaded entirely into memory on this device; nothing is uploaded.
+        </p>
+        <p>
+          <strong>LiteDB</strong> files (the <code>.db</code> files many Windows apps keep their data in) open too: each collection is shown as a
+          table with a column per field, and nested values as JSON text you can query with <code>json_extract()</code>. This is a copy for viewing,
+          querying and exporting: saving writes a new SQLite file and leaves the LiteDB file untouched. Password-protected LiteDB files can't be read.
         </p>
         <Defs
           rows={[
@@ -280,7 +307,7 @@ export const SECTIONS: GuideSection[] = [
             [<>Save</>, <>Save writes the whole database file back (or downloads a copy in the browser). Auto-save works once the file has a place to write.</>],
           ]}
         />
-        <Note>Files larger than 100 MB are refused. Binary (BLOB) values are shown but not edited in place. Password-protected or encrypted SQLite files are not supported.</Note>
+        <Note>Databases up to 2 GB open (rows are shown 200 at a time, so table size doesn't slow the grid); above 48 MB auto-save is paused and you save with <Keys k="Ctrl+S" />. Other apps' private <code>.db</code> formats (Access, Thumbs.db…) are not databases File Editor can read. Binary (BLOB) values are shown but not edited in place. Password-protected or encrypted SQLite files are not supported.</Note>
       </>
     ),
   },

@@ -12,12 +12,16 @@ import {
   ArrowDownAZ,
   Baseline,
   Bold,
+  CalendarDays,
   CaseSensitive,
   Check,
   ClipboardPaste,
   Copy,
   Eraser,
+  File,
+  Frame,
   Grid2x2,
+  Heading,
   Highlighter,
   Image as ImageIcon,
   IndentDecrease,
@@ -27,12 +31,15 @@ import {
   List,
   ListOrdered,
   Minus,
+  Omega,
   PaintBucket,
   Paintbrush,
+  Palette,
   PanelTop,
   Pen,
-  PenLine,
   Pilcrow,
+  Quote,
+  RectangleVertical,
   Redo2,
   RemoveFormatting,
   Rows3,
@@ -40,10 +47,12 @@ import {
   Search,
   SeparatorHorizontal,
   Settings2,
+  SquareCode,
   Strikethrough,
   Subscript as SubIcon,
   Superscript as SupIcon,
   Table as TableIcon,
+  Type,
   Underline,
   Undo2,
 } from 'lucide-react';
@@ -61,6 +70,20 @@ import { getFind, gotoMatch, replaceAll, replaceCurrent, setSearch } from './sea
 import { usePinchZoom } from '../usePinchZoom';
 import { DrawLayer, type DrawLayerHandle, type DrawSettings, type DrawTool } from './DrawLayer';
 import type { BorderMode } from './format-extensions';
+import {
+  applyDesign,
+  applyDocumentSpacing,
+  dateFormats,
+  DOC_THEMES,
+  HEADING_COLORS,
+  MARGIN_PRESETS,
+  marginPresetOf,
+  PAGE_SIZES,
+  SPACING_PRESETS,
+  SymbolGrid,
+  TableGridPicker,
+  type DesignChange,
+} from './ribbon-tools';
 import { applyFormat, captureFormat, CASE_MODES, changeCase, LINE_SPACINGS, sortSelection, stepFontSize, type PaintFormat } from './word-tools';
 
 export interface RichEditorHandle {
@@ -106,8 +129,6 @@ interface ToolbarProps {
   onPageSetup: () => void;
   onFind: () => void;
   onError: (message: string, kind?: 'error' | 'info') => void;
-  drawing: boolean;
-  onToggleDraw: () => void;
   showMarks: boolean;
   onToggleMarks: () => void;
   painting: boolean;
@@ -115,7 +136,30 @@ interface ToolbarProps {
   /** Which header / footer is being edited (the toolbar then formats it). */
   headerFooter: 'header' | 'footer' | null;
   onHeaderFooter: () => void;
+  tab: RibbonTab;
+  onTab: (tab: RibbonTab) => void;
+  pageSetup: PageSetup;
+  onPageSetupChange: (value: PageSetup) => void;
+  drawSettings: DrawSettings;
+  onDrawSettings: (settings: DrawSettings) => void;
+  /** Bumped by Ctrl+K to open the link dialog whichever tab is showing. */
+  linkRequest: number;
 }
+
+export type RibbonTab = 'home' | 'insert' | 'draw' | 'design' | 'layout';
+const RIBBON_TABS: { id: RibbonTab; label: string }[] = [
+  { id: 'home', label: 'Home' },
+  { id: 'insert', label: 'Insert' },
+  { id: 'draw', label: 'Draw' },
+  { id: 'design', label: 'Design' },
+  { id: 'layout', label: 'Layout' },
+];
+
+/** "12pt" → "12" for a number field ('' when unset). */
+const pt = (value: string | null): string => {
+  const m = /^(-?[\d.]+)pt$/.exec(value ?? '');
+  return m ? String(parseFloat(m[1])) : '';
+};
 
 const BORDER_MODES: { mode: BorderMode; label: string }[] = [
   { mode: 'all', label: 'All borders' },
@@ -128,8 +172,12 @@ const BORDER_MODES: { mode: BorderMode; label: string }[] = [
   { mode: 'none', label: 'No border' },
 ];
 
-function Toolbar({ editor, onPageSetup, onFind, onError, drawing, onToggleDraw, showMarks, onToggleMarks, painting, onPaint, headerFooter, onHeaderFooter }: ToolbarProps) {
+function Toolbar({ editor, onPageSetup, onFind, onError, showMarks, onToggleMarks, painting, onPaint, headerFooter, onHeaderFooter, tab, onTab, pageSetup, onPageSetupChange, drawSettings, onDrawSettings, linkRequest }: ToolbarProps) {
   const [linkOpen, setLinkOpen] = useState(false);
+  const firstLinkRequest = useRef(linkRequest);
+  useEffect(() => {
+    if (linkRequest !== firstLinkRequest.current) setLinkOpen(true);
+  }, [linkRequest]);
   const s = useEditorState({
     editor,
     selector: ({ editor: e }) => {
@@ -258,175 +306,395 @@ function Toolbar({ editor, onPageSetup, onFind, onError, drawing, onToggleDraw, 
     else chain().setParagraphShading(color).run();
   };
 
+  const design = (change: DesignChange) => {
+    if (!applyDesign(editor, change)) onError('Type some text first: themes and document fonts are applied to the text in the document.', 'info');
+  };
+
   const fontFamilies = s.fontFamily && !FONT_FAMILIES.includes(s.fontFamily) ? [s.fontFamily, ...FONT_FAMILIES] : FONT_FAMILIES;
   const fontSizes = s.fontSize && !FONT_SIZES.includes(s.fontSize) ? [s.fontSize, ...FONT_SIZES] : FONT_SIZES;
 
   return (
-    <div className="toolbar" role="toolbar" aria-label="Formatting">
-      <IconButton label="Undo (Ctrl+Z)" disabled={!s.canUndo} onClick={() => chain().undo().run()}><Undo2 size={16} /></IconButton>
-      <IconButton label="Redo (Ctrl+Y)" disabled={!s.canRedo} onClick={() => chain().redo().run()}><Redo2 size={16} /></IconButton>
-      <Divider />
-      <IconButton label="Cut (Ctrl+X)" onClick={() => clip('cut')}><Scissors size={16} /></IconButton>
-      <IconButton label="Copy (Ctrl+C)" onClick={() => clip('copy')}><Copy size={16} /></IconButton>
-      <IconButton label="Paste (Ctrl+V)" onClick={() => void paste()}><ClipboardPaste size={16} /></IconButton>
-      <IconButton label="Format painter: copies the formatting here; then select text to apply it" active={painting} onClick={onPaint}><Paintbrush size={16} /></IconButton>
-      <Divider />
-      <Select label="Paragraph style" value={s.block} options={BLOCK_STYLES} onChange={setBlock} width={128} />
-      <Select
-        label="Font"
-        value={s.fontFamily}
-        width={132}
-        options={[{ value: '', label: 'Default font' }, ...fontFamilies.map((f) => ({ value: f, label: f }))]}
-        onChange={(v) => (v ? chain().setFontFamily(v).run() : chain().unsetFontFamily().run())}
-      />
-      <Select
-        label="Font size"
-        value={s.fontSize}
-        width={64}
-        options={[{ value: '', label: '11' }, ...fontSizes.map((f) => ({ value: f, label: f }))]}
-        onChange={(v) => (v ? chain().setFontSize(`${v}pt`).run() : chain().unsetFontSize().run())}
-      />
-      <IconButton label="Grow font (Ctrl+])" onClick={() => stepFontSize(editor, 1)}><AArrowUp size={16} /></IconButton>
-      <IconButton label="Shrink font (Ctrl+[)" onClick={() => stepFontSize(editor, -1)}><AArrowDown size={16} /></IconButton>
-      <Popover label="Change case" button={<CaseSensitive size={17} />}>
-        {(close) => (
-          <div className="menu">
-            {CASE_MODES.map(({ mode, label }) => (
-              <MenuItem
-                key={mode}
-                onClick={() => {
-                  close();
-                  if (!changeCase(editor, mode)) onError('Select the text to change, or put the cursor in a word.', 'info');
-                }}
-              >
-                {label}
-              </MenuItem>
-            ))}
-          </div>
-        )}
-      </Popover>
-      <Divider />
-      <IconButton label="Bold (Ctrl+B)" active={s.bold} onClick={() => chain().toggleBold().run()}><Bold size={16} /></IconButton>
-      <IconButton label="Italic (Ctrl+I)" active={s.italic} onClick={() => chain().toggleItalic().run()}><Italic size={16} /></IconButton>
-      <IconButton label="Underline (Ctrl+U)" active={s.underline} onClick={() => chain().toggleUnderline().run()}><Underline size={16} /></IconButton>
-      <IconButton label="Strikethrough" active={s.strike} onClick={() => chain().toggleStrike().run()}><Strikethrough size={16} /></IconButton>
-      <IconButton label="Subscript" active={s.sub} onClick={() => chain().unsetSuperscript().toggleSubscript().run()}><SubIcon size={16} /></IconButton>
-      <IconButton label="Superscript" active={s.sup} onClick={() => chain().unsetSubscript().toggleSuperscript().run()}><SupIcon size={16} /></IconButton>
-      <ColorPicker label="Text colour" icon={<Baseline size={16} />} value={s.color} onPick={(c) => chain().setColor(c).run()} onClear={() => chain().unsetColor().run()} clearLabel="Automatic" />
-      <ColorPicker label="Highlight" icon={<Highlighter size={16} />} value={s.highlight} palette="highlight" onPick={(c) => chain().setHighlight({ color: c }).run()} onClear={() => chain().unsetHighlight().run()} clearLabel="None" />
-      <IconButton label="Clear formatting" onClick={() => chain().unsetAllMarks().run()}><RemoveFormatting size={16} /></IconButton>
-      <Divider />
-      <IconButton label="Bulleted list" active={s.bullet} onClick={() => chain().toggleBulletList().run()}><List size={16} /></IconButton>
-      <IconButton label="Numbered list" active={s.ordered} onClick={() => chain().toggleOrderedList().run()}><ListOrdered size={16} /></IconButton>
-      <IconButton label="Decrease indent" disabled={s.inList ? !s.canLift : !s.indent} onClick={() => indent(-1)}><IndentDecrease size={16} /></IconButton>
-      <IconButton label="Increase indent" disabled={s.inList && !s.canSink} onClick={() => indent(1)}><IndentIncrease size={16} /></IconButton>
-      <Popover label="Sort" button={<ArrowDownAZ size={16} />}>
-        {(close) => {
-          const run = (desc: boolean) => () => {
-            close();
-            if (!sortSelection(editor, desc)) onError('Select two or more paragraphs (or put the cursor in a list) to sort.', 'info');
-          };
-          return (
-            <div className="menu">
-              <MenuItem onClick={run(false)}>Sort A → Z</MenuItem>
-              <MenuItem onClick={run(true)}>Sort Z → A</MenuItem>
-            </div>
-          );
-        }}
-      </Popover>
-      <IconButton label="Show formatting marks (Ctrl+Shift+8)" active={showMarks} onClick={onToggleMarks}><Pilcrow size={16} /></IconButton>
-      <Divider />
-      <IconButton label="Align left" active={s.align === 'left'} onClick={() => chain().setTextAlign('left').run()}><AlignLeft size={16} /></IconButton>
-      <IconButton label="Align centre" active={s.align === 'center'} onClick={() => chain().setTextAlign('center').run()}><AlignCenter size={16} /></IconButton>
-      <IconButton label="Align right" active={s.align === 'right'} onClick={() => chain().setTextAlign('right').run()}><AlignRight size={16} /></IconButton>
-      <IconButton label="Justify" active={s.align === 'justify'} onClick={() => chain().setTextAlign('justify').run()}><AlignJustify size={16} /></IconButton>
-      <Popover label="Line and paragraph spacing" button={<Rows3 size={16} />}>
-        {(close) => {
-          const run = (fn: () => void) => () => {
-            fn();
-            close();
-          };
-          return (
-            <div className="menu">
-              {LINE_SPACINGS.map((l) => (
-                <MenuItem key={l.word} onClick={run(() => chain().setLineHeight(l.css).run())}>
-                  <span className="menu-check">{s.lineHeight === l.css ? <Check size={14} /> : null}</span>
-                  {String(l.word)}
-                </MenuItem>
-              ))}
-              <MenuItem onClick={run(() => chain().setLineHeight(null).run())}>
-                <span className="menu-check">{!s.lineHeight ? <Check size={14} /> : null}</span>
-                Default (1.08)
-              </MenuItem>
-              <div className="menu-sep" />
-              {s.spaceBefore && s.spaceBefore !== '0pt' ? (
-                <MenuItem onClick={run(() => chain().setParagraphSpacing({ before: null }).run())}>Remove space before paragraph</MenuItem>
-              ) : (
-                <MenuItem onClick={run(() => chain().setParagraphSpacing({ before: 12 }).run())}>Add space before paragraph</MenuItem>
+    <div className="ribbon">
+      <div className="ribbon-tabs" role="tablist" aria-label="Ribbon tabs">
+        {RIBBON_TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            className={cx('ribbon-tab', tab === t.id && 'is-active')}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => onTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
+        {headerFooter && <span className="ribbon-context">Editing the {headerFooter}</span>}
+      </div>
+      {tab === 'draw' ? (
+        <DrawToolbar settings={drawSettings} onChange={onDrawSettings} onDone={() => onTab('home')} />
+      ) : (
+        <div className="toolbar" role="toolbar" aria-label={`${RIBBON_TABS.find((t) => t.id === tab)?.label ?? ''} tools`}>
+          {tab === 'home' && (
+            <>
+            <IconButton label="Undo (Ctrl+Z)" disabled={!s.canUndo} onClick={() => chain().undo().run()}><Undo2 size={16} /></IconButton>
+            <IconButton label="Redo (Ctrl+Y)" disabled={!s.canRedo} onClick={() => chain().redo().run()}><Redo2 size={16} /></IconButton>
+            <Divider />
+            <IconButton label="Cut (Ctrl+X)" onClick={() => clip('cut')}><Scissors size={16} /></IconButton>
+            <IconButton label="Copy (Ctrl+C)" onClick={() => clip('copy')}><Copy size={16} /></IconButton>
+            <IconButton label="Paste (Ctrl+V)" onClick={() => void paste()}><ClipboardPaste size={16} /></IconButton>
+            <IconButton label="Format painter: copies the formatting here; then select text to apply it" active={painting} onClick={onPaint}><Paintbrush size={16} /></IconButton>
+            <Divider />
+            <Select label="Paragraph style" value={s.block} options={BLOCK_STYLES} onChange={setBlock} width={128} />
+            <Select
+              label="Font"
+              value={s.fontFamily}
+              width={132}
+              options={[{ value: '', label: 'Default font' }, ...fontFamilies.map((f) => ({ value: f, label: f }))]}
+              onChange={(v) => (v ? chain().setFontFamily(v).run() : chain().unsetFontFamily().run())}
+            />
+            <Select
+              label="Font size"
+              value={s.fontSize}
+              width={64}
+              options={[{ value: '', label: '11' }, ...fontSizes.map((f) => ({ value: f, label: f }))]}
+              onChange={(v) => (v ? chain().setFontSize(`${v}pt`).run() : chain().unsetFontSize().run())}
+            />
+            <IconButton label="Grow font (Ctrl+])" onClick={() => stepFontSize(editor, 1)}><AArrowUp size={16} /></IconButton>
+            <IconButton label="Shrink font (Ctrl+[)" onClick={() => stepFontSize(editor, -1)}><AArrowDown size={16} /></IconButton>
+            <Popover label="Change case" button={<CaseSensitive size={17} />}>
+              {(close) => (
+                <div className="menu">
+                  {CASE_MODES.map(({ mode, label }) => (
+                    <MenuItem
+                      key={mode}
+                      onClick={() => {
+                        close();
+                        if (!changeCase(editor, mode)) onError('Select the text to change, or put the cursor in a word.', 'info');
+                      }}
+                    >
+                      {label}
+                    </MenuItem>
+                  ))}
+                </div>
               )}
-              {s.spaceAfter === '0pt' ? (
-                <MenuItem onClick={run(() => chain().setParagraphSpacing({ after: null }).run())}>Add space after paragraph</MenuItem>
-              ) : (
-                <MenuItem onClick={run(() => chain().setParagraphSpacing({ after: 0 }).run())}>Remove space after paragraph</MenuItem>
-              )}
-            </div>
-          );
-        }}
-      </Popover>
-      <ColorPicker label={s.inTable ? 'Cell shading' : 'Paragraph shading'} icon={<PaintBucket size={16} />} value={null} onPick={(c) => shade(c)} onClear={() => shade(null)} clearLabel="No colour" />
-      <Popover label={s.inTable ? 'Borders' : 'Borders (put the cursor in a table)'} button={<Grid2x2 size={16} />} disabled={!s.inTable}>
-        {(close) => (
-          <div className="menu">
-            {BORDER_MODES.map(({ mode, label }) => (
-              <MenuItem
-                key={mode}
-                onClick={() => {
+            </Popover>
+            <Divider />
+            <IconButton label="Bold (Ctrl+B)" active={s.bold} onClick={() => chain().toggleBold().run()}><Bold size={16} /></IconButton>
+            <IconButton label="Italic (Ctrl+I)" active={s.italic} onClick={() => chain().toggleItalic().run()}><Italic size={16} /></IconButton>
+            <IconButton label="Underline (Ctrl+U)" active={s.underline} onClick={() => chain().toggleUnderline().run()}><Underline size={16} /></IconButton>
+            <IconButton label="Strikethrough" active={s.strike} onClick={() => chain().toggleStrike().run()}><Strikethrough size={16} /></IconButton>
+            <IconButton label="Subscript" active={s.sub} onClick={() => chain().unsetSuperscript().toggleSubscript().run()}><SubIcon size={16} /></IconButton>
+            <IconButton label="Superscript" active={s.sup} onClick={() => chain().unsetSubscript().toggleSuperscript().run()}><SupIcon size={16} /></IconButton>
+            <ColorPicker label="Text colour" icon={<Baseline size={16} />} value={s.color} onPick={(c) => chain().setColor(c).run()} onClear={() => chain().unsetColor().run()} clearLabel="Automatic" />
+            <ColorPicker label="Highlight" icon={<Highlighter size={16} />} value={s.highlight} palette="highlight" onPick={(c) => chain().setHighlight({ color: c }).run()} onClear={() => chain().unsetHighlight().run()} clearLabel="None" />
+            <IconButton label="Clear formatting" onClick={() => chain().unsetAllMarks().run()}><RemoveFormatting size={16} /></IconButton>
+            <Divider />
+            <IconButton label="Bulleted list" active={s.bullet} onClick={() => chain().toggleBulletList().run()}><List size={16} /></IconButton>
+            <IconButton label="Numbered list" active={s.ordered} onClick={() => chain().toggleOrderedList().run()}><ListOrdered size={16} /></IconButton>
+            <IconButton label="Decrease indent" disabled={s.inList ? !s.canLift : !s.indent} onClick={() => indent(-1)}><IndentDecrease size={16} /></IconButton>
+            <IconButton label="Increase indent" disabled={s.inList && !s.canSink} onClick={() => indent(1)}><IndentIncrease size={16} /></IconButton>
+            <Popover label="Sort" button={<ArrowDownAZ size={16} />}>
+              {(close) => {
+                const run = (desc: boolean) => () => {
                   close();
-                  chain().setCellBorders(mode).run();
+                  if (!sortSelection(editor, desc)) onError('Select two or more paragraphs (or put the cursor in a list) to sort.', 'info');
+                };
+                return (
+                  <div className="menu">
+                    <MenuItem onClick={run(false)}>Sort A → Z</MenuItem>
+                    <MenuItem onClick={run(true)}>Sort Z → A</MenuItem>
+                  </div>
+                );
+              }}
+            </Popover>
+            <IconButton label="Show formatting marks (Ctrl+Shift+8)" active={showMarks} onClick={onToggleMarks}><Pilcrow size={16} /></IconButton>
+            <Divider />
+            <IconButton label="Align left" active={s.align === 'left'} onClick={() => chain().setTextAlign('left').run()}><AlignLeft size={16} /></IconButton>
+            <IconButton label="Align centre" active={s.align === 'center'} onClick={() => chain().setTextAlign('center').run()}><AlignCenter size={16} /></IconButton>
+            <IconButton label="Align right" active={s.align === 'right'} onClick={() => chain().setTextAlign('right').run()}><AlignRight size={16} /></IconButton>
+            <IconButton label="Justify" active={s.align === 'justify'} onClick={() => chain().setTextAlign('justify').run()}><AlignJustify size={16} /></IconButton>
+            <Popover label="Line and paragraph spacing" button={<Rows3 size={16} />}>
+              {(close) => {
+                const run = (fn: () => void) => () => {
+                  fn();
+                  close();
+                };
+                return (
+                  <div className="menu">
+                    {LINE_SPACINGS.map((l) => (
+                      <MenuItem key={l.word} onClick={run(() => chain().setLineHeight(l.css).run())}>
+                        <span className="menu-check">{s.lineHeight === l.css ? <Check size={14} /> : null}</span>
+                        {String(l.word)}
+                      </MenuItem>
+                    ))}
+                    <MenuItem onClick={run(() => chain().setLineHeight(null).run())}>
+                      <span className="menu-check">{!s.lineHeight ? <Check size={14} /> : null}</span>
+                      Default (1.08)
+                    </MenuItem>
+                    <div className="menu-sep" />
+                    {s.spaceBefore && s.spaceBefore !== '0pt' ? (
+                      <MenuItem onClick={run(() => chain().setParagraphSpacing({ before: null }).run())}>Remove space before paragraph</MenuItem>
+                    ) : (
+                      <MenuItem onClick={run(() => chain().setParagraphSpacing({ before: 12 }).run())}>Add space before paragraph</MenuItem>
+                    )}
+                    {s.spaceAfter === '0pt' ? (
+                      <MenuItem onClick={run(() => chain().setParagraphSpacing({ after: null }).run())}>Add space after paragraph</MenuItem>
+                    ) : (
+                      <MenuItem onClick={run(() => chain().setParagraphSpacing({ after: 0 }).run())}>Remove space after paragraph</MenuItem>
+                    )}
+                  </div>
+                );
+              }}
+            </Popover>
+            <ColorPicker label={s.inTable ? 'Cell shading' : 'Paragraph shading'} icon={<PaintBucket size={16} />} value={null} onPick={(c) => shade(c)} onClear={() => shade(null)} clearLabel="No colour" />
+            <Popover label={s.inTable ? 'Borders' : 'Borders (put the cursor in a table)'} button={<Grid2x2 size={16} />} disabled={!s.inTable}>
+              {(close) => (
+                <div className="menu">
+                  {BORDER_MODES.map(({ mode, label }) => (
+                    <MenuItem
+                      key={mode}
+                      onClick={() => {
+                        close();
+                        chain().setCellBorders(mode).run();
+                      }}
+                    >
+                      {label}
+                    </MenuItem>
+                  ))}
+                </div>
+              )}
+            </Popover>
+              <Divider />
+              <IconButton label="Find & replace (Ctrl+F)" onClick={onFind}><Search size={16} /></IconButton>
+            </>
+          )}
+          {tab === 'insert' && (
+            <>
+              <Popover label="Table" text button={<><TableIcon size={16} /><span>Table</span></>}>
+                {(close) => {
+                  const run = (fn: () => boolean | void) => () => {
+                    fn();
+                    close();
+                  };
+                  return (
+                    <div className="menu">
+                      <TableGridPicker onPick={(rows, cols) => run(() => chain().insertTable({ rows, cols, withHeaderRow: false }).run())()} />
+                      <MenuItem onClick={run(() => chain().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run())}>3 × 3 table with a header row</MenuItem>
+                      <div className="menu-sep" />
+                      <MenuItem disabled={!s.canAddRowBefore} onClick={run(() => chain().addRowBefore().run())}>Insert row above</MenuItem>
+                      <MenuItem disabled={!s.canAddRowAfter} onClick={run(() => chain().addRowAfter().run())}>Insert row below</MenuItem>
+                      <MenuItem disabled={!s.canAddColBefore} onClick={run(() => chain().addColumnBefore().run())}>Insert column left</MenuItem>
+                      <MenuItem disabled={!s.canAddColAfter} onClick={run(() => chain().addColumnAfter().run())}>Insert column right</MenuItem>
+                      <div className="menu-sep" />
+                      <MenuItem disabled={!s.canMergeSplit} onClick={run(() => chain().mergeOrSplit().run())}>Merge / split cells</MenuItem>
+                      <MenuItem disabled={!s.canToggleHeader} onClick={run(() => chain().toggleHeaderRow().run())}>Toggle header row</MenuItem>
+                      <div className="menu-sep" />
+                      <MenuItem disabled={!s.canDeleteRow} onClick={run(() => chain().deleteRow().run())}>Delete row</MenuItem>
+                      <MenuItem disabled={!s.canDeleteCol} onClick={run(() => chain().deleteColumn().run())}>Delete column</MenuItem>
+                      <MenuItem disabled={!s.canDeleteTable} onClick={run(() => chain().deleteTable().run())}>Delete table</MenuItem>
+                    </div>
+                  );
                 }}
-              >
-                {label}
-              </MenuItem>
-            ))}
-          </div>
-        )}
-      </Popover>
-      <Divider />
-      <IconButton label="Link (Ctrl+K)" active={s.link} onClick={() => setLinkOpen(true)}><LinkIcon size={16} /></IconButton>
-      <IconButton label="Insert image" onClick={insertImage}><ImageIcon size={16} /></IconButton>
-      <Popover label="Table" button={<TableIcon size={16} />}>
-        {(close) => {
-          const run = (fn: () => boolean | void) => () => {
-            fn();
-            close();
-          };
-          return (
-            <div className="menu">
-              <MenuItem onClick={run(() => chain().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run())}>Insert 3 × 3 table</MenuItem>
-              <MenuItem onClick={run(() => chain().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run())}>Insert 2 × 2 table</MenuItem>
-              <div className="menu-sep" />
-              <MenuItem disabled={!s.canAddRowBefore} onClick={run(() => chain().addRowBefore().run())}>Insert row above</MenuItem>
-              <MenuItem disabled={!s.canAddRowAfter} onClick={run(() => chain().addRowAfter().run())}>Insert row below</MenuItem>
-              <MenuItem disabled={!s.canAddColBefore} onClick={run(() => chain().addColumnBefore().run())}>Insert column left</MenuItem>
-              <MenuItem disabled={!s.canAddColAfter} onClick={run(() => chain().addColumnAfter().run())}>Insert column right</MenuItem>
-              <div className="menu-sep" />
-              <MenuItem disabled={!s.canMergeSplit} onClick={run(() => chain().mergeOrSplit().run())}>Merge / split cells</MenuItem>
-              <MenuItem disabled={!s.canToggleHeader} onClick={run(() => chain().toggleHeaderRow().run())}>Toggle header row</MenuItem>
-              <div className="menu-sep" />
-              <MenuItem disabled={!s.canDeleteRow} onClick={run(() => chain().deleteRow().run())}>Delete row</MenuItem>
-              <MenuItem disabled={!s.canDeleteCol} onClick={run(() => chain().deleteColumn().run())}>Delete column</MenuItem>
-              <MenuItem disabled={!s.canDeleteTable} onClick={run(() => chain().deleteTable().run())}>Delete table</MenuItem>
-            </div>
-          );
-        }}
-      </Popover>
-      <IconButton label="Horizontal line" onClick={() => chain().setHorizontalRule().run()}><Minus size={16} /></IconButton>
-      <IconButton label="Page break (Ctrl+Enter)" onClick={() => chain().insertPageBreak().run()}><SeparatorHorizontal size={16} /></IconButton>
-      <Divider />
-      <IconButton label={headerFooter ? 'Close header and footer' : 'Header & footer (or double-click the top or bottom margin)'} active={!!headerFooter} onClick={onHeaderFooter}><PanelTop size={16} /></IconButton>
-      <IconButton label="Page setup" onClick={onPageSetup}><Settings2 size={16} /></IconButton>
-      <IconButton label="Find & replace (Ctrl+F)" onClick={onFind}><Search size={16} /></IconButton>
-      <IconButton label="Draw" active={drawing} onClick={onToggleDraw}><PenLine size={16} /></IconButton>
+              </Popover>
+              <Divider />
+              <IconButton label="Picture" text onClick={insertImage}><ImageIcon size={16} /></IconButton>
+              <IconButton label="Link" text active={s.link} onClick={() => setLinkOpen(true)}><LinkIcon size={16} /></IconButton>
+              <Divider />
+              <IconButton label="Page break" text onClick={() => chain().insertPageBreak().run()}><SeparatorHorizontal size={16} /></IconButton>
+              <IconButton label="Horizontal line" text onClick={() => chain().setHorizontalRule().run()}><Minus size={16} /></IconButton>
+              <Divider />
+              <IconButton label={headerFooter ? 'Close header & footer' : 'Header & footer'} text active={!!headerFooter} onClick={onHeaderFooter}><PanelTop size={16} /></IconButton>
+              <Divider />
+              <Popover label="Date & time" text button={<><CalendarDays size={16} /><span>Date &amp; time</span></>}>
+                {(close) => (
+                  <div className="menu">
+                    {dateFormats().map((text) => (
+                      <MenuItem
+                        key={text}
+                        onClick={() => {
+                          close();
+                          chain().insertContent(text).run();
+                        }}
+                      >
+                        {text}
+                      </MenuItem>
+                    ))}
+                  </div>
+                )}
+              </Popover>
+              <Popover label="Symbol" text button={<><Omega size={16} /><span>Symbol</span></>}>
+                {() => <SymbolGrid onPick={(ch) => chain().insertContent(ch).run()} />}
+              </Popover>
+              <Divider />
+              <IconButton label="Quote" text active={s.block === 'quote'} onClick={() => chain().toggleBlockquote().run()}><Quote size={16} /></IconButton>
+              <IconButton label="Code block" text active={s.block === 'code'} onClick={() => chain().toggleCodeBlock().run()}><SquareCode size={16} /></IconButton>
+            </>
+          )}
+          {tab === 'design' && (
+            <>
+              <span className="ribbon-label">Themes</span>
+              <div className="theme-gallery" role="group" aria-label="Document themes">
+                {DOC_THEMES.map((t) => (
+                  <button
+                    key={t.id}
+                    type="button"
+                    className="theme-card"
+                    title={`${t.label}: ${t.heading} headings, ${t.body} text`}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => design({ bodyFont: t.body, headingFont: t.heading, headingColor: t.headingColor })}
+                  >
+                    <span className="theme-card-title" style={{ fontFamily: `'${t.heading}', sans-serif`, color: t.headingColor ?? undefined }}>Title</span>
+                    <span className="theme-card-body" style={{ fontFamily: `'${t.body}', sans-serif` }}>{t.label}</span>
+                  </button>
+                ))}
+              </div>
+              <Divider />
+              <Popover label="Document fonts" text button={<><Type size={16} /><span>Fonts</span></>}>
+                {(close) => (
+                  <div className="menu">
+                    <div className="menu-title">Text font for the whole document</div>
+                    {FONT_FAMILIES.map((f) => (
+                      <MenuItem key={f} onClick={() => { close(); design({ bodyFont: f }); }}>
+                        <span style={{ fontFamily: `'${f}'` }}>{f}</span>
+                      </MenuItem>
+                    ))}
+                    <div className="menu-sep" />
+                    <MenuItem onClick={() => { close(); design({ bodyFont: null, headingFont: null }); }}>Reset to the default font</MenuItem>
+                  </div>
+                )}
+              </Popover>
+              <Popover label="Heading fonts" text button={<><Heading size={16} /><span>Heading font</span></>}>
+                {(close) => (
+                  <div className="menu">
+                    <div className="menu-title">Font for every heading</div>
+                    {FONT_FAMILIES.map((f) => (
+                      <MenuItem key={f} onClick={() => { close(); design({ headingFont: f }); }}>
+                        <span style={{ fontFamily: `'${f}'` }}>{f}</span>
+                      </MenuItem>
+                    ))}
+                  </div>
+                )}
+              </Popover>
+              <Popover label="Heading colour" text button={<><Palette size={16} /><span>Colours</span></>}>
+                {(close) => (
+                  <div className="menu">
+                    <div className="menu-title">Colour for every heading</div>
+                    {HEADING_COLORS.map((c) => (
+                      <MenuItem key={c.label} onClick={() => { close(); design({ headingColor: c.color }); }}>
+                        <span className="color-dot" style={{ background: c.color ?? 'var(--text)' }} />
+                        {c.label}
+                      </MenuItem>
+                    ))}
+                  </div>
+                )}
+              </Popover>
+              <Popover label="Paragraph spacing for the whole document" text button={<><Rows3 size={16} /><span>Paragraph spacing</span></>}>
+                {(close) => (
+                  <div className="menu">
+                    {SPACING_PRESETS.map((p) => (
+                      <MenuItem
+                        key={p.id}
+                        hint={p.line === null ? undefined : `${p.line} line · ${p.after} pt after`}
+                        onClick={() => {
+                          close();
+                          applyDocumentSpacing(editor, p);
+                        }}
+                      >
+                        {p.label}
+                      </MenuItem>
+                    ))}
+                  </div>
+                )}
+              </Popover>
+            </>
+          )}
+          {tab === 'layout' && (
+            <>
+              <Popover label="Margins" text button={<><Frame size={16} /><span>Margins</span></>}>
+                {(close) => (
+                  <div className="menu">
+                    {MARGIN_PRESETS.map((m) => (
+                      <MenuItem key={m.id} hint={m.hint} onClick={() => { close(); onPageSetupChange({ ...pageSetup, margins: { ...m.margins } }); }}>
+                        <span className="menu-check">{marginPresetOf(pageSetup.margins) === m.id ? <Check size={14} /> : null}</span>
+                        {m.label}
+                      </MenuItem>
+                    ))}
+                    <div className="menu-sep" />
+                    <MenuItem onClick={() => { close(); onPageSetup(); }}>
+                      <span className="menu-check">{marginPresetOf(pageSetup.margins) === null ? <Check size={14} /> : null}</span>
+                      Custom margins…
+                    </MenuItem>
+                  </div>
+                )}
+              </Popover>
+              <Popover label="Orientation" text button={<><RectangleVertical size={16} /><span>Orientation</span></>}>
+                {(close) => (
+                  <div className="menu">
+                    {(['portrait', 'landscape'] as const).map((o) => (
+                      <MenuItem key={o} onClick={() => { close(); onPageSetupChange({ ...pageSetup, orientation: o }); }}>
+                        <span className="menu-check">{pageSetup.orientation === o ? <Check size={14} /> : null}</span>
+                        {o === 'portrait' ? 'Portrait' : 'Landscape'}
+                      </MenuItem>
+                    ))}
+                  </div>
+                )}
+              </Popover>
+              <Popover label="Size" text button={<><File size={16} /><span>Size</span></>}>
+                {(close) => (
+                  <div className="menu">
+                    {PAGE_SIZES.map((p) => (
+                      <MenuItem key={p.value} hint={p.hint} onClick={() => { close(); onPageSetupChange({ ...pageSetup, size: p.value }); }}>
+                        <span className="menu-check">{pageSetup.size === p.value ? <Check size={14} /> : null}</span>
+                        {p.label}
+                      </MenuItem>
+                    ))}
+                  </div>
+                )}
+              </Popover>
+              <IconButton label="Page break" text onClick={() => chain().insertPageBreak().run()}><SeparatorHorizontal size={16} /></IconButton>
+              <Divider />
+              <span className="ribbon-label">Indent</span>
+              <IconButton label="Decrease indent" disabled={s.inList ? !s.canLift : !s.indent} onClick={() => indent(-1)}><IndentDecrease size={16} /></IconButton>
+              <IconButton label="Increase indent" disabled={s.inList && !s.canSink} onClick={() => indent(1)}><IndentIncrease size={16} /></IconButton>
+              <Divider />
+              <span className="ribbon-label">Spacing</span>
+              <label className="ribbon-field">
+                Before
+                <input
+                  className="tb-number"
+                  type="number"
+                  min={0}
+                  max={200}
+                  step={6}
+                  aria-label="Space before paragraph (pt)"
+                  title="Space before paragraph (pt)"
+                  value={pt(s.spaceBefore)}
+                  placeholder="auto"
+                  onChange={(e) => editor.chain().setParagraphSpacing({ before: e.target.value === '' ? null : Math.max(0, Math.min(200, parseFloat(e.target.value) || 0)) }).run()}
+                />
+              </label>
+              <label className="ribbon-field">
+                After
+                <input
+                  className="tb-number"
+                  type="number"
+                  min={0}
+                  max={200}
+                  step={6}
+                  aria-label="Space after paragraph (pt)"
+                  title="Space after paragraph (pt)"
+                  value={pt(s.spaceAfter)}
+                  placeholder="auto"
+                  onChange={(e) => editor.chain().setParagraphSpacing({ after: e.target.value === '' ? null : Math.max(0, Math.min(200, parseFloat(e.target.value) || 0)) }).run()}
+                />
+              </label>
+              <Divider />
+              <IconButton label="Page setup" text onClick={onPageSetup}><Settings2 size={16} /></IconButton>
+            </>
+          )}
+        </div>
+      )}
 
       {linkOpen && (
         <PromptModal
@@ -645,6 +913,8 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
   const [findInfo, setFindInfo] = useState({ total: 0, current: -1 });
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
   const [drawing, setDrawing] = useState(false);
+  const [ribbonTab, setRibbonTab] = useState<RibbonTab>('home');
+  const [linkRequest, setLinkRequest] = useState(0);
   const [drawSettings, setDrawSettings] = useState<DrawSettings>({ tool: 'pen', color: INK_COLORS[0], width: 3 });
   const drawRef = useRef<DrawLayerHandle>(null);
   const [showMarks, setShowMarks] = useState(false);
@@ -965,7 +1235,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
       }
       if (k === 'k') {
         e.preventDefault();
-        document.querySelector<HTMLButtonElement>('button[aria-label="Link (Ctrl+K)"]')?.click();
+        setLinkRequest((n) => n + 1);
       } else if (k === 'f' || k === 'h') {
         e.preventDefault();
         openFind(k === 'h');
@@ -1005,8 +1275,19 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
         onPageSetup={() => setSetupOpen(true)}
         onFind={() => openFind(false)}
         onError={onError}
-        drawing={drawing}
-        onToggleDraw={() => setDrawing((d) => !d)}
+        tab={drawing ? 'draw' : ribbonTab === 'draw' ? 'home' : ribbonTab}
+        onTab={(t) => {
+          setRibbonTab(t);
+          setDrawing(t === 'draw');
+        }}
+        pageSetup={pageSetup}
+        onPageSetupChange={(v) => {
+          setPageSetup(v);
+          onChange();
+        }}
+        drawSettings={drawSettings}
+        onDrawSettings={setDrawSettings}
+        linkRequest={linkRequest}
         showMarks={showMarks}
         onToggleMarks={() => setShowMarks((v) => !v)}
         painting={!!painter}
@@ -1028,7 +1309,6 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
           }
         }}
       />
-      {drawing && <DrawToolbar settings={drawSettings} onChange={setDrawSettings} onDone={() => setDrawing(false)} />}
       {find && (
         <FindBar
           replaceOpen={find.replace}
