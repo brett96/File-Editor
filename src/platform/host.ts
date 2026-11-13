@@ -126,6 +126,8 @@ export interface DesktopBridge {
   license: {
     get(): Promise<LicenseState>;
     activate(key: string): Promise<{ ok: true; state: LicenseState } | { ok: false; error: string; code: string }>;
+    /** Fired when an active license is cleared (refund / revoke) after a background check-in. */
+    onChange?(callback: (state: LicenseState) => void): () => void;
   };
 }
 

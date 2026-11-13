@@ -429,11 +429,22 @@ function applyWindowTitle() {
 async function refreshLicenseMenu() {
   const state = await getLicenseState().catch(() => null);
   const now = state?.status === 'active';
+  const wasLicensed = licensed;
   if (now !== licensed) {
     licensed = now;
     if (app.isReady()) buildMenu();
   }
   applyWindowTitle();
+  // Tell the renderer when an active license goes away (refund / revoke) so it can update UI.
+  if (wasLicensed && !now && state) {
+    mainWindow?.webContents.send('license-changed', state);
+  }
+}
+
+/** Server check-in for an activated license; updates the Help menu and window title if status changed. */
+async function checkLicenseInBackground() {
+  await refreshLicenseStatus(true).catch(() => undefined);
+  await refreshLicenseMenu();
 }
 
 // ── IPC ────────────────────────────────────────────────────────────────────
@@ -726,6 +737,9 @@ async function startAutoUpdates() {
 
 /** Help → Check for Updates (manual) and the periodic background check. */
 async function checkForUpdates(manual: boolean) {
+  // Same cadence as updates: re-check activated licenses so a refund/revoke lands here.
+  void checkLicenseInBackground();
+
   if (manual && !app.isPackaged) {
     void dialog.showMessageBox({ type: 'info', title: 'Check for Updates', message: 'Updates are only checked in the installed app.', detail: `This is a development build (${app.getVersion()}).` });
     return;
@@ -802,17 +816,10 @@ app.whenReady().then(async () => {
   pendingOpen.push(...filesFromArgv(process.argv));
   createWindow();
 
-  if (app.isPackaged) void startAutoUpdates();
-
-  // daily license check-in (refund / revoke); does nothing offline or without a license
+  // Local license file → Help menu / window title immediately; server check-ins ride with update checks.
   void refreshLicenseMenu();
-  setTimeout(
-    () =>
-      void refreshLicenseStatus()
-        .catch(() => undefined)
-        .then(refreshLicenseMenu),
-    15_000,
-  );
+  if (app.isPackaged) void startAutoUpdates();
+  else setTimeout(() => void checkLicenseInBackground(), 15_000);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

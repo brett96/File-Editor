@@ -64,6 +64,11 @@ const bridge = {
   license: {
     get: () => ipcRenderer.invoke('license-get'),
     activate: (key: string) => ipcRenderer.invoke('license-activate', key),
+    onChange: (callback: (state: { status: string; message?: string; purchaseUrl: string }) => void) => {
+      const listener = (_e: IpcRendererEvent, state: { status: string; message?: string; purchaseUrl: string }) => callback(state);
+      ipcRenderer.on('license-changed', listener);
+      return () => ipcRenderer.removeListener('license-changed', listener);
+    },
   },
   setDirty: (dirty: boolean) => ipcRenderer.send('set-dirty', dirty),
   setTitle: (title: string) => ipcRenderer.send('set-title', title),

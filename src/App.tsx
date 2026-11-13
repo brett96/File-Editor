@@ -2497,6 +2497,15 @@ export default function App() {
     return () => off?.();
   }, [toast]);
 
+  // License check-ins run with each update check; surface a revoke/refund when the title flips.
+  useEffect(() => {
+    const off = window.desktop?.license?.onChange?.((state) => {
+      if (state.status === 'active') return;
+      toast(state.message ?? 'This license was revoked (for example after a refund). Enter a different key under Help if you have one.', 'info');
+    });
+    return () => off?.();
+  }, [toast]);
+
   // ── shortcuts, OS file-open events, native menu ──────────────────────────
   const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, newDatabase, openFile, closeTab, activate });
   shell.current = { pickAndOpen, newDocument, newSpreadsheet, newDatabase, openFile, closeTab, activate };

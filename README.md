@@ -134,9 +134,11 @@ license**; activation only records that the computer holds one. The web version 
   gets back against `LICENSE_PUBLIC_KEY`, and stores it in `license.json` in the app's user-data
   folder. The device id is a SHA-256 of the OS machine id; the raw id never leaves the computer.
   The token only verifies on the device it was issued for.
-- Once a day an activated app checks `/api/license/status` to learn about a refund or revoke.
-  Opening **Help → View License Info…** also forces a check. A revoked or inactive license is
-  removed from this computer (the local `license.json` is cleared). Offline, nothing changes.
+- An activated app checks `/api/license/status` whenever it checks for updates (on launch, every
+  few hours, and **Help → Check for Updates…**), so a refund or revoke is applied on that same
+  cadence (window title, Help menu, and a notice). Opening **Help → View License Info…** also
+  forces a check. A revoked or inactive license is removed from this computer (the local
+  `license.json` is cleared). Offline, nothing changes.
 - License requests use their own in-memory Electron session that can reach only the license
   server; the app's main session still blocks all network access.
 - `LICENSE_PUBLIC_KEY` must match the server's `LICENSE_SIGNING_PRIVATE_KEY` (Admin → Licenses

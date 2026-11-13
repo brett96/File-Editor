@@ -1118,7 +1118,8 @@ export const SECTIONS: GuideSection[] = [
         <h3>License</h3>
         <p>
           <Ui>Help ▸ Enter License Key…</Ui> activates a license you bought. Paste the key from the e-mail and click Activate; it shows{' '}
-          <Ui>View License Info…</Ui> afterwards. A license is for one computer. All features work without one.
+          <Ui>View License Info…</Ui> afterwards. A license is for one computer. All features work without one. The app re-checks an activated
+          license whenever it checks for updates, so a refund or revoke is applied on that same schedule (window title, Help menu, and a notice).
         </p>
         <h3>Updates</h3>
         <p>

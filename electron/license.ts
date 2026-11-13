@@ -11,8 +11,9 @@
  *   file to another machine doesn't carry the license with it.
  * - Device id: SHA-256 of the OS machine id (Windows MachineGuid, macOS IOPlatformUUID, Linux
  *   /etc/machine-id). The raw machine id never leaves the computer.
- * - Once a day, an activated copy checks in (/api/license/status) to learn about a refund or a
- *   revoke. Offline or failing check-ins change nothing.
+ * - An activated copy checks in (/api/license/status) whenever the app checks for updates
+ *   (launch, every few hours, and Help → Check for Updates), so a refund or revoke is picked
+ *   up on that same cadence. Offline or failing check-ins change nothing.
  *
  * Network: the app's default session blocks all network access. License requests go through
  * a separate in-memory session that may only reach the license server.
@@ -249,7 +250,11 @@ export async function activateLicense(rawKey: unknown): Promise<ActivateResult> 
   return { ok: true, state: await getLicenseState() };
 }
 
-/** Daily check-in for a stored license; quietly does nothing when offline. */
+/**
+ * Check-in for a stored license against the license server.
+ * `force` skips the local throttle (used on every update check and when the license dialog opens).
+ * Quietly does nothing when offline.
+ */
 export async function refreshLicenseStatus(force = false): Promise<void> {
   const stored = await readStored();
   if (!stored) return;
