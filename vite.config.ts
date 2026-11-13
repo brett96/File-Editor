@@ -46,7 +46,7 @@ export default defineConfig({
   },
   server: { port: 5173, strictPort: true },
   // these load their own WASM / workers relative to import.meta.url; pre-bundling breaks that
-  optimizeDeps: { exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util', '@jsquash/avif', '@jsquash/jxl', 'heic-to'] },
+  optimizeDeps: { exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util', '@jsquash/avif', '@jsquash/jxl', 'heic-to', 'sql.js'] },
   worker: { format: 'es' },
   test: {
     environment: 'node',

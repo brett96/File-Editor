@@ -26,7 +26,7 @@ const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 const MAX_FILE_BYTES = 250 * 1024 * 1024;
 /** Video can be much larger than a document. */
 const MAX_MEDIA_BYTES = 4 * 1024 * 1024 * 1024;
-const DOCUMENTS = ['docx', 'docm', 'dotx', 'doc', 'dot', 'pdf', 'odt', 'rtf', 'md', 'markdown', 'html', 'htm', 'txt', 'xlsx', 'xlsm', 'xltx', 'csv', 'tsv', 'tab'];
+const DOCUMENTS = ['docx', 'docm', 'dotx', 'doc', 'dot', 'pdf', 'odt', 'rtf', 'md', 'markdown', 'html', 'htm', 'txt', 'xlsx', 'xlsm', 'xltx', 'csv', 'tsv', 'tab', 'sqlite', 'sqlite3', 'db', 'db3', 'sdb'];
 const IMAGES = ['png', 'jpg', 'jpeg', 'jfif', 'gif', 'webp', 'avif', 'heic', 'heif', 'jxl', 'bmp', 'tif', 'tiff', 'ico', 'svg', 'psd'];
 const MEDIA = [
   'mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', 'wmv', 'asf', 'flv', 'mpg', 'mpeg', 'vob', '3gp', '3g2', 'ogv', 'ts', 'mts', 'm2ts',
@@ -391,8 +391,7 @@ function buildMenu() {
           label: 'About File Editor',
           click: async () => {
             const lic = await getLicenseState().catch(() => null);
-            const licensed =
-              lic?.status === 'active' ? `Licensed to ${lic.email} (key ${lic.keyHint}).` : lic?.status === 'revoked' ? 'License revoked.' : 'Not activated.';
+            const licensed = lic?.status === 'active' ? `Licensed to ${lic.email} (key ${lic.keyHint}).` : 'Not activated.';
             void dialog.showMessageBox({
               type: 'info',
               title: 'About',
@@ -520,6 +519,9 @@ function registerIpc() {
   // license: activation talks to the license server from this process only (see license.ts)
   ipcMain.handle('license-get', async (e) => {
     assertSender(e);
+    // Force a server check when the dialog opens so a refund/revoke is reflected immediately.
+    await refreshLicenseStatus(true).catch(() => undefined);
+    void refreshLicenseMenu();
     return getLicenseState();
   });
 

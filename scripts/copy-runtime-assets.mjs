@@ -49,4 +49,11 @@ writeFileSync(
   ].join('\n'),
 );
 
-console.log('runtime assets copied to public/pdfjs and public/ffmpeg');
+const sqljsDest = join(root, 'public', 'sqljs');
+rmSync(sqljsDest, { recursive: true, force: true });
+mkdirSync(sqljsDest, { recursive: true });
+const sqlDist = join(nm, 'sql.js', 'dist');
+for (const f of ['sql-wasm.wasm', 'sql-wasm.js']) {
+  if (existsSync(join(sqlDist, f))) cpSync(join(sqlDist, f), join(sqljsDest, f));
+}
+console.log('runtime assets copied to public/pdfjs, public/ffmpeg and public/sqljs');

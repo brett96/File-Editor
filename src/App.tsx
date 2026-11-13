@@ -2,6 +2,7 @@ import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom';
 import { TabActiveContext } from './ui/tab-active';
 import {
+  Database,
   FileCode,
   Plus,
   X,
@@ -72,6 +73,8 @@ import { createPixels, type Pixels } from './core/media/image-ops';
 import { SHEET_EXTENSIONS, SHEET_FORMATS, blankWorkbook, sheetFormatFromName, usedRange, type IWorkbookData, type SheetFormat } from './core/sheet/workbook';
 import { SheetEditor, type SheetEditorHandle } from './ui/sheet/SheetEditor';
 import { SheetExportModal, SheetSecurityModal, type SheetExportChoice } from './ui/sheet/sheet-dialogs';
+import { DB_EXTENSIONS, dbFormatFromName, isSqliteFile, type DbFormat, type SqliteDatabase } from './core/db/sqlite';
+import { DbEditor, type DbEditorHandle } from './ui/db/DbEditor';
 
 // Pro editors are desktop-only and loaded on demand, so the web build never downloads them.
 const ProImageEditor = lazy(() => import('./ui/pro-image/ProImageEditor').then((m) => ({ default: m.ProImageEditor })));
@@ -84,6 +87,7 @@ const GUIDE_FOR_KIND: Record<string, string> = {
   code: 'documents',
   pdf: 'pdf',
   sheet: 'spreadsheets',
+  database: 'databases',
   image: 'photo-quick',
   proimage: 'photo-pro',
   media: 'video-quick',
@@ -103,7 +107,7 @@ function helpFromHash(): { section: string | null } | null {
 const StudioEditor = lazy(() => import('./ui/studio/StudioEditor').then((m) => ({ default: m.StudioEditor })));
 const StudioExportModal = lazy(() => import('./ui/studio/StudioExport').then((m) => ({ default: m.StudioExportModal })));
 
-const ALL_OPEN_EXTENSIONS = [...new Set([...OPEN_EXTENSIONS, ...SHEET_EXTENSIONS, ...IMAGE_EXTENSIONS_ALL, ...MEDIA_EXTENSIONS_ALL])];
+const ALL_OPEN_EXTENSIONS = [...new Set([...OPEN_EXTENSIONS, ...SHEET_EXTENSIONS, ...DB_EXTENSIONS, ...IMAGE_EXTENSIONS_ALL, ...MEDIA_EXTENSIONS_ALL])];
 
 type MediaDoc = { kind: 'media'; key: number; name: string; blob: Blob; info: MediaInfo; container: ContainerFormat; handle?: unknown; protection: ProtectionDraft };
 
@@ -117,7 +121,8 @@ type OpenDoc =
   | MediaDoc
   /** origin: the file Studio was opened from (null for a .fstudio project); handle: the project file */
   | { kind: 'studio'; key: number; name: string; project: StudioProject; blobs: Map<string, Blob>; origin: MediaDoc | null; protection: ProtectionDraft; handle?: unknown }
-  | { kind: 'sheet'; key: number; name: string; format: SheetFormat; workbook: IWorkbookData; handle?: unknown; protection: ProtectionDraft };
+  | { kind: 'sheet'; key: number; name: string; format: SheetFormat; workbook: IWorkbookData; handle?: unknown; protection: ProtectionDraft }
+  | { kind: 'database'; key: number; name: string; format: DbFormat; db: SqliteDatabase; handle?: unknown; protection: ProtectionDraft };
 
 const PRIMARY_SWITCH: Array<DocFormat | 'image'> = ['docx', 'txt', 'html', 'css', 'js', 'pdf', 'image'];
 const SECONDARY_SWITCH: FlowFormat[] = ['odt', 'rtf', 'md', 'doc'];
@@ -275,6 +280,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   const videoRef = useRef<VideoEditorHandle>(null);
   const studioRef = useRef<StudioHandle>(null);
   const sheetRef = useRef<SheetEditorHandle>(null);
+  const dbRef = useRef<DbEditorHandle>(null);
   const docRef = useRef(doc);
   docRef.current = doc;
   const dirtyRef = useRef(dirty);
@@ -543,10 +549,39 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     return true;
   };
 
+  /** Opens SQLite databases (.sqlite, .db, …). Returns false when the file is not a database. */
+  const openDatabase = async (file: OpenedFile): Promise<boolean> => {
+    const head = new Uint8Array(await file.blob.slice(0, 32).arrayBuffer());
+    if (!isSqliteFile(file.name, head)) return false;
+    const format = dbFormatFromName(file.name) ?? 'sqlite';
+    setBusy(`Opening ${file.name}…`);
+    try {
+      await nextPaint();
+      const { SqliteDatabase } = await import('./core/db/sqlite');
+      const bytes = await fileBytes(file);
+      const db = await SqliteDatabase.open(bytes);
+      const keepsName = (DB_EXTENSIONS as readonly string[]).includes(file.name.split('.').pop()?.toLowerCase() ?? '');
+      setDoc({
+        kind: 'database',
+        key: docKey++,
+        name: keepsName ? file.name : `${baseName(file.name)}.sqlite`,
+        format: keepsName ? format : 'sqlite',
+        db,
+        handle: keepsName ? file.handle : undefined,
+        protection: EMPTY_PROTECTION,
+      });
+      setDirty(false);
+    } finally {
+      setBusy(null);
+    }
+    return true;
+  };
+
   const openFile = async (file: OpenedFile) => {
     try {
       if (await openProject(file)) return;
       if (await openPsd(file)) return;
+      if (await openDatabase(file)) return;
       if (await openSheet(file)) return;
       if (await openMedia(file)) return;
     } catch (err) {
@@ -875,7 +910,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
 
   const render = async (format: DocFormat, protection: ProtectionDraft): Promise<Uint8Array> => {
     const d = docRef.current!;
-    if (d.kind === 'image' || d.kind === 'proimage' || d.kind === 'media' || d.kind === 'studio' || d.kind === 'sheet') throw new Error('Use the image, video or spreadsheet save dialog.');
+    if (d.kind === 'image' || d.kind === 'proimage' || d.kind === 'media' || d.kind === 'studio' || d.kind === 'sheet' || d.kind === 'database') throw new Error('Use the image, video, spreadsheet or database save dialog.');
     const pdfProt = protectionToPdf(protection);
     const pw = protection.enabled ? protection.password : undefined;
     if (d.kind === 'code') {
@@ -1128,6 +1163,42 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     }
   };
 
+  // ── databases ────────────────────────────────────────────────────────────
+  const saveDatabase = async (handle: unknown | undefined, adopt: boolean, quiet = false, fileName?: string) => {
+    const d = docRef.current;
+    if (d?.kind !== 'database' || !dbRef.current) return;
+    const seq = editSeq.current;
+    if (!quiet) setBusy('Saving…');
+    try {
+      await nextPaint();
+      const bytes = dbRef.current.export();
+      const name = fileName ?? d.name;
+      const ext = (name.split('.').pop()?.toLowerCase() as DbFormat | undefined) && (DB_EXTENSIONS as readonly string[]).includes(name.split('.').pop()!.toLowerCase())
+        ? (name.split('.').pop()!.toLowerCase() as DbFormat)
+        : d.format;
+      const res = await host.save({
+        suggestedName: name.endsWith(`.${ext}`) ? name : `${baseName(name)}.${ext}`,
+        bytes,
+        mime: 'application/vnd.sqlite3',
+        ext,
+        description: 'SQLite database',
+        handle,
+        quiet,
+      });
+      if (!res) return;
+      if (adopt) {
+        if (!quiet) setDoc((cur) => (cur && cur.kind === 'database' ? { ...cur, name: res.name, format: ext, handle: res.handle } : cur));
+        markClean(seq);
+      }
+      if (!quiet) toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${res.name}`, 'info');
+    } catch (err) {
+      if (quiet) throw err;
+      toast(`Could not save: ${errorText(err)}`);
+    } finally {
+      if (!quiet) setBusy(null);
+    }
+  };
+
   // ── spreadsheets ─────────────────────────────────────────────────────────
   const saveSheet = async (c: SheetExportChoice, handle: unknown | undefined, adopt: boolean, quiet = false) => {
     const d = docRef.current;
@@ -1184,6 +1255,9 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       case 'sheet':
         await saveSheet({ format: d.format, fileName: d.name, protection: d.protection }, d.handle, true, quiet);
         return true;
+      case 'database':
+        await saveDatabase(d.handle, true, quiet);
+        return true;
       case 'studio':
         await saveStudioProject(d.handle, quiet);
         return true;
@@ -1234,12 +1308,17 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     if (host.kind === 'web' && !host.canSaveInPlace) {
       // browsers without the File System Access API: Save = download in the current format
       if (d.kind === 'sheet') return saveSheet({ format: d.format, fileName: d.name, protection: d.protection }, undefined, true);
+      if (d.kind === 'database') return saveDatabase(undefined, true);
       if (d.kind === 'image' && IMAGE_FORMATS[d.format].canWrite) {
         return saveImage({ format: d.format as ImageExportChoice['format'], fileName: d.name, quality: 92, lossless: false, background: '#ffffff', scale: 1 }, undefined, true);
       }
       if (d.kind === 'flow' || d.kind === 'code' || d.kind === 'pdf') {
         return writeOut({ format: d.kind === 'pdf' ? 'pdf' : d.format, fileName: d.name, protection: d.protection }, undefined, true);
       }
+    }
+    if (d.kind === 'database') {
+      await saveDatabase(undefined, true);
+      return;
     }
     setExportOpen('save-as');
   };
@@ -1322,12 +1401,26 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     setAutoStatus(null);
   }, [openKey]);
 
+  // Free the in-memory SQLite database when the tab closes or another file replaces it
+  useEffect(() => {
+    if (doc?.kind !== 'database') return;
+    const live = doc.db;
+    return () => {
+      try {
+        live.close();
+      } catch {
+        /* already closed */
+      }
+    };
+  }, [doc?.kind === 'database' ? doc.key : null]);
+
   const print = async () => {
     const d = docRef.current;
     if (!d) return;
     setBusy('Preparing to print…');
     try {
       let url: string;
+      if (d.kind === 'database') throw new Error('Databases cannot be printed. Export a query result or open a spreadsheet instead.');
       if (d.kind === 'media' || d.kind === 'studio') throw new Error('Video and audio cannot be printed. Save a frame as an image to print it.');
       if (d.kind === 'image' || d.kind === 'proimage') {
         const px = d.kind === 'proimage' ? proImageRef.current!.getPixels() : imageRef.current!.getPixels();
@@ -1469,12 +1562,15 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
         : null
     : null;
   const isMediaDoc = doc?.kind === 'image' || doc?.kind === 'proimage' || doc?.kind === 'media' || doc?.kind === 'studio';
+  const isDatabase = doc?.kind === 'database';
   const canSwitchFormat = doc?.kind === 'flow' || doc?.kind === 'code' || doc?.kind === 'sheet';
   const currentFormat: SwitchTarget | null = doc?.kind === 'sheet' ? doc.format : format;
   const formatLabel = format
     ? FORMATS[format].label
     : doc?.kind === 'sheet'
       ? SHEET_FORMATS[doc.format].label
+      : doc?.kind === 'database'
+      ? 'SQLite database'
       : doc?.kind === 'proimage'
       ? doc.format === 'psd' ? 'Photoshop document' : `${IMAGE_FORMATS[doc.format].label} · layers`
       : doc?.kind === 'image'
@@ -1490,17 +1586,17 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   const docActions = doc && (
     <>
       <IconButton label={host.canSaveInPlace || host.kind === 'desktop' ? 'Save' : 'Download'} text onClick={save}><Save size={16} /></IconButton>
-      <IconButton label="Save as / Convert" text onClick={() => setExportOpen('save-as')}><FileDown size={16} /></IconButton>
-      {!isMediaDoc && (
+      <IconButton label={isDatabase ? 'Save as' : 'Save as / Convert'} text onClick={() => (isDatabase ? void saveDatabase(undefined, true) : setExportOpen('save-as'))}><FileDown size={16} /></IconButton>
+      {!isMediaDoc && !isDatabase && (
         <IconButton label="Protect" text active={doc.protection.enabled} onClick={() => setSecurityOpen(true)}>
           {doc.protection.enabled ? <ShieldCheck size={16} /> : <LockOpen size={16} />}
         </IconButton>
       )}
-      {doc.kind !== 'media' && doc.kind !== 'studio' && <IconButton label="Print" onClick={print}><Printer size={16} /></IconButton>}
+      {doc.kind !== 'media' && doc.kind !== 'studio' && doc.kind !== 'database' && <IconButton label="Print" onClick={print}><Printer size={16} /></IconButton>}
       {doc.kind === 'pdf' && (
         <IconButton label="Convert PDF to editable document" onClick={convertPdfToFlow}><Wand2 size={16} /></IconButton>
       )}
-      {!isMediaDoc && doc.kind !== 'code' && doc.kind !== 'sheet' && (
+      {!isMediaDoc && !isDatabase && doc.kind !== 'code' && doc.kind !== 'sheet' && (
         <>
           <Divider />
           <IconButton label="Zoom out (Ctrl -)" onClick={() => setZoom((z) => [...ZOOMS].reverse().find((v) => v < z - 0.001) ?? z)}><ZoomOut size={16} /></IconButton>
@@ -1526,6 +1622,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       {active && actionsSlot && docActions && createPortal(docActions, actionsSlot)}
       <main className="main">
         {doc?.kind === 'sheet' && <SheetEditor key={doc.key} ref={sheetRef} initial={doc.workbook} onChange={markDirty} onError={toast} onNotice={(m) => toast(m, 'info')} />}
+        {doc?.kind === 'database' && <DbEditor key={doc.key} ref={dbRef} db={doc.db} onChange={markDirty} onError={toast} />}
         {doc?.kind === 'flow' && (
           <RichEditor key={doc.key} ref={richRef} initial={doc.initial} zoom={zoom} onZoom={setZoom} onChange={markDirty} onStats={setStats} onPageCount={setPageCount} onError={toast} />
         )}
@@ -1805,6 +1902,8 @@ function tabIcon(kind: TabInfo['kind']) {
   switch (kind) {
     case 'sheet':
       return <SheetIcon size={14} />;
+    case 'database':
+      return <Database size={14} />;
     case 'image':
     case 'proimage':
       return <ImageIcon size={14} />;
@@ -1903,7 +2002,7 @@ export default function App() {
   const pickAndOpen = async () => {
     try {
       const extensions = host.kind === 'desktop' ? [...ALL_OPEN_EXTENSIONS, 'psd', 'fstudio'] : ALL_OPEN_EXTENSIONS;
-      const files = await host.openFiles({ extensions, multiple: true, description: 'Documents, images, video & audio' });
+      const files = await host.openFiles({ extensions, multiple: true, description: 'Documents, spreadsheets, databases, images, video & audio' });
       files.forEach(openFile);
     } catch (err) {
       toast(errorText(err));
@@ -2484,6 +2583,7 @@ function StartScreen({
             <tbody>
               <tr><th>Edit</th><td>Word (.docx, .doc), PDF, OpenDocument (.odt), Rich Text (.rtf), Markdown, HTML, CSS, JavaScript, plain text</td></tr>
               <tr><th><SheetIcon size={14} /> Spreadsheets</th><td>Excel (.xlsx, .xlsm), CSV, TSV — formulas (400+ functions), formatting, number formats, merge, freeze panes, sort, filter, find &amp; replace, multiple sheets</td></tr>
+              <tr><th><Database size={14} /> Databases</th><td>SQLite (.sqlite, .sqlite3, .db, .db3) — browse tables and views, edit cells, add or delete rows, run SQL; everything stays on this device</td></tr>
               <tr><th>PDF</th><td>Edit existing text, add text, images, links, shapes and drawings; insert, delete, reorder and rotate pages; merge files</td></tr>
               <tr><th><ImageIcon size={14} /> Photos</th><td>JPEG, PNG, WebP, AVIF, HEIC (iPhone), JPEG XL, GIF, TIFF, BMP, ICO, SVG — crop, rotate, resize, adjust colour, filters, text, drawing, redact faces or plates</td></tr>
               <tr><th><Film size={14} /> Video &amp; audio</th><td>MP4, MOV, WebM, MKV, AVI, WMV, FLV, MPEG, 3GP, MP3, M4A, WAV, FLAC, OGG and more — trim, crop, rotate, resize, colour, text, fades, volume, extract sound, GIFs</td></tr>

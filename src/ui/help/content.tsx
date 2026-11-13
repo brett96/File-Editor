@@ -34,6 +34,7 @@ export const SECTIONS: GuideSection[] = [
             [<>Documents</>, <>Word (.docx, .doc), OpenDocument, Rich Text, Markdown, HTML, CSS, JavaScript and plain text. See <Go to="documents">Documents</Go>.</>],
             [<>PDF</>, <>Edit existing text, add text, images, links, shapes and signatures; insert, reorder, rotate and delete pages. See <Go to="pdf">PDF editing</Go>.</>],
             [<>Spreadsheets</>, <>Excel (.xlsx), CSV and TSV with 400+ formula functions. See <Go to="spreadsheets">Spreadsheets</Go>.</>],
+            [<>Databases</>, <>SQLite (.sqlite, .db, …): browse tables, edit rows and run SQL. See <Go to="databases">SQLite databases</Go>.</>],
             [<>Photos</>, <>Quick edits for any photo; a layered Photoshop-style editor in the desktop app. See <Go to="photo-quick">Photos</Go> and <Go to="photo-pro">Pro Photo</Go>.</>],
             [<>Video &amp; audio</>, <>Quick trims and conversions; a multi-track editor with a mixing console (Studio) in the desktop app. See <Go to="video-quick">Video &amp; audio</Go> and <Go to="studio">Studio</Go>.</>],
           ]}
@@ -256,6 +257,30 @@ export const SECTIONS: GuideSection[] = [
           only the values of the current sheet.
         </p>
         <Tip>On a phone the sheet opens zoomed to fit. Drag with one finger to scroll, tap to select a cell, and double-tap to edit it.</Tip>
+      </>
+    ),
+  },
+  {
+    id: 'databases',
+    group: 'Documents',
+    title: 'SQLite databases',
+    keywords: 'sqlite database db table sql query row column edit',
+    body: (
+      <>
+        <p>
+          Open a local SQLite file (<code>.sqlite</code>, <code>.sqlite3</code>, <code>.db</code>, <code>.db3</code>) to browse tables and views, edit
+          cells, add or delete rows, and run SQL. The database is loaded entirely into memory on this device; nothing is uploaded.
+        </p>
+        <Defs
+          rows={[
+            [<>Tables list</>, <>Pick a table or view on the left. Views are read-only; tables can be edited.</>],
+            [<>Edit cells</>, <>Click a cell, change the value, then leave the cell (or press Enter). Empty text becomes NULL when the cell was empty or null.</>],
+            [<>Add / delete rows</>, <><Ui>Add row</Ui> inserts a new row. Select rows with the checkboxes and press <Ui>Delete</Ui>.</>],
+            [<>SQL</>, <><Ui>SQL</Ui> opens a console. Run statements with the button or <Keys k="Ctrl+Enter" />. SELECT results appear in the grid; other statements refresh the schema.</>],
+            [<>Save</>, <>Save writes the whole database file back (or downloads a copy in the browser). Auto-save works once the file has a place to write.</>],
+          ]}
+        />
+        <Note>Files larger than 100 MB are refused. Binary (BLOB) values are shown but not edited in place. Password-protected or encrypted SQLite files are not supported.</Note>
       </>
     ),
   },

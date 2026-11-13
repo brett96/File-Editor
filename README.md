@@ -1,6 +1,6 @@
 # File Editor
 
-Create, edit, convert and password-protect documents, spreadsheets, photos, video and audio, in the browser or as an installed desktop
+Create, edit, convert and password-protect documents, spreadsheets, SQLite databases, photos, video and audio, in the browser or as an installed desktop
 app for Windows and macOS. Everything runs on the user's device: no file is ever uploaded, and
 there is no server to run.
 
@@ -9,6 +9,7 @@ there is no server to run.
 | **Open & edit** | Word (.docx, .doc), PDF, OpenDocument (.odt), Rich Text (.rtf), Markdown, HTML, plain text |
 | **Word-style editing** | Headings, fonts, sizes, colours, highlight, alignment, lists, tables (merge/split), images, links, page breaks, page size/orientation/margins |
 | **Spreadsheets** | Open Excel (.xlsx, .xlsm, .xltx), CSV and TSV; start one from **Blank document** by picking Excel, CSV or TSV in the format menu (bottom left), which also converts documents ↔ spreadsheets (tables become sheets; a sheet becomes a table). Excel / Google Sheets-style editor: formula bar with 400+ functions, multiple sheets, cell formatting (fonts, colours, borders, alignment, wrap, rotation), number formats (currency, percent, dates…), merge, freeze panes, insert/delete/hide rows and columns, sort, filter, find & replace, fill handle, copy/paste, undo |
+| **Databases** | Open SQLite files (`.sqlite`, `.sqlite3`, `.db`, `.db3`); browse tables and views, edit cells, add/delete rows, run SQL. The file is edited in memory on this device and written back on Save |
 | **PDF editing** | Edit existing text, add text, images, links, shapes, lines, freehand drawing/signature, highlights, white-out; insert blank pages or pages from another document at any position; delete, duplicate, reorder (drag) and rotate pages |
 | **Photos** | Open JPEG, PNG, WebP, AVIF, HEIC/HEIF (iPhone), JPEG XL, GIF, TIFF, BMP, ICO and SVG. Crop (with aspect presets), rotate, flip, straighten, resize; exposure, contrast, highlights/shadows, saturation, warmth, hue, vignette, sharpen, blur; one-click filters; text, arrows, shapes, freehand drawing, stickers; redact faces, plates or text (pixelate / blur / black box) |
 | **Video & audio** | Open MP4, MOV, WebM, MKV, TS, MP3, M4A, WAV, FLAC, OGG/Opus, AAC, plus legacy AVI, WMV, FLV, MPEG, 3GP, OGV, WMA, AIFF, AMR. Trim, crop, rotate, flip, resize, change frame rate; colour look and filters; text overlays with timing; fade in/out; volume or mute; save a frame as a picture or edit it in the photo editor |
@@ -134,7 +135,8 @@ license**; activation only records that the computer holds one. The web version 
   folder. The device id is a SHA-256 of the OS machine id; the raw id never leaves the computer.
   The token only verifies on the device it was issued for.
 - Once a day an activated app checks `/api/license/status` to learn about a refund or revoke.
-  Offline, nothing changes.
+  Opening **Help → View License Info…** also forces a check. A revoked or inactive license is
+  removed from this computer (the local `license.json` is cleared). Offline, nothing changes.
 - License requests use their own in-memory Electron session that can reach only the license
   server; the app's main session still blocks all network access.
 - `LICENSE_PUBLIC_KEY` must match the server's `LICENSE_SIGNING_PRIVATE_KEY` (Admin → Licenses

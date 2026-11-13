@@ -173,14 +173,26 @@ async function writeStored(s: StoredLicense | null): Promise<void> {
 
 export async function getLicenseState(): Promise<LicenseState> {
   const stored = await readStored();
-  const payload = stored ? verifyToken(stored.token, await deviceId()) : null;
-  if (!stored || !payload) return { status: 'unlicensed', purchaseUrl: PURCHASE_URL };
+  if (!stored) return { status: 'unlicensed', purchaseUrl: PURCHASE_URL };
+  // Clear leftover revoked records (and anything whose token no longer verifies).
+  if (stored.status === 'revoked') {
+    await writeStored(null);
+    return {
+      status: 'unlicensed',
+      purchaseUrl: PURCHASE_URL,
+      message: stored.revokedMessage ?? 'This license was revoked (for example after a refund).',
+    };
+  }
+  const payload = verifyToken(stored.token, await deviceId());
+  if (!payload) {
+    await writeStored(null);
+    return { status: 'unlicensed', purchaseUrl: PURCHASE_URL };
+  }
   return {
-    status: stored.status,
+    status: 'active',
     email: payload.email,
     keyHint: payload.hint,
     activatedAt: stored.activatedAt ?? new Date(payload.iat * 1000).toISOString(),
-    message: stored.status === 'revoked' ? stored.revokedMessage ?? 'This license was revoked.' : undefined,
     purchaseUrl: PURCHASE_URL,
   };
 }
@@ -237,23 +249,29 @@ export async function activateLicense(rawKey: unknown): Promise<ActivateResult> 
   return { ok: true, state: await getLicenseState() };
 }
 
-/** Daily check-in for a stored license (active or revoked); quietly does nothing when offline. */
+/** Daily check-in for a stored license; quietly does nothing when offline. */
 export async function refreshLicenseStatus(force = false): Promise<void> {
   const stored = await readStored();
   if (!stored) return;
+  // A license already marked revoked locally should not linger on disk.
+  if (stored.status === 'revoked') {
+    await writeStored(null);
+    return;
+  }
   if (!force && Date.now() - (stored.checkedAt ?? 0) < CHECK_INTERVAL_MS) return;
   const device = await deviceId();
-  if (!verifyToken(stored.token, device)) return;
+  if (!verifyToken(stored.token, device)) {
+    // Token no longer verifies for this device — drop it.
+    await writeStored(null);
+    return;
+  }
   try {
     const { status, data } = await post('/api/license/status', { token: stored.token, deviceId: device });
     if (status !== 200) return;
-    if (data.status === 'revoked') {
-      await writeStored({ ...stored, status: 'revoked', revokedMessage: 'This license was revoked (for example after a refund).', checkedAt: Date.now() });
-    } else if (data.status === 'inactive') {
-      // Reset by support (or the license moved to another device): this computer no longer holds it.
+    if (data.status === 'revoked' || data.status === 'inactive') {
+      // Refund / revoke / moved to another device: this computer no longer holds the license.
       await writeStored(null);
     } else if (data.status === 'active') {
-      // Still valid, or restored by support after a revoke.
       await writeStored({ token: stored.token, status: 'active', activatedAt: stored.activatedAt, checkedAt: Date.now() });
     }
   } catch {

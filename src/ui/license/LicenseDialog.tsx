@@ -62,6 +62,7 @@ export function LicenseDialog({ onClose, onActivated }: { onClose: () => void; o
 
   const active = state?.status === 'active';
   const showForm = state && !active;
+  const revokedNote = state?.status === 'unlicensed' ? state.message : state?.status === 'revoked' ? (state.message ?? 'This license was revoked.') : null;
   const activatedOn = state?.activatedAt ? new Date(state.activatedAt).toLocaleDateString(undefined, { dateStyle: 'medium' }) : null;
 
   return (
@@ -115,10 +116,10 @@ export function LicenseDialog({ onClose, onActivated }: { onClose: () => void; o
             void activate();
           }}
         >
-          {state.status === 'revoked' && (
+          {revokedNote && (
             <div className="license-card license-card-warn" role="alert">
               <ShieldAlert size={22} aria-hidden />
-              <p className="dialog-text">{state.message ?? 'This license was revoked.'} You can enter a different key below.</p>
+              <p className="dialog-text">{revokedNote} You can enter a different key below.</p>
             </div>
           )}
           <p className="dialog-text">
