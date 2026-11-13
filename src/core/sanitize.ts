@@ -21,6 +21,7 @@ const DROP_WITH_CONTENT = new Set([
 const ALLOWED_ATTRS: Record<string, string[]> = {
   a: ['href'],
   img: ['src', 'alt', 'width', 'height', 'data-float-x', 'data-float-y', 'data-ink', 'data-behind', 'data-drawingml'],
+  table: ['data-table-width', 'data-table-align'],
   td: ['colspan', 'rowspan', 'colwidth'],
   th: ['colspan', 'rowspan', 'colwidth'],
   div: ['data-page-break'],
@@ -32,8 +33,8 @@ const ALLOWED_STYLE_PROPS = new Set([
   'color', 'background-color', 'font-family', 'font-size', 'text-align',
   // paragraphs
   'line-height', 'margin-top', 'margin-bottom', 'margin-left', 'text-indent',
-  // table cells / rows
-  'border-top', 'border-right', 'border-bottom', 'border-left', 'vertical-align', 'height', 'padding',
+  // tables / cells / rows
+  'width', 'border-top', 'border-right', 'border-bottom', 'border-left', 'vertical-align', 'height', 'padding',
 ]);
 
 const BLOCKS = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']);
@@ -63,6 +64,8 @@ function styleAllowed(prop: string, value: string, tag: string): boolean {
       return CELLS.has(tag) && /^(top|middle|bottom)$/i.test(value);
     case 'height':
       return tag === 'tr' && LENGTH.test(value);
+    case 'width':
+      return tag === 'table' && LENGTH.test(value);
     case 'padding':
       return CELLS.has(tag) && value.split(/\s+/).length <= 4 && value.split(/\s+/).every((v) => LENGTH.test(v));
     default:

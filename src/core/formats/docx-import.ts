@@ -783,6 +783,8 @@ interface Ctx {
   tablePPr: ParaProps;
   /** Set while converting a header / footer part. */
   hf: HeaderFooterCtx | null;
+  /** Body-level DrawingML shape jobs (resolved after the body HTML is built). */
+  art: ArtJob[] | null;
 }
 
 /** Page geometry in px, for placing header / footer drawings on the page. */
@@ -974,23 +976,23 @@ function processPageAnchor(anchor: Element, pc: ParaCtx, ctx: Ctx): boolean {
   if (content.localName !== 'wgp' && content.localName !== 'wsp') return false;
   pc.items.push({ t: 'img', html: `<img data-art-job="${hf.jobs.length}">`, href: null });
   hf.jobs.push({ graphicData: graphicData!, cx, cy, x, y, behind, name });
-  // text inside the shapes still comes through as text
-  for (const box of collect(anchor, new Set(['txbxContent']))) {
-    const html = processBlocks(box, ctx, true);
-    if (html) pc.after.push(html);
-  }
+  // Shape text is painted into the raster (see drawingml-render); don't also emit it as flow
+  // paragraphs or title boxes / badges appear twice and drift off the chrome.
   return true;
 }
 
 /**
- * Renders header/footer shape groups as SVG (preferred) or raster, and keeps the original
- * DrawingML so save can put editable shapes back into Word.
+ * Renders shape groups as SVG (preferred) or raster, and keeps the original DrawingML so save
+ * can put editable shapes back into Word.
  */
-async function resolveArt(html: string, hf: HeaderFooterCtx, env: RenderEnv): Promise<string> {
+async function resolveArt(html: string, jobs: ArtJob[], env: RenderEnv): Promise<string> {
+  if (!jobs.length) return html;
   const rendered = await Promise.all(
-    hf.jobs.map(async (job) => {
+    jobs.map(async (job) => {
       try {
-        const svg = await renderGraphicSvg(job.graphicData, job.cx, job.cy, env);
+        // Prefer raster when the shape has text — SVG path output does not paint run text yet
+        const hasText = !!descendant(job.graphicData, 'txbxContent') || !!descendant(job.graphicData, 'txBody') || !!descendant(job.graphicData, 't');
+        const svg = hasText ? null : await renderGraphicSvg(job.graphicData, job.cx, job.cy, env);
         const raster = svg ? null : await renderGraphic(job.graphicData, job.cx, job.cy, env, job.behind);
         const src = svg ?? raster;
         if (!src) return null;
@@ -1002,7 +1004,7 @@ async function resolveArt(html: string, hf: HeaderFooterCtx, env: RenderEnv): Pr
     }),
   );
   return html.replace(/<img data-art-job="(\d+)">/g, (_m, i: string) => {
-    const job = hf.jobs[Number(i)];
+    const job = jobs[Number(i)];
     const art = rendered[Number(i)];
     return job && art
       ? imgTag(art.src, job.cx / EMU_PER_PX, job.cy / EMU_PER_PX, job.name, { x: job.x, y: job.y, ink: false, behind: job.behind }, art.drawingml)
@@ -1010,15 +1012,19 @@ async function resolveArt(html: string, hf: HeaderFooterCtx, env: RenderEnv): Pr
   });
 }
 
-const FLOAT_H_BASES = new Set(['column', 'margin', 'character', 'insideMargin', 'leftMargin']);
+const FLOAT_H_BASES = new Set(['column', 'margin', 'character', 'insideMargin', 'leftMargin', 'rightMargin', 'outsideMargin']);
 const FLOAT_V_BASES = new Set(['paragraph', 'line']);
 
 /**
- * An anchored picture with no text wrapping, positioned from its paragraph, can float over the
- * text in the editor too (that is how ink and drawings are stored). Other anchors stay inline.
+ * An anchored picture positioned from its paragraph can float over the text in the editor
+ * (ink, drawings, template chrome). wrapNone always floats; behind-doc images float even with
+ * other wrap modes so backgrounds stay behind the text instead of pushing it around.
  */
-function floatPosition(frame: Element | null): { x: number; y: number; ink: boolean } | null {
-  if (!frame || frame.localName !== 'anchor' || !kid(frame, 'wrapNone')) return null;
+function floatPosition(frame: Element | null): FloatPos | null {
+  if (!frame || frame.localName !== 'anchor') return null;
+  const behindDoc = attr(frame, 'behindDoc');
+  const behind = behindDoc === '1' || behindDoc === 'true';
+  if (!kid(frame, 'wrapNone') && !behind) return null;
   const h = kid(frame, 'positionH');
   const v = kid(frame, 'positionV');
   if (!FLOAT_H_BASES.has(attr(h, 'relativeFrom') ?? '') || !FLOAT_V_BASES.has(attr(v, 'relativeFrom') ?? '')) return null;
@@ -1029,7 +1035,7 @@ function floatPosition(frame: Element | null): { x: number; y: number; ink: bool
   const x = off(h);
   const y = off(v);
   if (x === null || y === null) return null;
-  return { x, y, ink: /^Ink\b/.test(attr(kid(frame, 'docPr'), 'name') ?? '') };
+  return { x, y, ink: /^Ink\b/.test(attr(kid(frame, 'docPr'), 'name') ?? ''), behind };
 }
 
 function emuSize(ext: Element | null): { w: number; h: number } | null {
@@ -1042,6 +1048,8 @@ function emuSize(ext: Element | null): { w: number; h: number } | null {
 function processDrawing(drawing: Element, pc: ParaCtx, ctx: Ctx, href: string | null): void {
   const anchor = kid(drawing, 'anchor');
   if (ctx.hf && anchor && processPageAnchor(anchor, pc, ctx)) return;
+  // Body-level shape groups (template badges, rounded title boxes, icons): rasterise like headers
+  if (!ctx.hf && anchor && ctx.art && processBodyAnchor(anchor, pc, ctx)) return;
   const parts = collect(drawing, DRAWING_PARTS);
   const pics = parts.filter((p) => p.localName === 'pic');
   const frame = kid(drawing, 'inline') ?? kid(drawing, 'anchor');
@@ -1063,6 +1071,30 @@ function processDrawing(drawing: Element, pc: ParaCtx, ctx: Ctx, href: string | 
     const float = pics.length === 1 ? floatPosition(frame) : null;
     pc.items.push({ t: 'img', html: imgTag(src, size?.w ?? null, size?.h ?? null, alt, float), href: float ? null : href });
   }
+}
+
+/**
+ * Anchored DrawingML shapes in the body (not just headers): queue a raster job at the
+ * paragraph-relative float position so template chrome keeps its layout.
+ */
+function processBodyAnchor(anchor: Element, pc: ParaCtx, ctx: Ctx): boolean {
+  const art = ctx.art!;
+  const ext = kid(anchor, 'extent');
+  const cx = intAttr(ext, 'cx') ?? 0;
+  const cy = intAttr(ext, 'cy') ?? 0;
+  const graphicData = descendant(anchor, 'graphicData');
+  const content = graphicData ? kids(graphicData)[0] : null;
+  if (!content || cx <= 0 || cy <= 0) return false;
+  if (content.localName !== 'wgp' && content.localName !== 'wsp') return false;
+  const float = floatPosition(anchor);
+  const behindDoc = attr(anchor, 'behindDoc');
+  const behind = behindDoc === '1' || behindDoc === 'true';
+  const name = attr(kid(anchor, 'docPr'), 'descr') || attr(kid(anchor, 'docPr'), 'name') || '';
+  const x = float?.x ?? 0;
+  const y = float?.y ?? 0;
+  pc.items.push({ t: 'img', html: `<img data-art-job="${art.length}">`, href: null });
+  art.push({ graphicData: graphicData!, cx, cy, x, y, behind: float?.behind ?? behind, name });
+  return true;
 }
 
 function vmlSize(el: Element): { w: number; h: number } | null {
@@ -1625,7 +1657,19 @@ function processTable(tbl: Element, ctx: Ctx): string {
   };
 
   const cellAt = (r: number, col: number): CellModel | undefined => rows[r]?.cells.find((c) => c.col === col);
-  let html = '<table><tbody>';
+  const tblW = kid(tblPr, 'tblW');
+  const tblWType = attr(tblW, 'type');
+  const tblWVal = intAttr(tblW, 'w') ?? 0;
+  const jc = (val(tblPr, 'jc') ?? '').toLowerCase();
+  const tableAttrs: string[] = [];
+  if (tblWType === 'pct' || (tblWType === 'auto' && tblWVal <= 0)) tableAttrs.push('data-table-width="pct"');
+  else if (tblWType === 'dxa' && tblWVal > 0) tableAttrs.push(`style="width:${Math.round(tblWVal / TWIPS_PER_PX)}px"`);
+  else if (grid.length && grid.every((w) => w > 0)) {
+    const sum = grid.reduce((a, b) => a + b, 0);
+    tableAttrs.push(`style="width:${Math.round(sum / TWIPS_PER_PX)}px"`);
+  }
+  if (jc === 'center' || jc === 'right') tableAttrs.push(`data-table-align="${jc}"`);
+  let html = `<table${tableAttrs.length ? ' ' + tableAttrs.join(' ') : ''}><tbody>`;
   const saved = { noBold: ctx.noBold, tableRPr: ctx.tableRPr, tablePPr: ctx.tablePPr };
   ctx.tableRPr = tableStyle.rPr;
   ctx.tablePPr = tableStyle.pPr;
@@ -1869,9 +1913,9 @@ async function readHeaderFooterPart(
   const partRels = parseRels(await readXml(zip, `${partDir ? partDir + '/' : ''}_rels/${path.slice(slash + 1)}.rels`));
   const media = await loadMedia(zip, partRels, partDir);
   const hf: HeaderFooterCtx = { kind, geom: pageGeom(sect), jobs: [] };
-  const partCtx: Ctx = { ...ctx, rels: partRels, media, fields: [], listCounters: new Map(), nested: 0, noBold: false, tableRPr: {}, tablePPr: {}, hf };
+  const partCtx: Ctx = { ...ctx, rels: partRels, media, fields: [], listCounters: new Map(), nested: 0, noBold: false, tableRPr: {}, tablePPr: {}, hf, art: null };
   let html = processBlocks(xml.documentElement, partCtx, false);
-  html = await resolveArt(html, hf, { theme: colors, media });
+  html = await resolveArt(html, hf.jobs, { theme: colors, media });
   return hasVisibleContent(html) ? html : undefined;
 }
 
@@ -1988,6 +2032,7 @@ export const importDocx: Importer = async (bytes) => {
 
   const media = await loadMedia(zip, rels, dir);
 
+  const bodyArt: ArtJob[] = [];
   const ctx: Ctx = {
     styles,
     numbering,
@@ -2001,19 +2046,22 @@ export const importDocx: Importer = async (bytes) => {
     tableRPr: {},
     tablePPr: {},
     hf: null,
+    art: bodyArt,
   };
   // styleRPr of paragraphs starts from the same spec defaults
   styles.docRPr = merge<RunProps>({ size: 20, font: 'Times New Roman' }, styles.docRPr);
-
-  const result: RichDocument = {
-    html: processBlocks(body, ctx, false),
-    pageSetup: readPageSetup(body),
-  };
 
   // headers and footers of the last section (default / first / even)
   const sect = finalSection(body);
   const settingsXml = await readXml(zip, relTarget(rels, '/settings', dir, `${prefix}settings.xml`));
   const colors = readThemeColors(themeXml, settingsXml);
+
+  let bodyHtml = processBlocks(body, ctx, false);
+  bodyHtml = await resolveArt(bodyHtml, bodyArt, { theme: colors, media });
+  const result: RichDocument = {
+    html: bodyHtml,
+    pageSetup: readPageSetup(body),
+  };
   if (toggle(settingsXml?.documentElement ?? null, 'evenAndOddHeaders') === true) {
     result.pageSetup = { ...(result.pageSetup ?? { ...DEFAULT_PAGE_SETUP }), differentOddEven: true };
   }

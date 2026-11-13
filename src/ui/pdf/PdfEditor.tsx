@@ -748,8 +748,8 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
       text,
       fontSize,
       fontFamily: family,
-      bold: false,
-      italic: false,
+      bold: run.bold,
+      italic: run.italic,
       color: fg,
       cover: { x: run.x - pad, y: run.y - pad, width: run.width + pad * 2, height: run.height + pad * 2, color: bg },
     };
@@ -758,27 +758,18 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
   const replaceRun = (e: { stopPropagation(): void; preventDefault(): void }, page: PdfPageModel, run: TextRun) => {
     e.stopPropagation();
     e.preventDefault();
-    const { bg, fg } = sampleColors(canvases.current[page.id], run, page.width);
-    const family: PdfFontFamily = run.family === 'monospace' ? 'Courier' : run.family === 'serif' ? 'Times' : 'Helvetica';
-    const fontSize = Math.max(4, run.fontSize);
-    const pad = 0.75;
-    const obj: PdfTextObject = {
-      id: newId(),
-      type: 'text',
-      x: run.x,
-      // align our baseline with the original baseline
-      y: run.baseline - PDF_FONTS[family].baseline * fontSize,
-      text: run.text,
-      fontSize,
-      fontFamily: family,
-      bold: false,
-      italic: false,
-      color: fg,
-      cover: { x: run.x - pad, y: run.y - pad, width: run.width + pad * 2, height: run.height + pad * 2, color: bg },
-    };
+    const obj = buildRunReplacement(page, run);
     addObject(page.id, obj);
     setSelected({ pageId: page.id, objId: obj.id });
     setEditingId(obj.id);
+    setStyle((s) => ({
+      ...s,
+      fontFamily: obj.fontFamily,
+      fontSize: obj.fontSize,
+      bold: obj.bold,
+      italic: obj.italic,
+      color: obj.color,
+    }));
   };
 
   // ── style changes apply to the selection and become the new defaults ─────
@@ -1177,7 +1168,7 @@ export const PdfEditor = forwardRef<PdfEditorHandle, Props>(function PdfEditor({
           current={currentIndex}
           focusToken={find.token}
           progress={indexProgress ? `Searching… ${indexProgress.done} / ${indexProgress.total} pages` : null}
-          note="Matches split across lines or text pieces can't be found. Replaced text is retyped in a standard font."
+          note="Matches split across lines or text pieces can't be found. Replaced text keeps bold/italic when possible, using a standard font family."
           onNext={() => goHit(1)}
           onPrev={() => goHit(-1)}
           onReplace={replaceCurrentHit}

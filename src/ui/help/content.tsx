@@ -42,7 +42,10 @@ export const SECTIONS: GuideSection[] = [
         <p>
           The web version and the desktop app (Windows and macOS) share the same editors. The desktop app adds two professional workspaces,{' '}
           <Go to="photo-pro">Pro Photo</Go> and <Go to="studio">Studio</Go>, plus opening files from Explorer/Finder, a native menu and automatic
-          updates. Sections that only apply to the desktop app are marked <span className="hg-badge">Desktop app</span>.
+          updates. On the web home screen, <Ui>Download for Windows</Ui> / <Ui>Download for Mac</Ui> fetches the latest production installer (and asks
+          which architecture when more than one is available). Licenses are sold at{' '}
+          <a href="https://license.bretttomita.com" target="_blank" rel="noopener noreferrer">license.bretttomita.com</a>. Sections that only apply to
+          the desktop app are marked <span className="hg-badge">Desktop app</span>.
         </p>
         <Tip>
           Press <Keys k="F1" /> at any time to open this guide, or use <Ui>Help ▸ User Guide</Ui>. Use the search box at the top left to find a topic.
@@ -175,7 +178,7 @@ export const SECTIONS: GuideSection[] = [
             [<>Text formatting</>, <>Paragraph style (headings), font, size, <Ui>Grow/Shrink font</Ui>, bold, italic, underline, strikethrough, sub/superscript, text colour, highlight, <Ui>Change case</Ui>, <Ui>Clear formatting</Ui>.</>],
             [<>Format painter</>, <>Click inside formatted text, click the brush, then select other text to give it the same look.</>],
             [<>Paragraphs</>, <>Alignment, bulleted and numbered lists, indents, <Ui>Line and paragraph spacing</Ui>, <Ui>Sort</Ui> (A → Z or Z → A, for selected paragraphs or list items).</>],
-            [<>Tables</>, <><Ui>Table</Ui> inserts one; with the cursor in a table, the same menu inserts or deletes rows and columns, merges or splits cells, toggles a header row and deletes the table.</>],
+            [<>Tables</>, <><Ui>Table</Ui> inserts one; with the cursor in a table, the same menu (or right-click) inserts or deletes rows and columns, merges or splits cells, toggles a header row and deletes the table. Click inside a cell to edit its text.</>],
             [<>Pictures</>, <><Ui>Insert image</Ui>, or drop an image onto the text. Select a picture to resize it by its corners or to <Ui>Edit image</Ui> (crop, rotate, adjust).</>],
             [<>Links</>, <><Ui>Link</Ui> (<Keys k="Ctrl+K" />): web address, e-mail or phone number.</>],
             [<>Page layout</>, <><Ui>Page setup</Ui>: paper size, orientation and margins. <Ui>Page break</Ui> (<Keys k="Ctrl+Enter" />) starts a new page.</>],
@@ -201,7 +204,7 @@ export const SECTIONS: GuideSection[] = [
         <Defs
           rows={[
             [<>Select / move</>, <>Select anything you added to move, resize or delete it (<K>Del</K>).</>],
-            [<>Edit existing text</>, <>Click any line of the PDF and retype it. The app covers the old words and writes yours in a matching standard font.</>],
+            [<>Edit existing text</>, <>Click any line of the PDF and retype it. The app covers the old words and writes yours in a matching standard font, keeping bold and italic when it can detect them.</>],
             [<>Add text</>, <>Click where the text should go and type; set the font, size and colour in the toolbar.</>],
             [<>Insert image</>, <>Place a picture, logo or scanned signature.</>],
             [<>Draw / sign</>, <>Draw freehand; use it to sign.</>],

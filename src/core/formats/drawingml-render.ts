@@ -503,6 +503,102 @@ function lineStyle(spPr: Element | null, style: Element | null, env: RenderEnv):
   return null;
 }
 
+/** Collects visible text lines from a DrawingML / Wordprocessing shape (txBody or txbxContent). */
+function shapeTextLines(sp: Element, env: RenderEnv): { lines: string[]; color: Rgba | null; sizeEmu: number; bold: boolean; align: CanvasTextAlign } {
+  const lines: string[] = [];
+  let color: Rgba | null = null;
+  let sizeEmu = 0;
+  let bold = false;
+  let align: CanvasTextAlign = 'center';
+  const readAlign = (el: Element) => {
+    const algn = el.getAttribute('algn') ?? kid(el, 'jc')?.getAttribute('val') ?? '';
+    if (algn === 'l' || algn === 'left') align = 'left';
+    else if (algn === 'r' || algn === 'right') align = 'right';
+    else if (algn === 'ctr' || algn === 'center') align = 'center';
+  };
+  const readRPr = (el: Element) => {
+    if (sizeEmu && color && bold) return;
+    // DrawingML a:sz is hundredths of a point; Word w:sz/@val is half-points
+    const aSz = el.getAttribute('sz');
+    const wSz = kid(el, 'sz')?.getAttribute('val');
+    if (!sizeEmu && aSz) sizeEmu = parseFloat(aSz) * 127;
+    if (!sizeEmu && wSz) sizeEmu = (parseFloat(wSz) / 2) * 12700;
+    if (!color) {
+      const fill = kid(el, 'solidFill');
+      if (fill) color = colorOf(firstColor(fill), env);
+      else {
+        const wColor = kid(el, 'color')?.getAttribute('val');
+        if (wColor && /^[0-9A-Fa-f]{6}$/.test(wColor)) color = hexToRgba(wColor);
+      }
+    }
+    if (el.getAttribute('b') === '1' || kid(el, 'b')) bold = true;
+  };
+  const walkPara = (p: Element) => {
+    const bits: string[] = [];
+    const visit = (el: Element) => {
+      if (el.localName === 't') {
+        bits.push(el.textContent ?? '');
+        return;
+      }
+      if (el.localName === 'br' || el.localName === 'cr') {
+        bits.push('\n');
+        return;
+      }
+      if (el.localName === 'rPr' || el.localName === 'defRPr') readRPr(el);
+      if (el.localName === 'pPr' || el.localName === 'bodyPr') readAlign(el);
+      for (const c of kids(el)) visit(c);
+    };
+    visit(p);
+    const text = bits.join('').replace(/\r/g, '');
+    for (const line of text.split('\n')) lines.push(line);
+  };
+  const bodyPr = kid(sp, 'bodyPr');
+  if (bodyPr) readAlign(bodyPr);
+  const txBody = kid(sp, 'txBody');
+  const txbx = kid(sp, 'txbx');
+  const content = txBody ?? kid(txbx, 'txbxContent') ?? kid(sp, 'txbxContent');
+  if (content) {
+    for (const p of kids(content)) {
+      if (p.localName === 'p') walkPara(p);
+      else for (const nested of kids(p, 'p')) walkPara(nested);
+    }
+  }
+  while (lines.length && !lines[0].trim()) lines.shift();
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return { lines, color, sizeEmu, bold, align };
+}
+
+function drawShapeText(ctx: Ctx2D, sp: Element, w: number, h: number, env: RenderEnv): void {
+  const { lines, color, sizeEmu, bold, align } = shapeTextLines(sp, env);
+  if (!lines.length) return;
+  // ctx is in EMU space; default to 12pt when the shape has no explicit size
+  const fontSize = sizeEmu > 0 ? sizeEmu : 12 * 12700;
+  const lineH = fontSize * 1.2;
+  const totalH = lineH * Math.max(1, lines.length);
+  let fill = color ? css(color) : null;
+  if (!fill) {
+    const ref = kid(kid(sp, 'style'), 'fontRef');
+    const c = ref ? colorOf(firstColor(ref), env) : null;
+    fill = c ? css(c) : '#111111';
+  }
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, w, h);
+  ctx.clip();
+  ctx.fillStyle = fill;
+  ctx.font = `${bold ? 'bold ' : ''}${fontSize}px Arial, Helvetica, sans-serif`;
+  ctx.textAlign = align;
+  ctx.textBaseline = 'middle';
+  const pad = fontSize * 0.25;
+  const x = align === 'left' ? pad : align === 'right' ? w - pad : w / 2;
+  let y = (h - totalH) / 2 + lineH / 2;
+  for (const line of lines) {
+    ctx.fillText(line, x, y, Math.max(0, w - pad * 2));
+    y += lineH;
+  }
+  ctx.restore();
+}
+
 async function drawShape(ctx: Ctx2D, sp: Element, env: RenderEnv): Promise<void> {
   const spPr = kid(sp, 'spPr');
   const x = readXfrm(kid(spPr, 'xfrm'));
@@ -525,6 +621,8 @@ async function drawShape(ctx: Ctx2D, sp: Element, env: RenderEnv): Promise<void>
     ctx.lineWidth = line.width;
     ctx.stroke(path);
   }
+  // paint shape text into the raster so floating title boxes / badges keep their layout
+  drawShapeText(ctx, sp, x.w, x.h, env);
   ctx.restore();
 }
 

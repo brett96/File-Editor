@@ -156,6 +156,22 @@ export const CellFormat = Extension.create({
   addGlobalAttributes() {
     return [
       {
+        types: ['table'],
+        attributes: {
+          tableWidth: {
+            default: null as string | null,
+            parseHTML: (el: HTMLElement) => el.getAttribute('data-table-width'),
+            renderHTML: (attrs: Record<string, unknown>) => (attrs.tableWidth ? { 'data-table-width': attrs.tableWidth } : {}),
+          },
+          tableAlign: {
+            default: null as string | null,
+            parseHTML: (el: HTMLElement) => el.getAttribute('data-table-align'),
+            renderHTML: (attrs: Record<string, unknown>) => (attrs.tableAlign ? { 'data-table-align': attrs.tableAlign } : {}),
+          },
+          ...cssAttr('width', 'width'),
+        },
+      },
+      {
         types: ['tableCell', 'tableHeader'],
         attributes: {
           ...colorAttr('background'),
@@ -408,6 +424,8 @@ class FloatingImageView implements NodeView {
     wrap.toggleAttribute('data-behind', !!a.behind);
     img.toggleAttribute('data-ink', !!a.ink);
     img.toggleAttribute('data-behind', !!a.behind);
+    // Behind-text art must not steal clicks from tables and body text underneath
+    wrap.style.pointerEvents = a.behind ? 'none' : '';
   }
 
   private scale(): number {

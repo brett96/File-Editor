@@ -17,7 +17,8 @@
  * Block style: style="text-align:left|center|right|justify" on <p>/<h*>, plus optionally
  *          line-height (unitless or pt), margin-top / margin-bottom (pt), margin-left /
  *          text-indent (pt) and background-color (paragraph shading)
- * Tables : <td>/<th colwidth="px[,px…]"> (one width per spanned column) and
+ * Tables : <table data-table-width="pct" data-table-align="center|right" style="width:Npx"> optional;
+ *          <td>/<th colwidth="px[,px…]"> (one width per spanned column) and
  *          style="background-color; border-top|right|bottom|left: <w>px <style> #rrggbb | none;
  *          vertical-align:top|middle|bottom; padding: T R B L (px, Word's cell margins)";
  *          <tr style="height:Npx"> (minimum row height)

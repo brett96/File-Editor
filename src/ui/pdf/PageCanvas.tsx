@@ -37,6 +37,22 @@ export interface TextRun {
   fontSize: number;
   text: string;
   family: 'serif' | 'sans-serif' | 'monospace';
+  bold: boolean;
+  italic: boolean;
+}
+
+/** Maps a pdf.js font name / CSS family to the closest standard PDF font traits. */
+export function classifyPdfFont(fontName: string, fontFamily: string): Pick<TextRun, 'family' | 'bold' | 'italic'> {
+  const raw = `${fontName} ${fontFamily}`.toLowerCase().replace(/[+_,-]+/g, ' ');
+  const italic = /\b(italic|oblique|ital)\b/.test(raw);
+  // "semibold" / "demibold" count as bold for Standard-14 substitution
+  const bold = /\b(bold|black|heavy|semibold|semi bold|demibold|demi bold|extrabold|extra bold)\b/.test(raw);
+  const family: TextRun['family'] =
+    /\b(mono|courier|consolas|menlo|monaco|lucida console|andale mono|source code)\b/.test(raw) ? 'monospace'
+    : /\b(serif|times|georgia|garamond|palatino|cambria|constantia|bookman|century|roman)\b/.test(raw)
+        && !/\bsans\b/.test(raw) ? 'serif'
+    : 'sans-serif';
+  return { family, bold, italic };
 }
 
 /** Extracts positioned text runs in view space (intrinsic rotation applied, scale 1). */
@@ -54,7 +70,7 @@ export async function extractTextRuns(page: PDFPageProxy): Promise<TextRun[]> {
     const size = Math.hypot(tx[2], tx[3]) || Math.abs(tx[3]);
     const ascent = style?.ascent && style.ascent > 0 ? style.ascent : 0.8;
     const descent = style?.descent && style.descent < 0 ? style.descent : -0.2;
-    const fam = (style?.fontFamily ?? '').toLowerCase();
+    const classified = classifyPdfFont(item.fontName ?? '', style?.fontFamily ?? '');
     const width = item.width * (vp.scale || 1);
     runs.push({
       x: tx[4],
@@ -64,7 +80,9 @@ export async function extractTextRuns(page: PDFPageProxy): Promise<TextRun[]> {
       baseline: tx[5],
       fontSize: Math.round(size * 10) / 10,
       text: item.str,
-      family: fam.includes('mono') ? 'monospace' : fam.includes('sans') ? 'sans-serif' : fam.includes('serif') ? 'serif' : 'sans-serif',
+      family: classified.family,
+      bold: classified.bold,
+      italic: classified.italic,
     });
   }
   return runs;

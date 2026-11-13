@@ -34,7 +34,15 @@ import type { PdfProtection } from './core/pdf/types';
 import { PasswordError, UnsupportedError, isCodeFormat, type CodeLanguage, type DocFormat, type FlowFormat, type RichDocument } from './core/types';
 import { escapeHtml, utf8Encode } from './core/dom';
 import { fileBytes, getHost, readDroppedFile, type OpenedFile, type RecentEntry, type UpdateStatus } from './platform/host';
-import { IconButton, Divider, cx, Popover, MenuItem } from './ui/components';
+import {
+  LICENSE_PURCHASE_URL,
+  detectDesktopOs,
+  fetchLatestInstallers,
+  installersForOs,
+  startInstallerDownload,
+  type InstallerOption,
+} from './platform/desktop-download';
+import { IconButton, Divider, Modal, cx, Popover, MenuItem } from './ui/components';
 import {
   EMPTY_PROTECTION,
   ExportModal,
@@ -1641,7 +1649,6 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
             Auto-save {autoSave ? 'on' : 'off'}
           </button>
           {autoSave && autoStatus?.state === 'blocked' && dirty && <span className="autosave-hint">{autoStatus.text}</span>}
-          <span className="status-private">Files are processed on this device only</span>
         </footer>
       )}
 
@@ -2248,6 +2255,8 @@ export default function App() {
             openTabs={tabs.map((t) => ({ id: t.id, name: t.info.name, dirty: t.info.dirty, kind: t.info.kind }))}
             onShowTab={activate}
             onHelp={() => setHelp({ section: null })}
+            showDesktopDownload={host.kind === 'web'}
+            onToast={toast}
           />
         </main>
       )}
@@ -2357,6 +2366,8 @@ function StartScreen({
   openTabs,
   onShowTab,
   onHelp,
+  showDesktopDownload,
+  onToast,
 }: {
   onNew: () => void;
   onOpen: () => void;
@@ -2366,7 +2377,40 @@ function StartScreen({
   openTabs: { id: number; name: string; dirty: boolean; kind: TabInfo['kind'] }[];
   onShowTab: (id: number) => void;
   onHelp: () => void;
+  showDesktopDownload: boolean;
+  onToast: (text: string, kind?: 'error' | 'info') => void;
 }) {
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  const [installerChoices, setInstallerChoices] = useState<{ version: string; options: InstallerOption[] } | null>(null);
+
+  const downloadDesktop = async () => {
+    if (downloadBusy) return;
+    setDownloadBusy(true);
+    try {
+      const latest = await fetchLatestInstallers();
+      const os = detectDesktopOs();
+      const options = installersForOs(latest, os);
+      if (!options.length) {
+        onToast(os === 'mac' ? 'No macOS installer is in the latest release yet.' : os === 'windows' ? 'No Windows installer is in the latest release yet.' : 'No desktop installers are in the latest release yet.', 'error');
+        return;
+      }
+      if (options.length === 1) {
+        startInstallerDownload(options[0].url);
+        onToast(`Downloading File Editor ${latest.version}…`, 'info');
+        return;
+      }
+      setInstallerChoices({ version: latest.version, options });
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : 'Could not look up the desktop download.', 'error');
+    } finally {
+      setDownloadBusy(false);
+    }
+  };
+
+  const os = showDesktopDownload ? detectDesktopOs() : 'other';
+  const downloadLabel =
+    os === 'mac' ? 'Download for Mac' : os === 'windows' ? 'Download for Windows' : 'Download desktop app';
+
   return (
     <div className="start">
       <div className="start-inner">
@@ -2386,6 +2430,13 @@ function StartScreen({
             <strong>Open a file</strong>
             <span>Documents, spreadsheets, photos, video or audio — or drag one onto this window</span>
           </button>
+          {showDesktopDownload && (
+            <button type="button" className="start-card start-card-download" onClick={() => void downloadDesktop()} disabled={downloadBusy}>
+              <Download size={28} />
+              <strong>{downloadBusy ? 'Checking for the latest release…' : downloadLabel}</strong>
+              <span>Install the desktop app for Auto-save, native menus, Studio, Pro photo tools and offline use. Gets the latest production release.</span>
+            </button>
+          )}
         </div>
         {openTabs.length > 0 && (
           <div className="start-recent start-open">
@@ -2441,7 +2492,52 @@ function StartScreen({
             </tbody>
           </table>
         </div>
+        {showDesktopDownload && (
+          <p className="start-license">
+            Need a license for the desktop app?{' '}
+            <a href={LICENSE_PURCHASE_URL} target="_blank" rel="noopener noreferrer">
+              Purchase a license
+            </a>
+          </p>
+        )}
       </div>
+      {installerChoices && (
+        <Modal
+          title={`Download File Editor ${installerChoices.version}`}
+          onClose={() => setInstallerChoices(null)}
+          width={440}
+          footer={
+            <>
+              <span className="spacer" />
+              <button type="button" className="btn btn-text" onClick={() => setInstallerChoices(null)}>
+                Cancel
+              </button>
+            </>
+          }
+        >
+          <p className="dialog-text">Choose which installer to download:</p>
+          <div className="installer-choices">
+            {installerChoices.options.map((opt) => (
+              <button
+                key={opt.id}
+                type="button"
+                className="installer-choice"
+                onClick={() => {
+                  startInstallerDownload(opt.url);
+                  setInstallerChoices(null);
+                  onToast(`Downloading ${opt.label}…`, 'info');
+                }}
+              >
+                <Download size={18} />
+                <span>
+                  <strong>{opt.label}</strong>
+                  <span className="installer-choice-hint">{opt.hint}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

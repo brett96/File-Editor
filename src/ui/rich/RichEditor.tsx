@@ -1,6 +1,7 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { useTabActive } from '../tab-active';
 import { EditorContent, useEditor, useEditorState, type Editor } from '@tiptap/react';
+import { TextSelection } from '@tiptap/pm/state';
 import {
   AArrowDown,
   AArrowUp,
@@ -153,6 +154,15 @@ function Toolbar({ editor, onPageSetup, onFind, onError, drawing, onToggleDraw, 
         link: e.isActive('link'),
         href: (e.getAttributes('link').href as string | undefined) ?? '',
         inTable: e.isActive('table'),
+        canAddRowBefore: e.can().addRowBefore(),
+        canAddRowAfter: e.can().addRowAfter(),
+        canAddColBefore: e.can().addColumnBefore(),
+        canAddColAfter: e.can().addColumnAfter(),
+        canMergeSplit: e.can().mergeOrSplit(),
+        canToggleHeader: e.can().toggleHeaderRow(),
+        canDeleteRow: e.can().deleteRow(),
+        canDeleteCol: e.can().deleteColumn(),
+        canDeleteTable: e.can().deleteTable(),
         align: e.isActive({ textAlign: 'center' }) ? 'center' : e.isActive({ textAlign: 'right' }) ? 'right' : e.isActive({ textAlign: 'justify' }) ? 'justify' : 'left',
         color: ts.color ?? null,
         highlight: e.isActive('highlight') ? ((e.getAttributes('highlight').color as string | undefined) ?? '#fff59d') : null,
@@ -386,7 +396,7 @@ function Toolbar({ editor, onPageSetup, onFind, onError, drawing, onToggleDraw, 
       <IconButton label="Insert image" onClick={insertImage}><ImageIcon size={16} /></IconButton>
       <Popover label="Table" button={<TableIcon size={16} />}>
         {(close) => {
-          const run = (fn: () => void) => () => {
+          const run = (fn: () => boolean | void) => () => {
             fn();
             close();
           };
@@ -395,17 +405,17 @@ function Toolbar({ editor, onPageSetup, onFind, onError, drawing, onToggleDraw, 
               <MenuItem onClick={run(() => chain().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run())}>Insert 3 × 3 table</MenuItem>
               <MenuItem onClick={run(() => chain().insertTable({ rows: 2, cols: 2, withHeaderRow: false }).run())}>Insert 2 × 2 table</MenuItem>
               <div className="menu-sep" />
-              <MenuItem disabled={!s.inTable} onClick={run(() => chain().addRowBefore().run())}>Insert row above</MenuItem>
-              <MenuItem disabled={!s.inTable} onClick={run(() => chain().addRowAfter().run())}>Insert row below</MenuItem>
-              <MenuItem disabled={!s.inTable} onClick={run(() => chain().addColumnBefore().run())}>Insert column left</MenuItem>
-              <MenuItem disabled={!s.inTable} onClick={run(() => chain().addColumnAfter().run())}>Insert column right</MenuItem>
+              <MenuItem disabled={!s.canAddRowBefore} onClick={run(() => chain().addRowBefore().run())}>Insert row above</MenuItem>
+              <MenuItem disabled={!s.canAddRowAfter} onClick={run(() => chain().addRowAfter().run())}>Insert row below</MenuItem>
+              <MenuItem disabled={!s.canAddColBefore} onClick={run(() => chain().addColumnBefore().run())}>Insert column left</MenuItem>
+              <MenuItem disabled={!s.canAddColAfter} onClick={run(() => chain().addColumnAfter().run())}>Insert column right</MenuItem>
               <div className="menu-sep" />
-              <MenuItem disabled={!s.inTable} onClick={run(() => chain().mergeOrSplit().run())}>Merge / split cells</MenuItem>
-              <MenuItem disabled={!s.inTable} onClick={run(() => chain().toggleHeaderRow().run())}>Toggle header row</MenuItem>
+              <MenuItem disabled={!s.canMergeSplit} onClick={run(() => chain().mergeOrSplit().run())}>Merge / split cells</MenuItem>
+              <MenuItem disabled={!s.canToggleHeader} onClick={run(() => chain().toggleHeaderRow().run())}>Toggle header row</MenuItem>
               <div className="menu-sep" />
-              <MenuItem disabled={!s.inTable} onClick={run(() => chain().deleteRow().run())}>Delete row</MenuItem>
-              <MenuItem disabled={!s.inTable} onClick={run(() => chain().deleteColumn().run())}>Delete column</MenuItem>
-              <MenuItem disabled={!s.inTable} onClick={run(() => chain().deleteTable().run())}>Delete table</MenuItem>
+              <MenuItem disabled={!s.canDeleteRow} onClick={run(() => chain().deleteRow().run())}>Delete row</MenuItem>
+              <MenuItem disabled={!s.canDeleteCol} onClick={run(() => chain().deleteColumn().run())}>Delete column</MenuItem>
+              <MenuItem disabled={!s.canDeleteTable} onClick={run(() => chain().deleteTable().run())}>Delete table</MenuItem>
             </div>
           );
         }}
@@ -468,6 +478,51 @@ const PEN_WIDTHS = [
   { value: '6', label: 'Thick' },
   { value: '10', label: 'Marker' },
 ];
+
+function TableContextMenu({ editor, x, y, onClose }: { editor: Editor; x: number; y: number; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  const run = (fn: () => boolean) => () => {
+    fn();
+    onClose();
+  };
+  const vw = typeof window !== 'undefined' ? window.innerWidth : x + 220;
+  const vh = typeof window !== 'undefined' ? window.innerHeight : y + 320;
+  const left = Math.max(8, Math.min(x, vw - 220));
+  const top = Math.max(8, Math.min(y, vh - 280));
+
+  return (
+    <div ref={ref} className="popover table-context-menu" role="menu" style={{ position: 'fixed', top, left, zIndex: 80 }} onContextMenu={(e) => e.preventDefault()}>
+      <div className="menu">
+        <MenuItem disabled={!editor.can().addRowBefore()} onClick={run(() => editor.chain().focus().addRowBefore().run())}>Insert row above</MenuItem>
+        <MenuItem disabled={!editor.can().addRowAfter()} onClick={run(() => editor.chain().focus().addRowAfter().run())}>Insert row below</MenuItem>
+        <MenuItem disabled={!editor.can().addColumnBefore()} onClick={run(() => editor.chain().focus().addColumnBefore().run())}>Insert column left</MenuItem>
+        <MenuItem disabled={!editor.can().addColumnAfter()} onClick={run(() => editor.chain().focus().addColumnAfter().run())}>Insert column right</MenuItem>
+        <div className="menu-sep" />
+        <MenuItem disabled={!editor.can().mergeOrSplit()} onClick={run(() => editor.chain().focus().mergeOrSplit().run())}>Merge / split cells</MenuItem>
+        <MenuItem disabled={!editor.can().toggleHeaderRow()} onClick={run(() => editor.chain().focus().toggleHeaderRow().run())}>Toggle header row</MenuItem>
+        <div className="menu-sep" />
+        <MenuItem disabled={!editor.can().deleteRow()} onClick={run(() => editor.chain().focus().deleteRow().run())}>Delete row</MenuItem>
+        <MenuItem disabled={!editor.can().deleteColumn()} onClick={run(() => editor.chain().focus().deleteColumn().run())}>Delete column</MenuItem>
+        <MenuItem disabled={!editor.can().deleteTable()} onClick={run(() => editor.chain().focus().deleteTable().run())}>Delete table</MenuItem>
+      </div>
+    </div>
+  );
+}
 
 function DrawToolbar({ settings, onChange, onDone }: { settings: DrawSettings; onChange: (s: DrawSettings) => void; onDone: () => void }) {
   const [penColor, setPenColor] = useState(settings.tool === 'highlighter' ? INK_COLORS[0] : settings.color);
@@ -601,6 +656,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
   const [pageCount, setPageCount] = useState(1);
   const [hfSnap, setHfSnap] = useState({ header: initial.header ?? '', footer: initial.footer ?? '' });
   const [imgEdit, setImgEdit] = useState<{ pos: number; decoded: DecodedImage } | null>(null);
+  const [tableMenu, setTableMenu] = useState<{ x: number; y: number } | null>(null);
   const imgEditRef = useRef<ImageEditorHandle>(null);
   usePinchZoom(scrollEl, sheetEl, zoom, onZoom, { min: 0.25, max: 4 });
   const extensions = useMemo(() => createExtensions(), []);
@@ -754,6 +810,38 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
       for (const ed of editors) ed.view.dom.removeEventListener('edit-doc-image', onEdit);
     };
   }, [editor, headerEditor, footerEditor, onError]);
+
+  // Right-click inside a table to insert / delete rows and columns
+  useEffect(() => {
+    if (!editor) return;
+    const onContext = (e: MouseEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (!t?.closest?.('td, th, table')) {
+        setTableMenu(null);
+        return;
+      }
+      // Put the caret in the clicked cell so table commands apply there
+      const coords = editor.view.posAtCoords({ left: e.clientX, top: e.clientY });
+      if (coords) {
+        editor.view.dispatch(editor.view.state.tr.setSelection(TextSelection.near(editor.view.state.doc.resolve(coords.pos))));
+      }
+      if (!editor.isActive('table')) {
+        setTableMenu(null);
+        return;
+      }
+      e.preventDefault();
+      setTableMenu({ x: e.clientX, y: e.clientY });
+    };
+    const onClose = () => setTableMenu(null);
+    editor.view.dom.addEventListener('contextmenu', onContext);
+    window.addEventListener('scroll', onClose, true);
+    window.addEventListener('resize', onClose);
+    return () => {
+      editor.view.dom.removeEventListener('contextmenu', onContext);
+      window.removeEventListener('scroll', onClose, true);
+      window.removeEventListener('resize', onClose);
+    };
+  }, [editor]);
 
 
   // How many page-tall slices the body needs (measure the body only — not the padded minHeight)
@@ -1057,6 +1145,14 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
           {drawing && sheetEl && <DrawLayer ref={drawRef} editor={editor} sheet={sheetEl} settings={drawSettings} />}
         </div>
       </div>
+      {tableMenu && editor && (
+        <TableContextMenu
+          editor={editor}
+          x={tableMenu.x}
+          y={tableMenu.y}
+          onClose={() => setTableMenu(null)}
+        />
+      )}
       {setupOpen && (
         <PageSetupModal
           value={pageSetup}
