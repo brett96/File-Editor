@@ -26,6 +26,8 @@ interface Props {
   onError: (message: string) => void;
   /** Informational notices (e.g. view changes made for a phone screen). */
   onNotice?: (message: string) => void;
+  /** A workbook with so many cells that it must not be copied. */
+  large?: boolean;
 }
 
 type Api = import('@univerjs/presets').FUniver;
@@ -45,7 +47,7 @@ function withHomeTab<T extends object>(locale: T): T {
   return { ...locale, ui: { ...ui, ribbon: { ...ui.ribbon, start: 'Home' } } };
 }
 
-export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEditor({ initial, onChange, onError, onNotice }, ref) {
+export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEditor({ initial, onChange, onError, onNotice, large }, ref) {
   const host = useRef<HTMLDivElement>(null);
   const api = useRef<Api | null>(null);
   const [loading, setLoading] = useState(true);
@@ -79,8 +81,9 @@ export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEd
         ]);
         if (disposed || !host.current) return;
         const phone = isPhoneScreen();
-        // Univer takes ownership of (and mutates) the snapshot it is given
-        const snapshot = structuredClone(initial);
+        // Univer takes ownership of (and mutates) the snapshot it is given. A large workbook
+        // is handed over as it is: a second copy of millions of cells would not fit in memory.
+        const snapshot = large ? initial : structuredClone(initial);
         if (phone) {
           const { restore, unfroze } = fitForPhone(snapshot, host.current.clientWidth, host.current.clientHeight);
           phoneRestore.current = restore;

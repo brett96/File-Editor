@@ -24,6 +24,9 @@ const APP_HOST = 'editor';
 const APP_ORIGIN = `${APP_SCHEME}://${APP_HOST}`;
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 const MAX_FILE_BYTES = 250 * 1024 * 1024;
+/** Workbooks and databases: read as a stream / a page at a time by the renderer, so they can be large. */
+const MAX_DATA_BYTES = 2 * 1024 * 1024 * 1024 - 1;
+const DATA = ['xlsx', 'xlsm', 'xltx', 'csv', 'tsv', 'tab', 'sqlite', 'sqlite3', 'db', 'db3', 'sdb'];
 /** Video can be much larger than a document. */
 const MAX_MEDIA_BYTES = 4 * 1024 * 1024 * 1024;
 const DOCUMENTS = ['docx', 'docm', 'dotx', 'doc', 'dot', 'pdf', 'odt', 'rtf', 'md', 'markdown', 'html', 'htm', 'txt', 'xlsx', 'xlsm', 'xltx', 'csv', 'tsv', 'tab', 'sqlite', 'sqlite3', 'db', 'db3', 'sdb'];
@@ -77,8 +80,9 @@ async function readGranted(path: string): Promise<{ name: string; bytes: Uint8Ar
   if (!info.isFile()) throw new Error('Not a file.');
   const ext = extname(path).slice(1).toLowerCase();
   const isMedia = MEDIA.includes(ext) || PROJECTS.includes(ext);
-  const limit = isMedia ? MAX_MEDIA_BYTES : MAX_FILE_BYTES;
-  if (info.size > limit) throw new Error(`This file is too large to open (limit ${isMedia ? '4 GB' : '250 MB'}).`);
+  const isData = DATA.includes(ext);
+  const limit = isMedia ? MAX_MEDIA_BYTES : isData ? MAX_DATA_BYTES : MAX_FILE_BYTES;
+  if (info.size > limit) throw new Error(`This file is too large to open (limit ${isMedia ? '4 GB' : isData ? '2 GB' : '250 MB'}).`);
   const bytes = new Uint8Array(await readFile(path));
   addRecent(path);
   return { name: basename(path), bytes, token: grant(path) };
