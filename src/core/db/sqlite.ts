@@ -214,6 +214,24 @@ export class SqliteDatabase {
     return { columns, rowids, rows, total };
   }
 
+  /** Every row of a table with its rowid, in rowid order (for converting the database to another format). */
+  readAll(table: string): { columns: string[]; rowids: number[]; rows: DbCell[][] } {
+    const columns = this.columnsOf(table).map((c) => c.name);
+    const stmt = this.db.prepare(`SELECT rowid, * FROM ${quoteIdent(table)} ORDER BY rowid`);
+    const rowids: number[] = [];
+    const rows: DbCell[][] = [];
+    try {
+      while (stmt.step()) {
+        const r = stmt.get();
+        rowids.push(Number(r[0]));
+        rows.push(r.slice(1).map(fromSql));
+      }
+    } finally {
+      stmt.free();
+    }
+    return { columns, rowids, rows };
+  }
+
   updateCell(table: string, rowid: number, column: string, value: DbCell): void {
     this.db.run(`UPDATE ${quoteIdent(table)} SET ${quoteIdent(column)} = ? WHERE rowid = ?`, [toSql(value), rowid]);
   }

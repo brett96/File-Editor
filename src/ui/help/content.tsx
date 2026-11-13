@@ -302,8 +302,12 @@ export const SECTIONS: GuideSection[] = [
         </p>
         <p>
           <strong>LiteDB</strong> files (the <code>.db</code> files many Windows apps keep their data in) open too: each collection is shown as a
-          table with a column per field, and nested values as JSON text you can query with <code>json_extract()</code>. This is a copy for viewing,
-          querying and exporting: saving writes a new SQLite file and leaves the LiteDB file untouched. Password-protected LiteDB files can't be read.
+          table with a column per field, and nested values as JSON text you can query with <code>json_extract()</code>. <Ui>Save</Ui> writes your
+          changes back to the same file in LiteDB's own format, so the program that owns it keeps working: rows you did not touch are written back
+          exactly as they were, edited fields keep their type (dates, Guids, whole numbers), new rows get an <code>_id</code> of the collection's
+          kind, and indexes are rebuilt. The first save keeps the original beside it as <code>.bak</code> (a download in the browser). Close the
+          other program before saving. <Ui>Save as</Ui> offers a LiteDB copy or a SQLite one. LiteDB 5 files, password-protected files and
+          databases with expression indexes open as a copy that saves to SQLite instead.
         </p>
         <Defs
           rows={[
