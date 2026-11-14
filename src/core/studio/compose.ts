@@ -6,6 +6,7 @@
 import { applyAdjustments, applyFilter, isIdentity } from '../media/image-ops';
 import { BLEND_MODES } from '../pro-image/document';
 import { chromaKey } from './dsp';
+import { applyStyle } from './fx';
 import { cameraDistance, clipEnd, is3D, valueAt, type ClipMask, type MediaClip, type Project, type TextClip, type VisualClip } from './model';
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
@@ -137,7 +138,9 @@ function drawClip(ctx: Ctx2D, p: Project, c: VisualClip, local: number, frameFor
   if (!img || dw < 0.5 || dh < 0.5) return;
 
   const fx = c.effects;
-  const pixelOps = (c.kind === 'video' || c.kind === 'image') && (fx.chromaKey.enabled || fx.filter !== 'none' || !isIdentity(fx.adjustments));
+  const grade = (c.kind === 'video' || c.kind === 'image') && (fx.chromaKey.enabled || fx.filter !== 'none' || !isIdentity(fx.adjustments));
+  const styles = (fx.stylize ?? []).filter((e) => e.enabled);
+  const pixelOps = grade || styles.length > 0;
   const mask = c.mask?.enabled ? c.mask : null;
   if (pixelOps || mask) {
     // work on a copy at the size it is drawn (never more than the output), so cost follows the preview size
@@ -149,9 +152,13 @@ function drawClip(ctx: Ctx2D, p: Project, c: VisualClip, local: number, frameFor
     if (pixelOps) {
       const data = tctx.getImageData(0, 0, tmp.width, tmp.height);
       const px = { data: data.data, width: tmp.width, height: tmp.height };
-      if (fx.chromaKey.enabled) chromaKey(px, fx.chromaKey.color, fx.chromaKey.tolerance, fx.chromaKey.softness, fx.chromaKey.spill);
-      if (fx.filter !== 'none') applyFilter(px, fx.filter);
-      if (!isIdentity(fx.adjustments)) applyAdjustments(px, fx.adjustments);
+      if (grade) {
+        if (fx.chromaKey.enabled) chromaKey(px, fx.chromaKey.color, fx.chromaKey.tolerance, fx.chromaKey.softness, fx.chromaKey.spill);
+        if (fx.filter !== 'none') applyFilter(px, fx.filter);
+        if (!isIdentity(fx.adjustments)) applyAdjustments(px, fx.adjustments);
+      }
+      // effect sizes are in output pixels: scale them to the size this copy is drawn at
+      for (const e of styles) applyStyle(px, e, local, scale * (tmp.width / dw));
       tctx.putImageData(data, 0, 0);
     }
     if (mask) applyMask(tctx, tmp.width, tmp.height, mask, local);

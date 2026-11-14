@@ -1056,3 +1056,14 @@
   stroke-width: 1.5;
   pointer-events: none;
 }
+
+.st-fx {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--st-border);
+  border-radius: 6px;
+}
+.st-fx .st-row-btns {
+  justify-content: space-between;
+  margin: 0 0 2px;
+}

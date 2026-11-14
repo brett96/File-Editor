@@ -18,6 +18,7 @@ import {
   defaultMask,
   type VisualClip,
 } from '../../core/studio/model';
+import { STYLE_DEFS, newStyle, type StyleEffect, type StyleType } from '../../core/studio/fx';
 import { animProps, keyTimes, type AnimProp } from '../../core/studio/anim';
 import { cx } from '../components';
 
@@ -176,6 +177,7 @@ export function Inspector({
     });
   const fx = c.effects;
   const setFx = (patch: Partial<VisualClip['effects']>) => onChange({ ...c, effects: { ...fx, ...patch } } as Clip);
+  const styles = fx.stylize ?? [];
 
   return (
     <aside className="st-inspector">
@@ -282,6 +284,32 @@ export function Inspector({
         <Row label="Fade out (s)"><Num value={fx.fadeOut} min={0} max={Math.min(30, c.duration)} step={0.05} onChange={(v) => setFx({ fadeOut: v })} /></Row>
         <Row label="Blur (px)"><Num value={fx.blur} min={0} max={80} step={0.5} onChange={(v) => setFx({ blur: v })} /></Row>
         <label className="check"><input type="checkbox" checked={fx.shadow} onChange={(e) => setFx({ shadow: e.target.checked })} /> Drop shadow</label>
+      </section>
+      <section>
+        <h4>Effects</h4>
+        <select
+          className="tb-select"
+          aria-label="Add an effect"
+          value=""
+          onChange={(e) => e.target.value && setFx({ stylize: [...styles, newStyle(e.target.value as StyleType)] })}
+        >
+          <option value="">Add an effect…</option>
+          {(Object.keys(STYLE_DEFS) as StyleType[]).map((t) => <option key={t} value={t}>{STYLE_DEFS[t].label}</option>)}
+        </select>
+        {styles.map((e) => {
+          const def = STYLE_DEFS[e.type];
+          const patch = (pt: Partial<StyleEffect>) => setFx({ stylize: styles.map((x) => (x.id === e.id ? { ...x, ...pt } : x)) });
+          return (
+            <div key={e.id} className="st-fx">
+              <div className="st-row-btns">
+                <label className="check" title={def.hint}><input type="checkbox" checked={e.enabled} onChange={(ev) => patch({ enabled: ev.target.checked })} /> {def.label}</label>
+                <button type="button" className="btn btn-text" aria-label={`Remove ${def.label}`} title="Remove effect" onClick={() => setFx({ stylize: styles.filter((x) => x.id !== e.id) })}>×</button>
+              </div>
+              <Row label={def.amount.label}><Num value={e.amount} min={def.amount.min} max={def.amount.max} onChange={(v) => patch({ amount: v })} /></Row>
+              {def.size && <Row label={def.size.label}><Num value={e.size} min={def.size.min} max={def.size.max} onChange={(v) => patch({ size: v })} /></Row>}
+            </div>
+          );
+        })}
       </section>
       {(c.kind === 'video' || c.kind === 'image') && (
         <>

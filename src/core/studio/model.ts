@@ -12,6 +12,7 @@
  */
 import { NO_ADJUSTMENTS, type Adjustments, type FilterPreset } from '../media/image-ops';
 import type { BlendMode } from '../pro-image/document';
+import type { StyleEffect } from './fx';
 
 export type Easing = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' | 'hold' | 'bezier';
 
@@ -98,6 +99,8 @@ export interface VisualEffects {
   fadeOut: number;
   /** drop shadow (useful on text and keyed footage) */
   shadow: boolean;
+  /** stylize effects, applied in order (absent in projects from older versions) */
+  stylize?: StyleEffect[];
 }
 
 export interface SourceMeta {

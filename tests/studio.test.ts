@@ -6,6 +6,7 @@ import {
 } from '../src/core/studio/dsp';
 import { animProps, keyTimes } from '../src/core/studio/anim';
 import { simplifyKeys, toGray, trackPatch, type Gray } from '../src/core/studio/track';
+import { applyStyle, curlField, newStyle, noise3, type StyleEffect } from '../src/core/studio/fx';
 import { homography, projectQuad, type Quad } from '../src/core/studio/compose';
 import {
   addKey, anim, audibleTracks, bezierAt, cameraDistance, defaultMask, defaultThree, is3D, envelopeDb, hasKeyAt, newProject, newTrack, projectDuration, removeKey, setValueAt, snap, splitClip, valueAt,
@@ -18,6 +19,63 @@ const sine = (freq: number, amp: number, seconds: number, sr = 48000, ch = 2): A
   for (let i = 0; i < n; i++) c[i] = amp * Math.sin((2 * Math.PI * freq * i) / sr);
   return { sampleRate: sr, channels: Array.from({ length: ch }, () => c.slice()) };
 };
+
+describe('stylize effects', () => {
+  const grad = () => {
+    const px = createPixels(64, 48);
+    for (let y = 0; y < 48; y++) for (let x = 0; x < 64; x++) px.data.set([x * 4, y * 5, 128, 255], (y * 64 + x) * 4);
+    return px;
+  };
+  const fx = (type: StyleEffect['type'], amount: number, size = 0): StyleEffect => ({ ...newStyle(type), amount, size });
+  it('curl noise moves pixels without inventing colours, and drifts over time', () => {
+    const a = grad();
+    const b = grad();
+    applyStyle(a, fx('curlNoise', 12, 30), 0);
+    applyStyle(b, fx('curlNoise', 12, 30), 2);
+    const src = grad();
+    let moved = 0;
+    let differs = 0;
+    for (let i = 0; i < src.data.length; i += 4) {
+      if (a.data[i] !== src.data[i] || a.data[i + 1] !== src.data[i + 1]) moved++;
+      if (a.data[i] !== b.data[i] || a.data[i + 1] !== b.data[i + 1]) differs++;
+      expect(a.data[i + 2]).toBe(128);
+    }
+    expect(moved).toBeGreaterThan(500);
+    expect(differs).toBeGreaterThan(200);
+    // the field is a curl, so it has (almost) no divergence
+    const f = curlField(200, 200, 4, 40, 1);
+    let div = 0;
+    let mag = 0;
+    for (let y = 1; y < f.gh - 1; y++) for (let x = 1; x < f.gw - 1; x++) {
+      const i = y * f.gw + x;
+      div += Math.abs(f.vx[i + 1] - f.vx[i - 1] + f.vy[i + f.gw] - f.vy[i - f.gw]);
+      mag += Math.abs(f.vx[i]) + Math.abs(f.vy[i]);
+    }
+    expect(div / mag).toBeLessThan(0.02);
+    expect(noise3(1.5, 2.5, 3.5)).toBeGreaterThanOrEqual(0);
+  });
+  it('pixelates, posterizes, keys and finds contours', () => {
+    const px = grad();
+    applyStyle(px, fx('pixelate', 8), 0);
+    expect(px.data[0]).toBe(px.data[7 * 4]);
+    expect(px.data[0]).not.toBe(px.data[8 * 4]);
+    const po = grad();
+    applyStyle(po, fx('posterize', 2), 0);
+    expect(new Set(Array.from(po.data).filter((_, i) => i % 4 === 0))).toEqual(new Set([0, 255]));
+    const key = createPixels(2, 1);
+    key.data.set([5, 5, 5, 255, 250, 250, 250, 255]);
+    applyStyle(key, fx('lumaKey', 15, 20), 0);
+    expect([key.data[3], key.data[7]]).toEqual([0, 255]);
+    const edge = createPixels(8, 8);
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) edge.data.set(x < 4 ? [0, 0, 0, 255] : [255, 255, 255, 255], (y * 8 + x) * 4);
+    applyStyle(edge, fx('contour', 55, 0), 0);
+    expect(edge.data[(4 * 8 + 4) * 4]).toBe(255);
+    expect(edge.data[(4 * 8 + 1) * 4]).toBe(0);
+    const off = grad();
+    applyStyle(off, { ...fx('pixelate', 8), enabled: false }, 0);
+    expect(off.data).toEqual(grad().data);
+  });
+});
 
 describe('motion tracking', () => {
   const frame = (ox: number, oy: number): Gray => {

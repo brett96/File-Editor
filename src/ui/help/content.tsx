@@ -845,6 +845,21 @@ export const SECTIONS: GuideSection[] = [
           <li><Ui>Spill</Ui> removes the green tint the screen casts on the subject's edges.</li>
         </Steps>
         <Tip>Even, wrinkle-free lighting on the screen makes a much cleaner key than any setting can.</Tip>
+        <h3>Stylize effects</h3>
+        <p>
+          <Ui>Effects</Ui> → <Ui>Add an effect…</Ui> stacks pixel effects on any layer, applied top to bottom after the colour grade and green
+          screen. Untick an effect to compare, or press <Ui>×</Ui> to remove it.
+        </p>
+        <Defs
+          rows={[
+            [<>Curl noise</>, <>Swirls the picture along a flowing noise field that drifts as the clip plays: heat haze, water, dream sequences. <Ui>Strength</Ui> is how far pixels move, <Ui>Swirl size</Ui> how large the eddies are.</>],
+            [<>Contour</>, <>Traces edges as white lines on black. Raise <Ui>Keep picture</Ui> to draw dark outlines over the original instead.</>],
+            [<>Glow</>, <>Bright areas bloom into their surroundings.</>],
+            [<>Pixelate</>, <>Mosaic blocks. With a tracked mask on a copy of the clip, it hides a face or a number plate.</>],
+            [<>Posterize, Sharpen, RGB split</>, <>Flat poster tones; crisper edges; red and blue pulled apart for a glitch look.</>],
+            [<>Luma key</>, <>Makes dark areas transparent, for fire, smoke, sparks and light leaks that were shot on black.</>],
+          ]}
+        />
       </>
     ),
   },
