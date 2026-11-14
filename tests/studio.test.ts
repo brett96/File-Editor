@@ -5,7 +5,7 @@ import {
   noiseProfile, normalizeRange, peak, reduceNoise, reverseRange, silenceRange, sliceAudio, waveformPeaks, type AudioData,
 } from '../src/core/studio/dsp';
 import {
-  addKey, anim, audibleTracks, envelopeDb, hasKeyAt, newProject, newTrack, projectDuration, removeKey, setValueAt, snap, splitClip, valueAt,
+  addKey, anim, audibleTracks, bezierAt, envelopeDb, hasKeyAt, newProject, newTrack, projectDuration, removeKey, setValueAt, snap, splitClip, valueAt,
   defaultEffects, defaultTransform, type AudioClip, type MediaClip,
 } from '../src/core/studio/model';
 
@@ -17,6 +17,17 @@ const sine = (freq: number, amp: number, seconds: number, sr = 48000, ch = 2): A
 };
 
 describe('keyframes', () => {
+  it('follows a custom bezier curve, with overshoot', () => {
+    expect(bezierAt(0.5, [0, 0, 1, 1])).toBeCloseTo(0.5, 3);
+    expect(bezierAt(0.25, [0.42, 0, 1, 1])).toBeLessThan(0.25);
+    let a = addKey(addKey(anim(0), 0, 0, 'bezier'), 1, 10);
+    a = { ...a, keys: [{ ...a.keys[0], bez: [0.3, 1.6, 0.6, 1] }, a.keys[1]] };
+    expect(Math.max(...[0.3, 0.4, 0.5, 0.6].map((t) => valueAt(a, t)))).toBeGreaterThan(10);
+    expect(valueAt(a, 1)).toBe(10);
+    // re-keying a time keeps that key's easing and curve
+    expect(addKey(a, 0, 5).keys[0]).toMatchObject({ v: 5, ease: 'bezier', bez: [0.3, 1.6, 0.6, 1] });
+  });
+
   it('interpolates with easing and holds outside the keys', () => {
     let a = anim(5);
     expect(valueAt(a, 3)).toBe(5);

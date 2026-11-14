@@ -13,13 +13,21 @@
 import { NO_ADJUSTMENTS, type Adjustments, type FilterPreset } from '../media/image-ops';
 import type { BlendMode } from '../pro-image/document';
 
-export type Easing = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' | 'hold';
+export type Easing = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' | 'hold' | 'bezier';
+
+/** Control points of a custom easing curve, as in CSS cubic-bezier(x1, y1, x2, y2). */
+export type Bezier = [number, number, number, number];
+
+export const DEFAULT_BEZIER: Bezier = [0.33, 0, 0.67, 1];
 
 export interface Keyframe {
   /** seconds from the clip start */
   t: number;
   v: number;
+  /** shapes the segment from this key to the next */
   ease: Easing;
+  /** the curve of a 'bezier' segment (drawn in the graph editor) */
+  bez?: Bezier;
 }
 
 /** A value that is either constant or animated by keyframes. */
@@ -299,8 +307,31 @@ export function hasVideoTracks(p: Project): boolean {
 
 // ── keyframes ────────────────────────────────────────────────────────────
 
-function ease(t: number, e: Easing): number {
+/** y of a CSS-style cubic bezier at x (both 0–1). */
+export function bezierAt(x: number, [x1, y1, x2, y2]: Bezier): number {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  const a = Math.min(1, Math.max(0, x1));
+  const b = Math.min(1, Math.max(0, x2));
+  const curve = (p1: number, p2: number, u: number) => 3 * (1 - u) * (1 - u) * u * p1 + 3 * (1 - u) * u * u * p2 + u * u * u;
+  // x(u) is monotonic for control x in 0–1, so bisection always converges
+  let lo = 0;
+  let hi = 1;
+  let u = x;
+  for (let i = 0; i < 24; i++) {
+    const cx = curve(a, b, u);
+    if (Math.abs(cx - x) < 1e-5) break;
+    if (cx < x) lo = u;
+    else hi = u;
+    u = (lo + hi) / 2;
+  }
+  return curve(y1, y2, u);
+}
+
+function ease(t: number, e: Easing, bez?: Bezier): number {
   switch (e) {
+    case 'bezier':
+      return bezierAt(t, bez ?? DEFAULT_BEZIER);
     case 'easeIn':
       return t * t * t;
     case 'easeOut':
@@ -326,7 +357,7 @@ export function valueAt(a: Animatable, t: number): number {
   const a0 = k[i];
   const a1 = k[i + 1];
   const span = a1.t - a0.t || 1;
-  return a0.v + (a1.v - a0.v) * ease((t - a0.t) / span, a0.ease);
+  return a0.v + (a1.v - a0.v) * ease((t - a0.t) / span, a0.ease, a0.bez);
 }
 
 /** Sets the value: a keyframe at `t` when the property is animated, otherwise the constant. */
@@ -337,7 +368,8 @@ export function setValueAt(a: Animatable, t: number, v: number): Animatable {
 
 export function addKey(a: Animatable, t: number, v = valueAt(a, t), e: Easing = 'linear'): Animatable {
   const keys = a.keys.filter((k) => Math.abs(k.t - t) > 1e-4);
-  keys.push({ t, v, ease: a.keys.find((k) => Math.abs(k.t - t) <= 1e-4)?.ease ?? e });
+  const old = a.keys.find((k) => Math.abs(k.t - t) <= 1e-4);
+  keys.push(old ? { ...old, t, v } : { t, v, ease: e });
   keys.sort((x, y) => x.t - y.t);
   return { value: a.value, keys };
 }

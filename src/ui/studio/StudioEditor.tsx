@@ -27,6 +27,7 @@ import {
   Undo2,
   Unlink,
   Rows3,
+  Spline,
 } from 'lucide-react';
 import { addMediaClips, deleteClips, findClip, linkedIds, placeClip, replaceClip, solidClip, splitAt, textClip, unlink } from '../../core/studio/build';
 import { bufferToData, buildMix, dataToBuffer, decodeAudio, meterDb, renderMix, type Mix } from '../../core/studio/audio';
@@ -51,6 +52,7 @@ import {
 } from '../../core/studio/model';
 import { cx } from '../components';
 import { AudioClipEditor } from './AudioClipEditor';
+import { GraphEditor } from './GraphEditor';
 import { Inspector } from './Inspector';
 import { Mixer } from './Mixer';
 import { Timeline, TIMELINE_HEADER, formatTimecode } from './Timeline';
@@ -121,7 +123,7 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
   const playheadRef = useRef(0);
   const [playing, setPlaying] = useState(false);
   const [pps, setPps] = useState(40);
-  const [view, setView] = useState<'timeline' | 'mixer'>('timeline');
+  const [view, setView] = useState<'timeline' | 'graph' | 'mixer'>('timeline');
   const [snapOn, setSnapOn] = useState(true);
   const [easing, setEasing] = useState<Easing>('easeInOut');
   const [levels, setLevels] = useState<Record<string, number>>({});
@@ -699,6 +701,7 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
         {status && <span className="st-hint" role="status">{status}</span>}
         <div className="workspace-switch st-view" role="radiogroup" aria-label="Bottom panel">
           <button type="button" role="radio" aria-checked={view === 'timeline'} className={view === 'timeline' ? 'is-active' : ''} onClick={() => setView('timeline')}><Rows3 size={13} /> Timeline</button>
+          <button type="button" role="radio" aria-checked={view === 'graph'} className={view === 'graph' ? 'is-active' : ''} onClick={() => setView('graph')} title="Animation curves of the selected clip"><Spline size={13} /> Graph</button>
           <button type="button" role="radio" aria-checked={view === 'mixer'} className={view === 'mixer' ? 'is-active' : ''} onClick={() => setView('mixer')}><SlidersHorizontal size={13} /> Mixer</button>
         </div>
         <button type="button" className="btn btn-icon" title="Studio guide" aria-label="Studio guide" onClick={() => openGuide(view === 'mixer' ? 'studio-mixer' : 'studio')}>
@@ -762,6 +765,8 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
             onCommit={endDrag}
             onTrack={updateTrack}
           />
+        ) : view === 'graph' ? (
+          <GraphEditor project={project} clip={selected} playhead={playhead} onChange={updateClip} onSeek={seek} />
         ) : (
           <Mixer project={project} levels={levels} onTrack={updateTrack} onMaster={updateMaster} onMeasure={() => void measure()} measured={measured} />
         )}

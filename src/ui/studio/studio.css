@@ -207,6 +207,7 @@
 
 .studio .st-inspector .tb-select,
 .studio .st-inspector .input,
+.studio .st-graph-bar .tb-select,
 .studio .st-mixer .tb-select {
   background: var(--st-panel-2);
   color: var(--st-text);
@@ -933,4 +934,125 @@
   .ae-groups {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* ── graph editor ─────────────────────────────────────────────────────── */
+.st-graph {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  background: var(--st-bg);
+  color: var(--st-text);
+}
+.st-graph-empty {
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+}
+.st-graph-list {
+  width: 190px;
+  flex: none;
+  overflow-y: auto;
+  border-right: 1px solid var(--st-border);
+  background: var(--st-panel);
+  padding: 4px 0;
+}
+.st-graph-prop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.st-graph-prop.is-active {
+  background: rgba(59, 130, 246, 0.22);
+}
+.st-graph-prop.is-off .st-graph-name {
+  opacity: 0.5;
+}
+.st-graph-prop small {
+  margin-left: auto;
+  color: var(--st-muted);
+}
+.st-graph-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+  display: inline-block;
+}
+.st-graph-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.st-graph-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 3px 10px;
+  border-bottom: 1px solid var(--st-border);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.st-graph-bar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--st-muted);
+}
+.st-graph-bar .st-num {
+  width: 76px;
+}
+.st-graph-plot {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+}
+.st-graph-plot svg {
+  display: block;
+  cursor: crosshair;
+}
+.st-graph-grid {
+  stroke: var(--st-border);
+  stroke-width: 1;
+  opacity: 0.6;
+}
+.st-graph-frame {
+  fill: none;
+  stroke: var(--st-border);
+}
+.st-graph-tick {
+  fill: var(--st-muted);
+  font-size: 10px;
+}
+.st-graph-key {
+  stroke: #0b0c0f;
+  stroke-width: 1.5;
+  cursor: grab;
+}
+.st-graph-key.is-sel {
+  stroke: #fff;
+  stroke-width: 2;
+}
+.st-graph-handle {
+  fill: #fff;
+  stroke: #0b0c0f;
+  cursor: grab;
+}
+.st-graph-handle-line {
+  stroke: #fff;
+  stroke-width: 1;
+  opacity: 0.7;
+}
+.st-graph-playhead {
+  stroke: #ff5252;
+  stroke-width: 1.5;
+  pointer-events: none;
 }

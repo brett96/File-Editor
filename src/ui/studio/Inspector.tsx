@@ -211,6 +211,7 @@ export function Inspector({
               <option value="easeIn">Ease in</option>
               <option value="easeOut">Ease out</option>
               <option value="hold">Hold</option>
+              <option value="bezier">Custom curve</option>
             </select>
           </span>
         </h4>

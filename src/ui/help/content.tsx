@@ -721,7 +721,7 @@ export const SECTIONS: GuideSection[] = [
     group: 'Studio (video & audio)',
     title: 'Studio: animating with keyframes',
     desktop: true,
-    keywords: 'keyframe animate animation motion diamond easing ease position scale rotation opacity zoom ken burns',
+    keywords: 'keyframe animate animation motion diamond easing ease position scale rotation opacity zoom ken burns graph editor curve bezier',
     body: (
       <>
         <p>
@@ -762,8 +762,22 @@ export const SECTIONS: GuideSection[] = [
             [<>Ease in</>, <>Starts slowly and accelerates; for things leaving the screen.</>],
             [<>Ease out</>, <>Arrives fast and settles gently; for things entering.</>],
             [<>Hold</>, <>No movement: the value jumps at the next keyframe. Good for blinking or step-by-step reveals.</>],
+            [<>Custom curve</>, <>A curve you shape yourself in the graph editor, including overshoot and bounce-back.</>],
           ]}
         />
+        <h3>The graph editor</h3>
+        <p>
+          <Ui>Graph</Ui> (next to <Ui>Timeline</Ui> and <Ui>Mixer</Ui>) shows the selected clip's animation as curves: time runs left to right, the
+          value runs bottom to top, and each property has its own colour. Each curve is scaled to its own range, so position and opacity can be
+          compared side by side.
+        </p>
+        <ul>
+          <li>Drag a diamond to move a keyframe in time and value. Hold <K>Shift</K> to change only the value, <K>Alt</K> to change only the time.</li>
+          <li>Double-click the graph to add a keyframe to the highlighted property (click a property in the list to highlight it).</li>
+          <li>Click a diamond to type its exact time and value, choose the easing of the segment that follows it, or delete it.</li>
+          <li>Choose <Ui>Custom curve</Ui> and two white handles appear on the segment: drag them to shape the speed. Pull a handle above the end value for an overshoot.</li>
+          <li>Untick a property to hide its curve. Click an empty part of the graph to move the playhead there.</li>
+        </ul>
         <Tip title="Ken Burns zoom on a photo.">
           Put a picture on the timeline. At its first frame, keyframe <Ui>Scale %</Ui> at 100; at its last frame set it to 120 and nudge Position X
           a little. The slow push-in makes a still photo feel alive.
