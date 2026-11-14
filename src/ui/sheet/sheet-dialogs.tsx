@@ -226,8 +226,13 @@ export function SheetSecurityModal({
   initial,
   onApply,
   onClose,
+  noun = 'workbook',
+  officeApp = 'Excel',
 }: {
   format: SheetFormat;
+  /** what is being protected, and the Office program that opens it (presentations reuse this dialog) */
+  noun?: string;
+  officeApp?: 'Excel' | 'PowerPoint';
   initial: ProtectionDraft;
   onApply: (v: ProtectionDraft) => void;
   onClose: () => void;
@@ -265,10 +270,10 @@ export function SheetSecurityModal({
         <>
           <p className="dialog-text">
             {initial.enabled
-              ? 'This workbook is protected. Change the password, or untick the box to remove protection.'
+              ? `This ${noun} is protected. Change the password, or untick the box to remove protection.`
               : 'Choose a password. It is applied the next time you save.'}
           </p>
-          <ProtectionFields format="docx" officeApp="Excel" value={value} onChange={(v) => { setValue(v); setError(null); }} />
+          <ProtectionFields format="docx" officeApp={officeApp} value={value} onChange={(v) => { setValue(v); setError(null); }} />
         </>
       ) : (
         <p className="dialog-text">

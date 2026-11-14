@@ -395,6 +395,11 @@ export const SECTIONS: GuideSection[] = [
           <Ui>Save as</Ui> offers a PowerPoint presentation (<code>.pptx</code>), a PowerPoint show (<code>.ppsx</code>, opens straight into the
           slide show), a PDF with one page per slide, or every slide as a PNG picture in a ZIP.
         </p>
+        <p>
+          <Ui>Protect</Ui> sets a password that PowerPoint asks for when the file is opened (Microsoft Office's standard AES-256
+          encryption); it is applied the next time you save. A presentation that arrives with a password asks for it on opening and keeps
+          it when saved, until you remove it in <Ui>Protect</Ui>. PDF and picture copies are not protected.
+        </p>
         <Warn title="What is not carried over from other programs.">
           SmartArt, video and audio, animations of individual objects, slide masters, and special charts (scatter, radar, stock, combined
           types) are not edited here. A grey box marks the place of such an object and a message says so on opening: saving would leave it

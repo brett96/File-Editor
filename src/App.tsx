@@ -677,11 +677,33 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     if (!zipped && (ext === 'ppt' || ext === 'pps' || ext === 'pot')) throw new Error('This is the old PowerPoint 97–2003 format. Open it in PowerPoint, Google Slides or LibreOffice and save it as .pptx, then open that file here.');
     if (!zipped) {
       if (!SLIDE_EXTENSIONS.includes(ext)) return false;
-      throw new Error(head[0] === 0xd0 && head[1] === 0xcf ? 'This presentation is password-protected. Remove the password in PowerPoint (File ▸ Info ▸ Protect Presentation), then open it here.' : 'This is not a PowerPoint file (or it is damaged).');
+      if (!(head[0] === 0xd0 && head[1] === 0xcf)) throw new Error('This is not a PowerPoint file (or it is damaged).');
     }
     // a zip: only a presentation if it holds one (Word and Excel files are zips too)
-    const bytes = SLIDE_EXTENSIONS.includes(ext) ? await fileBytes(file) : null;
+    let bytes = SLIDE_EXTENSIONS.includes(ext) ? await fileBytes(file) : null;
     const { readPptx, isPptx } = await import('./core/slides/pptx-read');
+    let password: string | undefined;
+    if (!zipped && bytes) {
+      // a password-protected presentation: the real file is encrypted inside this container
+      const { isOfficeEncrypted, decryptOffice } = await import('./core/crypto/office-crypto');
+      if (!isOfficeEncrypted(bytes)) throw new Error('This is not a PowerPoint file (or it is damaged).');
+      let incorrect = false;
+      for (;;) {
+        const pw = await requestPassword(file.name, 'This presentation is password protected.', incorrect);
+        if (pw === null) return true;
+        try {
+          setBusy(`Opening ${file.name}…`);
+          bytes = await decryptOffice(bytes, pw);
+          password = pw;
+          break;
+        } catch (err) {
+          if (!(err instanceof PasswordError)) throw err;
+          incorrect = true;
+        } finally {
+          setBusy(null);
+        }
+      }
+    }
     if (!bytes) {
       if (file.blob.size > 300 * 1024 * 1024 || !(await isPptx(await fileBytes(file)))) return false;
     }
@@ -691,7 +713,9 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       const { deck, warnings } = await readPptx(bytes ?? (await fileBytes(file)));
       // templates and slide shows are edited as a presentation, and saved as one
       const name = /\.pptx$/i.test(file.name) ? file.name : `${baseName(file.name)}.pptx`;
-      setDoc({ kind: 'slides', key: docKey++, name, deck, handle: name === file.name ? file.handle : undefined, protection: EMPTY_PROTECTION });
+      // a file that came with a password keeps it when saved, as in PowerPoint
+      const protection: ProtectionDraft = password ? { ...EMPTY_PROTECTION, enabled: true, password, confirm: password } : EMPTY_PROTECTION;
+      setDoc({ kind: 'slides', key: docKey++, name, deck, handle: name === file.name ? file.handle : undefined, protection });
       setDirty(false);
       if (warnings.length) toast(`Opened ${file.name}. Not brought in: ${warnings.join(', ')}. Saving here will leave them out, so keep the original file.`, 'info');
     } finally {
@@ -724,6 +748,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       } else {
         bytes = await (await import('./core/slides/pptx-write')).writePptx(deck, { title: base, as: as === 'ppsx' ? 'show' : 'presentation' });
         if (as === 'ppsx') [mime, ext, description] = ['application/vnd.openxmlformats-officedocument.presentationml.slideshow', 'ppsx', 'PowerPoint show'];
+        if (d.protection.enabled && d.protection.password) bytes = await (await import('./core/crypto/office-crypto')).encryptOffice(bytes, d.protection.password);
       }
       const res = await host.save({ suggestedName: `${base}${as === 'png' ? ' slides' : ''}.${ext}`, bytes, mime, ext, description, handle: as === 'pptx' ? handle : undefined, quiet });
       if (!res) return;
@@ -2042,7 +2067,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     <>
       <IconButton label={host.canSaveInPlace || host.kind === 'desktop' ? 'Save' : 'Download'} text onClick={save}><Save size={16} /></IconButton>
       <IconButton label={isDatabase || doc.kind === 'slides' ? 'Save as' : 'Save as / Convert'} text onClick={() => (doc.kind === 'slides' ? setSlidesSaveAs(true) : isDatabase ? (doc.kind === 'database' && doc.lite ? setDbSaveAs(true) : void saveDatabase(undefined, true)) : setExportOpen('save-as'))}><FileDown size={16} /></IconButton>
-      {!isMediaDoc && !isDatabase && doc.kind !== 'slides' && (
+      {!isMediaDoc && !isDatabase && (
         <IconButton label="Protect" text active={doc.protection.enabled} onClick={() => setSecurityOpen(true)}>
           {doc.protection.enabled ? <ShieldCheck size={16} /> : <LockOpen size={16} />}
         </IconButton>
@@ -2424,6 +2449,9 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       )}
       {securityOpen && doc?.kind === 'sheet' && (
         <SheetSecurityModal format={doc.format} initial={doc.protection} onClose={() => setSecurityOpen(false)} onApply={applySecurity} />
+      )}
+      {securityOpen && doc?.kind === 'slides' && (
+        <SheetSecurityModal format="xlsx" noun="presentation" officeApp="PowerPoint" initial={doc.protection} onClose={() => setSecurityOpen(false)} onApply={applySecurity} />
       )}
       {securityOpen && doc && format && (doc.kind === 'flow' || doc.kind === 'code' || doc.kind === 'pdf') && (
         <SecurityModal format={format} initial={doc.protection} onClose={() => setSecurityOpen(false)} onApply={applySecurity} />

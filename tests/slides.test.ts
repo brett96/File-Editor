@@ -351,3 +351,17 @@ describe('reading text back from the editable box', () => {
     expect(readEditable(box(''), style)).toEqual([{ runs: [{ text: '' }] }]);
   });
 });
+
+describe('password-protected presentations', () => {
+  it('encrypts a saved deck and opens it again with the password', async () => {
+    const { encryptOffice, decryptOffice, isOfficeEncrypted } = await import('../src/core/crypto/office-crypto');
+    const plain = await writePptx(sampleDeck());
+    const locked = await encryptOffice(plain, 'tr0ub4dor');
+    expect(isOfficeEncrypted(locked)).toBe(true);
+    expect(await isPptx(locked)).toBe(false);
+    await expect(decryptOffice(locked, 'wrong')).rejects.toThrow();
+    const { deck } = await readPptx(await decryptOffice(locked, 'tr0ub4dor'));
+    expect(deck.slides).toHaveLength(3);
+    expect(plainText((deck.slides[0].elements[0] as ShapeElement).text)).toBe('Quarterly Review');
+  });
+});

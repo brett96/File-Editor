@@ -104,7 +104,7 @@ export function ProtectionFields({
   value: ProtectionDraft;
   onChange: (v: ProtectionDraft) => void;
   /** Which Office app asks for the password (Office encryption is the same for Word and Excel). */
-  officeApp?: 'Word' | 'Excel';
+  officeApp?: 'Word' | 'Excel' | 'PowerPoint';
 }) {
   const set = (patch: Partial<ProtectionDraft>) => onChange({ ...value, ...patch });
   const isPdf = format === 'pdf';
