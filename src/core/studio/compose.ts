@@ -6,7 +6,7 @@
 import { applyAdjustments, applyFilter, isIdentity } from '../media/image-ops';
 import { BLEND_MODES } from '../pro-image/document';
 import { chromaKey } from './dsp';
-import { cameraDistance, clipEnd, is3D, valueAt, type MediaClip, type Project, type TextClip, type VisualClip } from './model';
+import { cameraDistance, clipEnd, is3D, valueAt, type ClipMask, type MediaClip, type Project, type TextClip, type VisualClip } from './model';
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 type AnyCanvas = HTMLCanvasElement | OffscreenCanvas;
@@ -138,19 +138,23 @@ function drawClip(ctx: Ctx2D, p: Project, c: VisualClip, local: number, frameFor
 
   const fx = c.effects;
   const pixelOps = (c.kind === 'video' || c.kind === 'image') && (fx.chromaKey.enabled || fx.filter !== 'none' || !isIdentity(fx.adjustments));
-  if (pixelOps) {
-    // process at the size it is drawn (never more than the output), so cost follows the preview size
+  const mask = c.mask?.enabled ? c.mask : null;
+  if (pixelOps || mask) {
+    // work on a copy at the size it is drawn (never more than the output), so cost follows the preview size
     const pw = Math.min(dw, W(p, scale) * 1.5);
     const ph = (dh / dw) * pw;
     const tmp = makeCanvas(pw, ph);
     const tctx = tmp.getContext('2d', { willReadFrequently: true }) as Ctx2D;
     tctx.drawImage(img, 0, 0, tmp.width, tmp.height);
-    const data = tctx.getImageData(0, 0, tmp.width, tmp.height);
-    const px = { data: data.data, width: tmp.width, height: tmp.height };
-    if (fx.chromaKey.enabled) chromaKey(px, fx.chromaKey.color, fx.chromaKey.tolerance, fx.chromaKey.softness, fx.chromaKey.spill);
-    if (fx.filter !== 'none') applyFilter(px, fx.filter);
-    if (!isIdentity(fx.adjustments)) applyAdjustments(px, fx.adjustments);
-    tctx.putImageData(data, 0, 0);
+    if (pixelOps) {
+      const data = tctx.getImageData(0, 0, tmp.width, tmp.height);
+      const px = { data: data.data, width: tmp.width, height: tmp.height };
+      if (fx.chromaKey.enabled) chromaKey(px, fx.chromaKey.color, fx.chromaKey.tolerance, fx.chromaKey.softness, fx.chromaKey.spill);
+      if (fx.filter !== 'none') applyFilter(px, fx.filter);
+      if (!isIdentity(fx.adjustments)) applyAdjustments(px, fx.adjustments);
+      tctx.putImageData(data, 0, 0);
+    }
+    if (mask) applyMask(tctx, tmp.width, tmp.height, mask, local);
     img = tmp;
   }
 
@@ -182,6 +186,29 @@ function drawClip(ctx: Ctx2D, p: Project, c: VisualClip, local: number, frameFor
     if (rot) ctx.rotate((rot * Math.PI) / 180);
     ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
   }
+  ctx.restore();
+}
+
+// ── masks ─────────────────────────────────────────────────────────────────
+
+/** Keeps (or, inverted, removes) the mask shape from a layer canvas, with a soft edge. */
+function applyMask(ctx: Ctx2D, w: number, h: number, m: ClipMask, local: number): void {
+  const shape = makeCanvas(w, h);
+  const sctx = shape.getContext('2d') as Ctx2D;
+  const mw = Math.max(0, valueAt(m.w, local)) * w;
+  const mh = Math.max(0, valueAt(m.h, local)) * h;
+  const cx = valueAt(m.x, local) * w;
+  const cy = valueAt(m.y, local) * h;
+  const feather = (Math.max(0, m.feather) / 100) * (Math.min(w, h) / 2);
+  if (feather > 0.3) sctx.filter = `blur(${feather / 2}px)`;
+  sctx.fillStyle = '#fff';
+  sctx.beginPath();
+  if (m.shape === 'ellipse') sctx.ellipse(cx, cy, mw / 2, mh / 2, 0, 0, Math.PI * 2);
+  else sctx.rect(cx - mw / 2, cy - mh / 2, mw, mh);
+  sctx.fill();
+  ctx.save();
+  ctx.globalCompositeOperation = m.invert ? 'destination-out' : 'destination-in';
+  ctx.drawImage(shape, 0, 0);
   ctx.restore();
 }
 

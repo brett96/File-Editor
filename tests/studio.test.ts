@@ -4,9 +4,11 @@ import {
   chromaKey, deleteRange, gateRange, encodeWav, fadeRange, fft, frames, gainRange, insertAudio, integratedLoudness, limit, loudnessGainDb,
   noiseProfile, normalizeRange, peak, reduceNoise, reverseRange, silenceRange, sliceAudio, waveformPeaks, type AudioData,
 } from '../src/core/studio/dsp';
+import { animProps, keyTimes } from '../src/core/studio/anim';
+import { simplifyKeys, toGray, trackPatch, type Gray } from '../src/core/studio/track';
 import { homography, projectQuad, type Quad } from '../src/core/studio/compose';
 import {
-  addKey, anim, audibleTracks, bezierAt, cameraDistance, defaultThree, is3D, envelopeDb, hasKeyAt, newProject, newTrack, projectDuration, removeKey, setValueAt, snap, splitClip, valueAt,
+  addKey, anim, audibleTracks, bezierAt, cameraDistance, defaultMask, defaultThree, is3D, envelopeDb, hasKeyAt, newProject, newTrack, projectDuration, removeKey, setValueAt, snap, splitClip, valueAt,
   defaultEffects, defaultTransform, type AudioClip, type MediaClip,
 } from '../src/core/studio/model';
 
@@ -16,6 +18,40 @@ const sine = (freq: number, amp: number, seconds: number, sr = 48000, ch = 2): A
   for (let i = 0; i < n; i++) c[i] = amp * Math.sin((2 * Math.PI * freq * i) / sr);
   return { sampleRate: sr, channels: Array.from({ length: ch }, () => c.slice()) };
 };
+
+describe('motion tracking', () => {
+  const frame = (ox: number, oy: number): Gray => {
+    const g = { data: new Float32Array(120 * 80).fill(40), width: 120, height: 80 };
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) g.data[(oy + y) * 120 + ox + x] = 60 + ((x * 7 + y * 13) % 11) * 15;
+    return g;
+  };
+  it('follows a patch between frames', () => {
+    const hit = trackPatch(frame(30, 20), frame(37, 15), 38, 28, 16, 16, 12);
+    expect([hit.x, hit.y]).toEqual([45, 23]);
+    expect(hit.error).toBeLessThan(1);
+    // nothing moved: the region stays where it is
+    expect(trackPatch(frame(30, 20), frame(30, 20), 38, 28, 16, 16, 12)).toMatchObject({ x: 38, y: 28 });
+    // a featureless region does not wander
+    expect(trackPatch(frame(30, 20), frame(37, 15), 90, 60, 16, 16, 12)).toMatchObject({ x: 90, y: 60 });
+  });
+  it('reads luma from pixels and thins straight runs of keys', () => {
+    const px = createPixels(2, 1);
+    px.data.set([255, 255, 255, 255, 0, 0, 0, 255]);
+    expect(Array.from(toGray(px).data).map(Math.round)).toEqual([255, 0]);
+    const keys = [0, 1, 2, 3, 4, 5, 6].map((t) => ({ t, v: t <= 3 ? t * 2 : 6 + (t - 3) * -1, ease: 'linear' as const }));
+    expect(simplifyKeys(keys, 0.1).map((k) => k.t)).toEqual([0, 3, 6]);
+  });
+  it('splits mask animation and lists mask properties only when there is a mask', () => {
+    const p = newProject(1000, 500, 30);
+    const base: MediaClip = { id: 'c', kind: 'video', sourceId: 's', name: 'c', start: 0, duration: 4, in: 0, linkId: null, transform: defaultTransform(p), effects: defaultEffects() };
+    expect(animProps(p, base).some((x) => x.group === 'Mask')).toBe(false);
+    const masked = { ...base, mask: { ...defaultMask(), x: addKey(addKey(anim(0), 0, 0.2), 4, 0.6) } };
+    expect(animProps(p, masked).filter((x) => x.group === 'Mask').map((x) => x.id)).toEqual(['mask.x', 'mask.y', 'mask.w', 'mask.h']);
+    expect(keyTimes(p, masked)).toEqual([0, 4]);
+    const [, r] = splitClip(masked, 2) as [MediaClip, MediaClip];
+    expect(valueAt(r.mask!.x, 0)).toBeCloseTo(0.4, 6);
+  });
+});
 
 describe('3D layers', () => {
   const p = newProject(1000, 500, 30);

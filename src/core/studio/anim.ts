@@ -7,7 +7,7 @@ import { anim, defaultThree, type Animatable, type Project, type Transform3D, ty
 export interface AnimProp {
   id: string;
   label: string;
-  group: 'Transform' | '3D';
+  group: 'Transform' | '3D' | 'Mask';
   /** slider range in view units */
   min: number;
   max: number;
@@ -61,7 +61,21 @@ export function animProps(p: Pick<Project, 'width' | 'height'>, c: VisualClip): 
     threeProp('rotY', 'Swivel Y °', -180, 180, 0.5),
     threeProp('z', 'Depth Z', -p.width * 2, p.width * 4, 1),
   ];
-  void c;
+  if (c.mask) {
+    for (const [key, label] of [['x', 'Mask X %'], ['y', 'Mask Y %'], ['w', 'Mask width %'], ['h', 'Mask height %']] as const) {
+      list.push({
+        id: `mask.${key}`,
+        label,
+        group: 'Mask',
+        min: key === 'x' || key === 'y' ? -20 : 1,
+        max: key === 'x' || key === 'y' ? 120 : 200,
+        step: 0.5,
+        view: 100,
+        get: (cl) => cl.mask?.[key] ?? anim(0.5),
+        set: (cl, a) => (cl.mask ? ({ ...cl, mask: { ...cl.mask, [key]: a } } as VisualClip) : cl),
+      });
+    }
+  }
   return list.map((pr, i) => ({ ...pr, color: COLORS[i % COLORS.length] }));
 }
 

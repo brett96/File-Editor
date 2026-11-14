@@ -1,6 +1,6 @@
 /** Studio inspector: properties of the selected clip, with keyframes for the transform. */
 import type { ReactNode } from 'react';
-import { ChevronLeft, ChevronRight, Diamond, AudioWaveform } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Crosshair, Diamond, AudioWaveform } from 'lucide-react';
 import { FILTER_LABELS, type Adjustments, type FilterPreset } from '../../core/media/image-ops';
 import { BLEND_MODES, type BlendMode } from '../../core/pro-image/document';
 import {
@@ -15,6 +15,7 @@ import {
   type Easing,
   type Project,
   DEFAULT_LENS,
+  defaultMask,
   type VisualClip,
 } from '../../core/studio/model';
 import { animProps, keyTimes, type AnimProp } from '../../core/studio/anim';
@@ -69,6 +70,8 @@ export function Inspector({
   onProject,
   onSeek,
   onEditAudio,
+  tracking,
+  onTrack,
 }: {
   project: Project;
   clip: Clip | null;
@@ -79,6 +82,10 @@ export function Inspector({
   onProject: (p: Project) => void;
   onSeek: (t: number) => void;
   onEditAudio: (c: AudioClip) => void;
+  /** progress text while a mask is being tracked, else null */
+  tracking: string | null;
+  /** start (or, while tracking, stop) following the picture under the mask */
+  onTrack: (c: VisualClip) => void;
 }) {
   if (!clip) {
     return (
@@ -233,6 +240,36 @@ export function Inspector({
         <p className="st-hint">Turn the layer in space or push it back; it is drawn in perspective through the project camera.</p>
         {propRows('3D')}
         <Row label="Camera lens (mm)"><Num value={project.lens ?? DEFAULT_LENS} min={12} max={200} onChange={(v) => onProject({ ...project, lens: Math.min(400, Math.max(8, v)) })} /></Row>
+      </section>
+      <section>
+        <h4>Mask</h4>
+        <label className="check">
+          <input type="checkbox" checked={!!c.mask?.enabled} onChange={(e) => onChange({ ...c, mask: { ...(c.mask ?? defaultMask()), enabled: e.target.checked } } as Clip)} /> Show only part of this layer
+        </label>
+        {c.mask?.enabled && (
+          <>
+            <div className="st-row-btns">
+              <select className="tb-select" aria-label="Mask shape" value={c.mask.shape} onChange={(e) => onChange({ ...c, mask: { ...c.mask!, shape: e.target.value as 'rect' | 'ellipse' } } as Clip)}>
+                <option value="ellipse">Ellipse</option>
+                <option value="rect">Rectangle</option>
+              </select>
+              <label className="check"><input type="checkbox" checked={c.mask.invert} onChange={(e) => onChange({ ...c, mask: { ...c.mask!, invert: e.target.checked } } as Clip)} /> Invert (cut a hole)</label>
+            </div>
+            {propRows('Mask')}
+            <Row label="Feather"><Num value={c.mask.feather} min={0} max={100} onChange={(v) => onChange({ ...c, mask: { ...c.mask!, feather: Math.max(0, v) } } as Clip)} /></Row>
+            {c.kind === 'video' && (
+              <>
+                <div className="st-row-btns">
+                  <button type="button" className={cx('btn', tracking && 'is-active')} disabled={!inClip && !tracking} onClick={() => onTrack(c)} title="Follow whatever is under the mask, from the playhead to the end of the clip">
+                    <Crosshair size={13} /> {tracking ? 'Stop tracking' : 'Track motion'}
+                  </button>
+                  {tracking && <span className="st-hint" role="status">{tracking}</span>}
+                </div>
+                <p className="st-hint">Place the mask over a subject, then Track motion: the mask follows it frame by frame and its position is keyframed.</p>
+              </>
+            )}
+          </>
+        )}
       </section>
       <section>
         <h4>Compositing</h4>

@@ -31,7 +31,8 @@ import {
 } from 'lucide-react';
 import { addMediaClips, deleteClips, findClip, linkedIds, placeClip, replaceClip, solidClip, splitAt, textClip, unlink } from '../../core/studio/build';
 import { bufferToData, buildMix, dataToBuffer, decodeAudio, meterDb, renderMix, type Mix } from '../../core/studio/audio';
-import { clipBox, clipQuad, drawFrame } from '../../core/studio/compose';
+import { clipBox, clipQuad, drawFrame, homography } from '../../core/studio/compose';
+import { simplifyKeys, toGray, trackPatch, type Gray } from '../../core/studio/track';
 import { encodeWav, frames, sliceAudio, waveformPeaks, type AudioData } from '../../core/studio/dsp';
 import {
   clipEnd,
@@ -324,6 +325,27 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
         const mx = (q[0][0] + q[1][0] + q[2][0] + q[3][0]) / 4;
         const my = (q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4;
         ctx.fillRect(mx * scale - 3, my * scale - 3, 6, 6);
+        if (c.mask?.enabled) {
+          // the mask outline, placed through the layer's own (possibly 3D) outline
+          const H = homography(q);
+          const lt = t - c.start;
+          const [ox, oy, mw, mh] = [valueAt(c.mask.x, lt), valueAt(c.mask.y, lt), valueAt(c.mask.w, lt) / 2, valueAt(c.mask.h, lt) / 2];
+          const pts: [number, number][] = c.mask.shape === 'rect' ? [[-1, -1], [1, -1], [1, 1], [-1, 1]] : Array.from({ length: 48 }, (_, i) => [Math.cos((i / 48) * Math.PI * 2), Math.sin((i / 48) * Math.PI * 2)] as [number, number]);
+          ctx.strokeStyle = '#ffd24a';
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath();
+          pts.forEach(([ux, uy], i) => {
+            const u = ox + ux * mw;
+            const v = oy + uy * mh;
+            const d = H[6] * u + H[7] * v + 1;
+            const sx = ((H[0] * u + H[1] * v + H[2]) / d) * scale;
+            const sy = ((H[3] * u + H[4] * v + H[5]) / d) * scale;
+            if (i) ctx.lineTo(sx, sy);
+            else ctx.moveTo(sx, sy);
+          });
+          ctx.closePath();
+          ctx.stroke();
+        }
         ctx.restore();
       }
     }
@@ -548,6 +570,110 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
     commit(out);
   };
 
+  // ── motion tracking: the mask follows the picture under it ──────────────
+  const [tracking, setTracking] = useState<string | null>(null);
+  const trackStop = useRef(false);
+  const trackMask = async (clip: VisualClip) => {
+    if (tracking) {
+      trackStop.current = true;
+      return;
+    }
+    const rt = clip.kind === 'video' ? media.current.get(clip.sourceId) : null;
+    const m = clip.mask;
+    if (clip.kind !== 'video' || !rt || !m) return;
+    if (playingRef.current) stopPlayback();
+    const p = projectRef.current;
+    const from = Math.max(0, Math.min(clip.duration, playheadRef.current - clip.start));
+    const step = 1 / p.fps;
+    const total = Math.floor((clip.duration - from) / step);
+    if (total < 1) {
+      onError('Move the playhead to where tracking should start (before the end of the clip).');
+      return;
+    }
+    trackStop.current = false;
+    setTracking('Tracking… 0%');
+    const el = document.createElement('video');
+    el.muted = true;
+    el.playsInline = true;
+    el.preload = 'auto';
+    el.src = rt.url;
+    try {
+      await new Promise<void>((res, rej) => {
+        el.addEventListener('loadeddata', () => res(), { once: true });
+        el.addEventListener('error', () => rej(new Error('The video could not be read for tracking.')), { once: true });
+      });
+      // a small frame is enough to follow motion, and keeps every step fast
+      const aw = Math.min(480, el.videoWidth);
+      const ah = Math.max(8, Math.round((aw * el.videoHeight) / el.videoWidth));
+      const cv = document.createElement('canvas');
+      cv.width = aw;
+      cv.height = ah;
+      const actx = cv.getContext('2d', { willReadFrequently: true })!;
+      const grab = async (local: number): Promise<Gray> => {
+        const target = Math.min(Math.max(0, el.duration - 0.001), clip.in + local);
+        if (Math.abs(el.currentTime - target) > 1e-4) {
+          await new Promise<void>((res) => {
+            const done = () => {
+              clearTimeout(timer);
+              el.removeEventListener('seeked', done);
+              res();
+            };
+            const timer = setTimeout(done, 3000);
+            el.addEventListener('seeked', done);
+            el.currentTime = target;
+          });
+        }
+        actx.drawImage(el, 0, 0, aw, ah);
+        return toGray(actx.getImageData(0, 0, aw, ah));
+      };
+      let cx = valueAt(m.x, from) * aw;
+      let cy = valueAt(m.y, from) * ah;
+      const bw = Math.max(8, valueAt(m.w, from) * aw);
+      const bh = Math.max(8, valueAt(m.h, from) * ah);
+      const radius = Math.max(6, Math.round(aw / 16));
+      const xs = [{ t: from, v: cx / aw, ease: 'linear' as Easing }];
+      const ys = [{ t: from, v: cy / ah, ease: 'linear' as Easing }];
+      let prev = await grab(from);
+      let lost = 0;
+      for (let i = 1; i <= total && !trackStop.current; i++) {
+        const local = from + i * step;
+        const next = await grab(local);
+        const hit = trackPatch(prev, next, cx, cy, bw, bh, radius);
+        lost = hit.error > 45 ? lost + 1 : 0;
+        if (lost >= 5) {
+          onError('Tracking stopped: the subject under the mask was lost. Move the mask back onto it and track again from there.');
+          break;
+        }
+        cx = Math.min(aw, Math.max(0, hit.x));
+        cy = Math.min(ah, Math.max(0, hit.y));
+        xs.push({ t: local, v: cx / aw, ease: 'linear' });
+        ys.push({ t: local, v: cy / ah, ease: 'linear' });
+        prev = next;
+        if (i % 3 === 0) {
+          setTracking(`Tracking… ${Math.round((i / total) * 100)}%`);
+          playheadRef.current = clip.start + local;
+          setPlayheadState(clip.start + local);
+        }
+      }
+      const cur = findClip(projectRef.current, clip.id) as VisualClip | null;
+      if (cur?.mask && xs.length > 1) {
+        const end = xs[xs.length - 1].t;
+        // keep keys outside the tracked span, replace those inside it
+        const merge = (a: { value: number; keys: typeof xs }, tracked: typeof xs) => ({
+          value: a.value,
+          keys: [...a.keys.filter((k) => k.t < from - 1e-4 || k.t > end + 1e-4), ...simplifyKeys(tracked, 2.5 / aw)].sort((k1, k2) => k1.t - k2.t),
+        });
+        commit(replaceClip(projectRef.current, { ...cur, mask: { ...cur.mask, x: merge(cur.mask.x, xs), y: merge(cur.mask.y, ys) } } as Clip));
+      }
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      el.removeAttribute('src');
+      el.load();
+      setTracking(null);
+    }
+  };
+
   const measure = async () => {
     setMeasured('Measuring…');
     try {
@@ -732,6 +858,8 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
           onProject={(np) => commit(np, 'project')}
           onSeek={seek}
           onEditAudio={openAudioEditor}
+          tracking={tracking}
+          onTrack={(c) => void trackMask(c)}
         />
       </div>
 

@@ -60,6 +60,21 @@ export interface Transform3D {
   z: Animatable;
 }
 
+/** Shows only part of a layer (or, inverted, hides part of it). Position and size are fractions of the layer. */
+export interface ClipMask {
+  enabled: boolean;
+  shape: 'rect' | 'ellipse';
+  /** centre, 0–1 across and down the layer */
+  x: Animatable;
+  y: Animatable;
+  /** size, 0–1 of the layer's width and height */
+  w: Animatable;
+  h: Animatable;
+  /** edge softness, 0–100 (% of half the layer's shorter side) */
+  feather: number;
+  invert: boolean;
+}
+
 export interface ChromaKey {
   enabled: boolean;
   color: string;
@@ -111,6 +126,7 @@ interface ClipBase {
 /** Extras every visual clip can have. All optional, so projects from older versions still open. */
 interface VisualExtras {
   three?: Transform3D;
+  mask?: ClipMask;
 }
 
 export interface MediaClip extends ClipBase, VisualExtras {
@@ -253,6 +269,8 @@ export const DEFAULT_LENS = 50;
 /** Distance from the camera to the frame plane, in output pixels (a longer lens flattens perspective). */
 export const cameraDistance = (p: Pick<Project, 'width' | 'lens'>) => (p.width * Math.max(8, p.lens ?? DEFAULT_LENS)) / 36;
 
+export const defaultMask = (): ClipMask => ({ enabled: true, shape: 'ellipse', x: anim(0.5), y: anim(0.5), w: anim(0.5), h: anim(0.5), feather: 8, invert: false });
+
 export const defaultThree = (): Transform3D => ({ rotX: anim(0), rotY: anim(0), z: anim(0) });
 
 /** True when the clip is actually turned or moved in depth at some point. */
@@ -267,6 +285,7 @@ export function mapAnimatables<T extends VisualClip>(c: T, fn: (a: Animatable) =
   const out = { ...c, transform: { ...c.transform } } as T;
   for (const k of ['x', 'y', 'scale', 'rotation', 'opacity'] as TransformProp[]) out.transform[k] = fn(c.transform[k]);
   if (c.three) out.three = { rotX: fn(c.three.rotX), rotY: fn(c.three.rotY), z: fn(c.three.z) };
+  if (c.mask) out.mask = { ...c.mask, x: fn(c.mask.x), y: fn(c.mask.y), w: fn(c.mask.w), h: fn(c.mask.h) };
   return out;
 }
 

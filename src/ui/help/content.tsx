@@ -765,6 +765,22 @@ export const SECTIONS: GuideSection[] = [
             [<>Custom curve</>, <>A curve you shape yourself in the graph editor, including overshoot and bounce-back.</>],
           ]}
         />
+        <h3>Masks and motion tracking</h3>
+        <p>
+          <Ui>Mask</Ui> → <Ui>Show only part of this layer</Ui> keeps an ellipse or rectangle of the layer and hides the rest (a yellow outline
+          shows it in the preview). <Ui>Feather</Ui> softens the edge; <Ui>Invert</Ui> cuts a hole instead. The mask's position and size can be
+          keyframed like any other property.
+        </p>
+        <p>
+          On a video clip, <Ui>Track motion</Ui> makes the mask follow whatever is under it: place the mask over a face, a car or a logo, put
+          the playhead where tracking should start, and press the button. Studio steps through the clip, matching the picture frame to frame,
+          and writes the mask's position as keyframes. Press the button again to stop early; if the subject is lost (it leaves the frame or
+          is covered), move the mask back onto it and track again from there.
+        </p>
+        <Tip title="Blur a moving face or number plate.">
+          Put the same video on two tracks, one above the other. On the upper copy set <Ui>Blur</Ui> to about 20, add a mask over the face
+          and track it. Only the masked, blurred patch of the upper copy covers the sharp video below.
+        </Tip>
         <h3>3D layers</h3>
         <p>
           The <Ui>3D</Ui> section of the inspector turns any layer (video, picture, title or colour) into a flat card in space, drawn in
