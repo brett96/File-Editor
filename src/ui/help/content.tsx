@@ -458,7 +458,7 @@ export const SECTIONS: GuideSection[] = [
           it at any time.
         </p>
         <Steps>
-          <li><Ui>Layer ▸ New Adjustment Layer</Ui> and pick one: Curves, Levels, Hue/Saturation, Color Balance, Black &amp; White, Exposure, Brightness/Contrast, Vibrance, Photo Filter, Invert, Threshold or Posterize.</li>
+          <li><Ui>Layer ▸ New Adjustment Layer</Ui> and pick one: Curves, Levels, Hue/Saturation, Color Balance, Black &amp; White, Exposure, Brightness/Contrast, Vibrance, Photo Filter, Clarity, Dehaze, Grain, Color Lookup (LUT), Invert, Threshold or Posterize.</li>
           <li>Set it in the <Ui>Properties</Ui> panel.</li>
           <li>To affect only part of the picture, select that part first: the adjustment gets a mask (see <Go to="pro-layers">masks</Go>).</li>
         </Steps>
@@ -473,6 +473,19 @@ export const SECTIONS: GuideSection[] = [
           Move the input black and white sliders inwards, to where the histogram starts and ends, to give a flat photo full contrast;{' '}
           <Ui>Auto</Ui> does it for you. <Ui>Midtones (γ)</Ui> brightens or darkens the mid-tones.
         </p>
+        <h3>Clarity, Dehaze, Grain and LUTs</h3>
+        <Defs
+          rows={[
+            [<>Clarity</>, <>Adds contrast to midtone detail (texture, clouds, fabric) while leaving the darkest and brightest areas alone, so nothing clips. Negative values give a soft glow.</>],
+            [<>Dehaze</>, <>Works out how much haze lies over each part of the picture and its colour, then removes it: distant hills, mist and flat, milky photos regain depth. Negative values add haze.</>],
+            [<>Grain</>, <>Film grain that is strongest in the midtones. <Ui>Size</Ui> is in image pixels; <Ui>Roughness</Ui> goes from soft clumps to sharp speckle. The pattern is fixed to the picture, so it does not change while you work.</>],
+            [<>Color Lookup (LUT)</>, <>Remaps every colour through a 3D table for a complete look. Choose a built-in look (Teal &amp; Orange, Warm film, Cool fade, Bleach bypass, Noir) or <Ui>Load .cube…</Ui> to use a LUT file from a camera maker or colourist. <Ui>Strength</Ui> blends it with the original.</>],
+          ]}
+        />
+        <Note title="Saving to Photoshop.">
+          Photoshop has no matching layer types for these four, so in a <code>.psd</code> each is saved as a pixel layer that holds the picture
+          as it looks at that point. The file opens looking the same, but that layer is no longer adjustable there.
+        </Note>
       </>
     ),
   },

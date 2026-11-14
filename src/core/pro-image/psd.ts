@@ -98,7 +98,8 @@ function adjustFromPsd(a: AdjustmentLayer): AdjustSpec | null {
   }
 }
 
-function adjustToPsd(s: AdjustSpec): AdjustmentLayer {
+/** Photoshop's form of an adjustment, or null for the ones it has no equivalent of (Clarity, Dehaze, Grain, LUT). */
+export function adjustToPsd(s: AdjustSpec): AdjustmentLayer | null {
   const rgb = (h: string) => {
     const n = parseInt(h.slice(1), 16) || 0;
     return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255 };
@@ -135,6 +136,8 @@ function adjustToPsd(s: AdjustSpec): AdjustmentLayer {
       return { type: 'posterize', levels: s.levels };
     case 'threshold':
       return { type: 'threshold', level: s.level };
+    default:
+      return null;
   }
 }
 
@@ -222,7 +225,8 @@ export function writePsdDocument(doc: ProDocument, composite: Pixels, rasterize:
       }
       base.mask = { left: 0, top: 0, right: l.mask.width, bottom: l.mask.height, defaultColor: 0, disabled: !l.maskEnabled, imageData: { data: img, width: l.mask.width, height: l.mask.height } };
     }
-    if (l.kind === 'adjust') return { ...base, adjustment: adjustToPsd(l.adjust) };
+    const adjustment = l.kind === 'adjust' ? adjustToPsd(l.adjust) : null;
+    if (l.kind === 'adjust') return adjustment ? { ...base, adjustment } : { ...base, hidden: true };
     const px = l.kind === 'raster' ? l.px : rasterize(l);
     const left = l.kind === 'raster' ? l.x : 0;
     const top = l.kind === 'raster' ? l.y : 0;

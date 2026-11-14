@@ -1,6 +1,7 @@
 /** Layers and Properties panels of the pro photo editor. */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ArrowDown, ArrowUp, Copy, Eye, EyeOff, Layers as LayersIcon, Lock, Plus, SquareDashed, Trash2, Unlock } from 'lucide-react';
+import { LUT_PRESETS, parseCube } from '../../core/pro-image/tone';
 import { ADJUST_LABELS, autoLevels, curveLut, histogram, type AdjustSpec, type CurvePoint, type Histogram } from '../../core/pro-image/adjust';
 import { BLEND_MODES, type BlendMode, type Layer, type ProDocument } from '../../core/pro-image/document';
 import { cx } from '../components';
@@ -269,6 +270,7 @@ export function PropertiesPanel({
   extra?: ReactNode;
 }) {
   const [hist, setHist] = useState<Histogram | null>(null);
+  const [lutError, setLutError] = useState<string | null>(null);
   const adjustType = layer?.kind === 'adjust' ? layer.adjust.type : null;
   useEffect(() => {
     if (adjustType !== 'curves' && adjustType !== 'levels' && adjustType !== 'threshold') return setHist(null);
@@ -447,6 +449,79 @@ export function PropertiesPanel({
         break;
       case 'invert':
         body = <p className="pi-hint">Inverts the colours of the layers below.</p>;
+        break;
+      case 'clarity':
+        body = (
+          <>
+            <Slider label="Clarity" value={a.amount} min={-100} max={100} onChange={(v) => setAdj({ ...a, amount: v })} onCommit={onCommit} />
+            <p className="pi-hint">Adds contrast to midtone detail without clipping shadows or highlights. Negative values soften.</p>
+          </>
+        );
+        break;
+      case 'dehaze':
+        body = (
+          <>
+            <Slider label="Dehaze" value={a.amount} min={-100} max={100} onChange={(v) => setAdj({ ...a, amount: v })} onCommit={onCommit} />
+            <p className="pi-hint">Removes atmospheric haze and flat, milky contrast. Negative values add haze.</p>
+          </>
+        );
+        break;
+      case 'grain':
+        body = (
+          <>
+            <Slider label="Amount" value={a.amount} min={0} max={100} onChange={(v) => setAdj({ ...a, amount: v })} onCommit={onCommit} />
+            <Slider label="Size" value={a.size} min={1} max={10} step={0.5} onChange={(v) => setAdj({ ...a, size: v })} onCommit={onCommit} />
+            <Slider label="Roughness" value={a.roughness} min={0} max={100} onChange={(v) => setAdj({ ...a, roughness: v })} onCommit={onCommit} />
+          </>
+        );
+        break;
+      case 'lut':
+        body = (
+          <>
+            <div className="pi-row">
+              <select
+                className="tb-select"
+                aria-label="Look"
+                value={LUT_PRESETS.find((p) => p.label === a.lut?.name)?.id ?? (a.lut ? 'file' : '')}
+                onChange={(e) => {
+                  const preset = LUT_PRESETS.find((p) => p.id === e.target.value);
+                  if (preset) {
+                    onChange({ ...layer, adjust: { ...a, lut: preset.build() } });
+                    onCommit();
+                  }
+                }}
+              >
+                <option value="" disabled>Choose a look…</option>
+                {LUT_PRESETS.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                {a.lut && !LUT_PRESETS.some((p) => p.label === a.lut?.name) && <option value="file">{a.lut.name}</option>}
+              </select>
+              <label className="pi-text-btn pi-file-btn">
+                Load .cube…
+                <input
+                  type="file"
+                  accept=".cube,text/plain"
+                  hidden
+                  onChange={async (e) => {
+                    const f = e.target.files?.[0];
+                    e.target.value = '';
+                    if (!f) return;
+                    try {
+                      const lut = parseCube(await f.text(), f.name.replace(/\.cube$/i, ''));
+                      setLutError(null);
+                      onChange({ ...layer, adjust: { ...a, lut } });
+                      onCommit();
+                    } catch (err) {
+                      setLutError(err instanceof Error ? err.message : String(err));
+                    }
+                  }}
+                />
+              </label>
+            </div>
+            <Slider label="Strength" value={a.strength} min={0} max={100} onChange={(v) => setAdj({ ...a, strength: v })} onCommit={onCommit} />
+            {lutError && <p className="pi-hint pi-error" role="alert">{lutError}</p>}
+            <p className="pi-hint">{a.lut ? `${a.lut.name} · ${a.lut.size}³ points` : 'Pick a built-in look, or load a .cube LUT file from a camera maker or colourist.'}</p>
+          </>
+        );
         break;
     }
   } else {
