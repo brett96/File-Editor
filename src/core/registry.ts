@@ -105,7 +105,7 @@ export async function sniffFormat(name: string, bytes: Uint8Array): Promise<Snif
   if (startsWith(bytes, 'PK')) {
     const z = await sniffZip(bytes);
     if (z === 'other-office') {
-      return { format: null, officeEncrypted: false, unsupported: 'Spreadsheets and presentations are not supported yet — only text documents and PDFs.' };
+      return { format: null, officeEncrypted: false, unsupported: 'Spreadsheets and presentations open in their own editors: this file was not recognised as an Excel (.xlsx) or PowerPoint (.pptx) file.' };
     }
     if (z) return { format: z, officeEncrypted: false };
   }

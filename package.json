@@ -3,7 +3,7 @@
   "productName": "File Editor",
   "version": "0.1.8",
   "private": true,
-  "description": "Create, edit, convert and password-protect documents (DOCX, PDF, ODT, RTF, Markdown, HTML, TXT), spreadsheets (XLSX, CSV, TSV) and SQLite databases on the web or desktop.",
+  "description": "Create, edit, convert and password-protect documents (DOCX, PDF, ODT, RTF, Markdown, HTML, TXT), spreadsheets (XLSX, CSV, TSV), presentations (PPTX) and SQLite databases on the web or desktop.",
   "author": "File Editor",
   "type": "module",
   "main": "dist-electron/main.cjs",
@@ -173,6 +173,17 @@
         "description": "PDF document",
         "role": "Editor",
         "mimeType": "application/pdf"
+      },
+      {
+        "ext": [
+          "pptx",
+          "ppsx",
+          "potx"
+        ],
+        "name": "PowerPoint Presentation",
+        "description": "PowerPoint presentation",
+        "role": "Editor",
+        "mimeType": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
       },
       {
         "ext": "odt",

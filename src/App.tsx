@@ -4,6 +4,7 @@ import { TabActiveContext } from './ui/tab-active';
 import {
   Database,
   PenTool,
+  Presentation,
   FileCode,
   Plus,
   X,
@@ -72,6 +73,8 @@ import { ImageEditor, type ImageEditorHandle } from './ui/image/ImageEditor';
 import type { ProImageEditorHandle } from './ui/pro-image/ProImageEditor';
 import type { ProDocument } from './core/pro-image/document';
 import type { StudioHandle } from './ui/studio/StudioEditor';
+import type { SlidesHandle } from './ui/slides/SlidesEditor';
+import type { Deck } from './core/slides/model';
 import type { StudioExportChoice } from './ui/studio/StudioExport';
 import type { Project as StudioProject } from './core/studio/model';
 import { VideoEditor, formatTime, rotatedSize, type VideoEditorHandle } from './ui/video/VideoEditor';
@@ -108,6 +111,7 @@ const GUIDE_FOR_KIND: Record<string, string> = {
   pdf: 'pdf',
   sheet: 'spreadsheets',
   database: 'databases',
+  slides: 'slides',
   image: 'photo-quick',
   proimage: 'photo-pro',
   vector: 'vector',
@@ -125,10 +129,14 @@ function helpFromHash(): { section: string | null } | null {
   }
 }
 
+const SlidesEditor = lazy(() => import('./ui/slides/SlidesEditor').then((m) => ({ default: m.SlidesEditor })));
 const StudioEditor = lazy(() => import('./ui/studio/StudioEditor').then((m) => ({ default: m.StudioEditor })));
 const StudioExportModal = lazy(() => import('./ui/studio/StudioExport').then((m) => ({ default: m.StudioExportModal })));
 
-const ALL_OPEN_EXTENSIONS = [...new Set([...OPEN_EXTENSIONS, ...SHEET_EXTENSIONS, ...DB_EXTENSIONS, ...IMAGE_EXTENSIONS_ALL, ...MEDIA_EXTENSIONS_ALL])];
+/** PowerPoint files, and the formats that are recognised only to explain how to open them (.ppt, .odp, Google Slides shortcuts). */
+const SLIDE_EXTENSIONS = ['pptx', 'ppsx', 'potx', 'pptm', 'ppsm', 'potm'];
+const SLIDE_POINTERS = ['ppt', 'pps', 'pot', 'odp', 'gslides', 'key'];
+const ALL_OPEN_EXTENSIONS = [...new Set([...OPEN_EXTENSIONS, ...SLIDE_EXTENSIONS, ...SLIDE_POINTERS, ...SHEET_EXTENSIONS, ...DB_EXTENSIONS, ...IMAGE_EXTENSIONS_ALL, ...MEDIA_EXTENSIONS_ALL])];
 
 type MediaDoc = { kind: 'media'; key: number; name: string; blob: Blob; info: MediaInfo; container: ContainerFormat; handle?: unknown; protection: ProtectionDraft };
 
@@ -146,6 +154,7 @@ type OpenDoc =
   /** origin: the file Studio was opened from (null for a .fstudio project); handle: the project file */
   | { kind: 'studio'; key: number; name: string; project: StudioProject; blobs: Map<string, Blob>; origin: MediaDoc | null; protection: ProtectionDraft; handle?: unknown }
   | { kind: 'sheet'; key: number; name: string; format: SheetFormat; workbook: IWorkbookData; /** too big to re-save after every edit */ large?: boolean; handle?: unknown; protection: ProtectionDraft }
+  | { kind: 'slides'; key: number; name: string; deck: Deck; handle?: unknown; protection: ProtectionDraft }
   | { kind: 'database'; key: number; name: string; format: DbFormat; db: SqliteDatabase; /** too big to re-save after every edit */ large?: boolean; /** a LiteDB file: saved back in LiteDB's format */ lite?: LiteState; handle?: unknown; protection: ProtectionDraft };
 
 const PRIMARY_SWITCH: Array<DocFormat | 'image'> = ['docx', 'txt', 'html', 'css', 'js', 'pdf', 'image'];
@@ -249,7 +258,7 @@ function errorText(err: unknown): string {
 
 // ── tabs ─────────────────────────────────────────────────────────────────
 /** What a new tab starts with. */
-type TabStart = { kind: 'open'; file: OpenedFile } | { kind: 'new' } | { kind: 'new-sheet' } | { kind: 'new-db' } | { kind: 'new-vector' };
+type TabStart = { kind: 'open'; file: OpenedFile } | { kind: 'new' } | { kind: 'new-sheet' } | { kind: 'new-db' } | { kind: 'new-vector' } | { kind: 'new-slides' };
 
 /** What the tab bar and window title show for a tab. */
 interface TabInfo {
@@ -316,6 +325,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   const [vectorStatus, setVectorStatus] = useState<{ artboards: number; objects: number } | null>(null);
   const sheetRef = useRef<SheetEditorHandle>(null);
   const dbRef = useRef<DbEditorHandle>(null);
+  const slidesRef = useRef<SlidesHandle>(null);
   const docRef = useRef(doc);
   docRef.current = doc;
   // Every save says what kind of document is open and which extensions its format owns, so a
@@ -408,6 +418,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       if (start.kind === 'new-sheet') return newSpreadsheet();
       if (start.kind === 'new-vector') return newVector();
       if (start.kind === 'new-db') await newDatabase();
+      else if (start.kind === 'new-slides') await newPresentation();
       else await openFile(start.file);
       // let React apply the opened document before looking for it
       await new Promise((r) => setTimeout(r, 0));
@@ -694,6 +705,115 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     }
   };
 
+  // ── presentations ────────────────────────────────────────────────────────
+  /** A new deck with a title slide. */
+  const newPresentation = async () => {
+    const { newDeck } = await import('./core/slides/model');
+    setDoc({ kind: 'slides', key: docKey++, name: 'Untitled.pptx', deck: newDeck(), protection: EMPTY_PROTECTION });
+    setDirty(false);
+  };
+
+  /** Opens PowerPoint files (.pptx, .ppsx, .potx…). Returns false when the file is not a presentation. */
+  const openSlides = async (file: OpenedFile): Promise<boolean> => {
+    const ext = file.name.split('.').pop()?.toLowerCase() ?? '';
+    const head = new Uint8Array(await file.blob.slice(0, 8).arrayBuffer());
+    const zipped = head[0] === 0x50 && head[1] === 0x4b;
+    // presentations in formats that cannot be read here: say how to get a PowerPoint file instead
+    if (ext === 'gslides') throw new Error('This is a shortcut to a Google Slides presentation, not the presentation itself. In Google Slides choose File ▸ Download ▸ Microsoft PowerPoint (.pptx), then open that file here.');
+    if (ext === 'key') throw new Error('Keynote files cannot be opened here. In Keynote choose File ▸ Export To ▸ PowerPoint, then open the .pptx file.');
+    if (ext === 'odp') throw new Error('OpenDocument presentations (.odp) cannot be opened here. Save the file as PowerPoint (.pptx) from LibreOffice or Google Slides, then open that.');
+    if (!zipped && (ext === 'ppt' || ext === 'pps' || ext === 'pot')) throw new Error('This is the old PowerPoint 97–2003 format. Open it in PowerPoint, Google Slides or LibreOffice and save it as .pptx, then open that file here.');
+    if (!zipped) {
+      if (!SLIDE_EXTENSIONS.includes(ext)) return false;
+      if (!(head[0] === 0xd0 && head[1] === 0xcf)) throw new Error('This is not a PowerPoint file (or it is damaged).');
+    }
+    // a zip: only a presentation if it holds one (Word and Excel files are zips too)
+    let bytes = SLIDE_EXTENSIONS.includes(ext) ? await fileBytes(file) : null;
+    const { readPptx, isPptx } = await import('./core/slides/pptx-read');
+    let password: string | undefined;
+    if (!zipped && bytes) {
+      // a password-protected presentation: the real file is encrypted inside this container
+      const { isOfficeEncrypted, decryptOffice } = await import('./core/crypto/office-crypto');
+      if (!isOfficeEncrypted(bytes)) throw new Error('This is not a PowerPoint file (or it is damaged).');
+      let incorrect = false;
+      for (;;) {
+        const pw = await requestPassword(file.name, 'This presentation is password protected.', incorrect);
+        if (pw === null) return true;
+        try {
+          setBusy(`Opening ${file.name}…`);
+          bytes = await decryptOffice(bytes, pw);
+          password = pw;
+          break;
+        } catch (err) {
+          if (!(err instanceof PasswordError)) throw err;
+          incorrect = true;
+        } finally {
+          setBusy(null);
+        }
+      }
+    }
+    if (!bytes) {
+      if (file.blob.size > 300 * 1024 * 1024 || !(await isPptx(await fileBytes(file)))) return false;
+    }
+    setBusy(`Opening ${file.name}…`);
+    try {
+      await nextPaint();
+      const { deck, warnings } = await readPptx(bytes ?? (await fileBytes(file)));
+      // templates and slide shows are edited as a presentation, and saved as one
+      const name = /\.pptx$/i.test(file.name) ? file.name : `${baseName(file.name)}.pptx`;
+      // a file that came with a password keeps it when saved, as in PowerPoint
+      const protection: ProtectionDraft = password ? { ...EMPTY_PROTECTION, enabled: true, password, confirm: password } : EMPTY_PROTECTION;
+      setDoc({ kind: 'slides', key: docKey++, name, deck, handle: name === file.name ? file.handle : undefined, protection });
+      setDirty(false);
+      if (warnings.length) toast(`Opened ${file.name}. Not brought in: ${warnings.join(', ')}. Saving here will leave them out, so keep the original file.`, 'info');
+    } finally {
+      setBusy(null);
+    }
+    return true;
+  };
+
+  const [slidesSaveAs, setSlidesSaveAs] = useState(false);
+  const saveSlides = async (handle: unknown | undefined, adopt: boolean, quiet = false, as: 'pptx' | 'ppsx' | 'pdf' | 'png' = 'pptx') => {
+    const d = docRef.current;
+    const editor = slidesRef.current;
+    if (d?.kind !== 'slides' || !editor) return;
+    const seq = editSeq.current;
+    if (!quiet) setBusy(as === 'pdf' ? 'Making the PDF…' : as === 'png' ? 'Drawing the slides…' : 'Saving…');
+    try {
+      await nextPaint();
+      const deck = editor.getDeck();
+      const base = baseName(d.name);
+      let bytes: Uint8Array;
+      let mime = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
+      let ext = 'pptx';
+      let description = 'PowerPoint presentation';
+      if (as === 'pdf') {
+        bytes = await (await import('./ui/slides/export')).deckToPdf(deck, base);
+        [mime, ext, description] = ['application/pdf', 'pdf', 'PDF'];
+      } else if (as === 'png') {
+        bytes = await (await import('./ui/slides/export')).deckToPngZip(deck);
+        [mime, ext, description] = ['application/zip', 'zip', 'Slides as pictures (ZIP)'];
+      } else {
+        bytes = await (await import('./core/slides/pptx-write')).writePptx(deck, { title: base, as: as === 'ppsx' ? 'show' : 'presentation' });
+        if (as === 'ppsx') [mime, ext, description] = ['application/vnd.openxmlformats-officedocument.presentationml.slideshow', 'ppsx', 'PowerPoint show'];
+        if (d.protection.enabled && d.protection.password) bytes = await (await import('./core/crypto/office-crypto')).encryptOffice(bytes, d.protection.password);
+      }
+      const res = await host.save({ suggestedName: `${base}${as === 'png' ? ' slides' : ''}.${ext}`, bytes, mime, ext, description, handle: as === 'pptx' ? handle : undefined, quiet });
+      if (!res) return;
+      // only a .pptx becomes the file being edited: a PDF or a set of pictures is a copy
+      if (adopt && as === 'pptx') {
+        if (!quiet) setDoc((cur) => (cur && cur.kind === 'slides' ? { ...cur, name: res.name, handle: res.handle } : cur));
+        markClean(seq);
+      }
+      if (!quiet) toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${res.name}`, 'info');
+    } catch (err) {
+      if (quiet) throw err;
+      toast(`Could not save: ${errorText(err)}`);
+    } finally {
+      if (!quiet) setBusy(null);
+    }
+  };
+
   /** A new, empty SQLite database (tables are made in the editor). */
   const newDatabase = async () => {
     setBusy('Creating the database…');
@@ -841,6 +961,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       if (await openProject(file)) return;
       if (await openVector(file)) return;
       if (await openPsd(file)) return;
+      if (await openSlides(file)) return;
       if (await openDatabase(file)) return;
       if (await openSheet(file)) return;
       if (await openMedia(file)) return;
@@ -1200,7 +1321,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
 
   const render = async (format: DocFormat, protection: ProtectionDraft): Promise<Uint8Array> => {
     const d = docRef.current!;
-    if (d.kind === 'vector' || d.kind === 'image' || d.kind === 'proimage' || d.kind === 'media' || d.kind === 'studio' || d.kind === 'sheet' || d.kind === 'database') throw new Error('Use the image, video, spreadsheet or database save dialog.');
+    if (d.kind === 'vector' || d.kind === 'image' || d.kind === 'proimage' || d.kind === 'media' || d.kind === 'studio' || d.kind === 'sheet' || d.kind === 'database' || d.kind === 'slides') throw new Error('Use the image, video, spreadsheet, presentation or database save dialog.');
     const pdfProt = protectionToPdf(protection);
     const pw = protection.enabled ? protection.password : undefined;
     if (d.kind === 'code') {
@@ -1727,6 +1848,9 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       case 'vector':
         await saveVector(vectorSvgChoice(d.name), d.handle, quiet);
         return true;
+      case 'slides':
+        await saveSlides(d.handle, true, quiet);
+        return true;
       case 'studio':
         await saveStudioProject(d.handle, quiet);
         return true;
@@ -1779,6 +1903,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       if (d.kind === 'sheet') return saveSheet({ format: d.format, fileName: d.name, protection: d.protection }, undefined, true);
       if (d.kind === 'database') return saveDatabase(undefined, true);
       if (d.kind === 'vector') return saveVector(vectorSvgChoice(d.name), undefined);
+      if (d.kind === 'slides') return saveSlides(undefined, true);
       if (d.kind === 'image' && IMAGE_FORMATS[d.format].canWrite) {
         return saveImage({ format: d.format as ImageExportChoice['format'], fileName: d.name, quality: 92, lossless: false, background: '#ffffff', scale: 1 }, undefined, true);
       }
@@ -1788,6 +1913,10 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     }
     if (d.kind === 'database') {
       await saveDatabase(undefined, true);
+      return;
+    }
+    if (d.kind === 'slides') {
+      await saveSlides(undefined, true);
       return;
     }
     setExportOpen('save-as');
@@ -1893,6 +2022,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     try {
       let url: string;
       if (d.kind === 'database') throw new Error('Databases cannot be printed. Export a query result or open a spreadsheet instead.');
+      if (d.kind === 'slides') throw new Error('To print a presentation, choose Save as ▸ PDF and print that file.');
       if (d.kind === 'media' || d.kind === 'studio') throw new Error('Video and audio cannot be printed. Save a frame as an image to print it.');
       if (d.kind === 'vector') {
         // the active artboard, as vectors, one per page
@@ -2056,6 +2186,8 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       ? SHEET_FORMATS[doc.format].label
       : doc?.kind === 'database'
       ? (doc.lite ? 'LiteDB database' : 'SQLite database')
+      : doc?.kind === 'slides'
+      ? 'PowerPoint presentation'
       : doc?.kind === 'proimage'
       ? doc.format === 'psd' ? 'Photoshop document' : `${IMAGE_FORMATS[doc.format].label} · layers`
       : doc?.kind === 'image'
@@ -2073,17 +2205,17 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   const docActions = doc && (
     <>
       <IconButton label={host.canSaveInPlace || host.kind === 'desktop' ? 'Save' : 'Download'} text onClick={save}><Save size={16} /></IconButton>
-      <IconButton label={isDatabase ? 'Save as' : 'Save as / Convert'} text onClick={() => (isDatabase ? (doc.kind === 'database' && doc.lite ? setDbSaveAs(true) : void saveDatabase(undefined, true)) : setExportOpen('save-as'))}><FileDown size={16} /></IconButton>
+      <IconButton label={isDatabase || doc.kind === 'slides' ? 'Save as' : 'Save as / Convert'} text onClick={() => (doc.kind === 'slides' ? setSlidesSaveAs(true) : isDatabase ? (doc.kind === 'database' && doc.lite ? setDbSaveAs(true) : void saveDatabase(undefined, true)) : setExportOpen('save-as'))}><FileDown size={16} /></IconButton>
       {!isMediaDoc && !isDatabase && (
         <IconButton label="Protect" text active={doc.protection.enabled} onClick={() => setSecurityOpen(true)}>
           {doc.protection.enabled ? <ShieldCheck size={16} /> : <LockOpen size={16} />}
         </IconButton>
       )}
-      {doc.kind !== 'media' && doc.kind !== 'studio' && doc.kind !== 'database' && <IconButton label="Print" onClick={print}><Printer size={16} /></IconButton>}
+      {doc.kind !== 'media' && doc.kind !== 'studio' && doc.kind !== 'database' && doc.kind !== 'slides' && <IconButton label="Print" onClick={print}><Printer size={16} /></IconButton>}
       {doc.kind === 'pdf' && (
         <IconButton label="Convert PDF to editable document" onClick={convertPdfToFlow}><Wand2 size={16} /></IconButton>
       )}
-      {!isMediaDoc && !isDatabase && doc.kind !== 'code' && doc.kind !== 'sheet' && (
+      {!isMediaDoc && !isDatabase && doc.kind !== 'code' && doc.kind !== 'sheet' && doc.kind !== 'slides' && (
         <>
           <Divider />
           <IconButton label="Zoom out (Ctrl -)" onClick={() => setZoom((z) => [...ZOOMS].reverse().find((v) => v < z - 0.001) ?? z)}><ZoomOut size={16} /></IconButton>
@@ -2109,6 +2241,11 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       {active && actionsSlot && docActions && createPortal(docActions, actionsSlot)}
       <main className="main">
         {doc?.kind === 'sheet' && <SheetEditor key={doc.key} ref={sheetRef} initial={doc.workbook} large={doc.large} onChange={markDirty} onError={toast} onNotice={(m) => toast(m, 'info')} />}
+        {doc?.kind === 'slides' && (
+          <Suspense fallback={<div className="busy" role="status"><span className="spinner" /> Loading the presentation editor…</div>}>
+            <SlidesEditor key={doc.key} ref={slidesRef} initial={doc.deck} onChange={markDirty} onError={toast} />
+          </Suspense>
+        )}
         {doc?.kind === 'database' && <DbEditor key={doc.key} ref={dbRef} db={doc.db} onChange={markDirty} onError={toast} />}
         {doc?.kind === 'flow' && (
           <RichEditor key={doc.key} ref={richRef} initial={doc.initial} zoom={zoom} onZoom={setZoom} onChange={markDirty} onStats={setStats} onPageCount={setPageCount} onError={toast} />
@@ -2410,6 +2547,33 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
           />
         );
       })()}
+      {slidesSaveAs && doc?.kind === 'slides' && (
+        <Modal
+          title="Save as"
+          width={480}
+          onClose={() => setSlidesSaveAs(false)}
+          footer={
+            <>
+              <span className="spacer" />
+              <button type="button" className="btn btn-text" onClick={() => setSlidesSaveAs(false)}>Cancel</button>
+            </>
+          }
+        >
+          <div className="choice-list">
+            {([
+              ['pptx', 'PowerPoint presentation (.pptx)', 'Opens in PowerPoint, Google Slides (File ▸ Open ▸ Upload) and Keynote. This becomes the file you are editing.'],
+              ['ppsx', 'PowerPoint show (.ppsx)', 'A copy that starts the slide show as soon as it is opened.'],
+              ['pdf', 'PDF', 'One page per slide, for sharing or printing. Hidden slides are left out.'],
+              ['png', 'Pictures (PNG, in a ZIP)', 'Every slide as a picture.'],
+            ] as const).map(([as, title, text]) => (
+              <button key={as} type="button" className="choice" onClick={() => { setSlidesSaveAs(false); void saveSlides(undefined, true, false, as); }}>
+                <strong>{title}</strong>
+                <span>{text}</span>
+              </button>
+            ))}
+          </div>
+        </Modal>
+      )}
       {dbSaveAs && doc?.kind === 'database' && (
         <Modal
           title="Save as"
@@ -2450,6 +2614,9 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       {securityOpen && doc?.kind === 'sheet' && (
         <SheetSecurityModal format={doc.format} initial={doc.protection} onClose={() => setSecurityOpen(false)} onApply={applySecurity} />
       )}
+      {securityOpen && doc?.kind === 'slides' && (
+        <SheetSecurityModal format="xlsx" noun="presentation" officeApp="PowerPoint" initial={doc.protection} onClose={() => setSecurityOpen(false)} onApply={applySecurity} />
+      )}
       {securityOpen && doc && format && (doc.kind === 'flow' || doc.kind === 'code' || doc.kind === 'pdf') && (
         <SecurityModal format={format} initial={doc.protection} onClose={() => setSecurityOpen(false)} onApply={applySecurity} />
       )}
@@ -2475,6 +2642,8 @@ function tabIcon(kind: TabInfo['kind']) {
       return <SheetIcon size={14} />;
     case 'database':
       return <Database size={14} />;
+    case 'slides':
+      return <Presentation size={14} />;
     case 'image':
     case 'proimage':
       return <ImageIcon size={14} />;
@@ -2491,7 +2660,7 @@ function tabIcon(kind: TabInfo['kind']) {
 }
 
 const startName = (start: TabStart) =>
-  start.kind === 'open' ? start.file.name : start.kind === 'new-sheet' ? 'Untitled.xlsx' : start.kind === 'new-db' ? 'Untitled.sqlite' : start.kind === 'new-vector' ? 'Untitled.svg' : 'Untitled.docx';
+  start.kind === 'open' ? start.file.name : start.kind === 'new-sheet' ? 'Untitled.xlsx' : start.kind === 'new-db' ? 'Untitled.sqlite' : start.kind === 'new-vector' ? 'Untitled.svg' : start.kind === 'new-slides' ? 'Untitled.pptx' : 'Untitled.docx';
 
 export default function App() {
   const host = getHost();
@@ -2577,11 +2746,12 @@ export default function App() {
   const newSpreadsheet = () => openTab({ kind: 'new-sheet' });
   const newDatabase = () => openTab({ kind: 'new-db' });
   const newVector = () => openTab({ kind: 'new-vector' });
+  const newPresentation = () => openTab({ kind: 'new-slides' });
 
   const pickAndOpen = async () => {
     try {
       const extensions = host.kind === 'desktop' ? [...ALL_OPEN_EXTENSIONS, 'psd', 'fstudio', 'ai', 'svgz'] : vectorAvailable() ? [...ALL_OPEN_EXTENSIONS, 'ai', 'svgz'] : ALL_OPEN_EXTENSIONS;
-      const files = await host.openFiles({ extensions, multiple: true, description: 'Documents, spreadsheets, databases, images, video, audio & code' });
+      const files = await host.openFiles({ extensions, multiple: true, description: 'Documents, spreadsheets, presentations, databases, images, video, audio & code' });
       files.forEach(openFile);
     } catch (err) {
       toast(errorText(err));
@@ -2750,8 +2920,8 @@ export default function App() {
   }, [toast]);
 
   // ── shortcuts, OS file-open events, native menu ──────────────────────────
-  const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, openFile, closeTab, activate, openFolder, showFolder });
-  shell.current = { pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, openFile, closeTab, activate, openFolder, showFolder };
+  const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, newPresentation, openFile, closeTab, activate, openFolder, showFolder });
+  shell.current = { pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, newPresentation, openFile, closeTab, activate, openFolder, showFolder };
 
   useEffect(() => {
     const cycle = (step: number) => {
@@ -2798,6 +2968,7 @@ export default function App() {
       else if (cmd === 'new-spreadsheet') s.newSpreadsheet();
       else if (cmd === 'new-database') s.newDatabase();
       else if (cmd === 'new-drawing') s.newVector();
+      else if (cmd === 'new-presentation') s.newPresentation();
       else if (cmd === 'open') void s.pickAndOpen();
       else if (cmd === 'open-folder') void s.openFolder();
       else if (cmd === 'license') setLicenseOpen(true);
@@ -2900,6 +3071,7 @@ export default function App() {
               <div className="format-menu" role="menu" aria-label="New file">
                 <MenuItem hint=".docx" onClick={() => { close(); newDocument(); }}>Blank document</MenuItem>
                 <MenuItem hint=".xlsx" onClick={() => { close(); newSpreadsheet(); }}>Blank spreadsheet</MenuItem>
+                <MenuItem hint=".pptx" onClick={() => { close(); newPresentation(); }}>Blank presentation</MenuItem>
                 <MenuItem hint=".sqlite" onClick={() => { close(); newDatabase(); }}>Blank database</MenuItem>
                 {vectorAvailable() && <MenuItem hint=".svg / .ai" onClick={() => { close(); newVector(); }}>Blank drawing</MenuItem>}
               </div>
@@ -3062,6 +3234,7 @@ export default function App() {
             onNewSheet={newSpreadsheet}
             onNewDatabase={newDatabase}
             onNewVector={vectorAvailable() ? newVector : null}
+            onNewPresentation={newPresentation}
             onOpen={pickAndOpen}
             onOpenFolder={() => void openFolder()}
             recents={host.recent ? recents : null}
@@ -3179,6 +3352,7 @@ function StartScreen({
   onNewSheet,
   onNewDatabase,
   onNewVector,
+  onNewPresentation,
   onOpen,
   onOpenFolder,
   recents,
@@ -3195,6 +3369,7 @@ function StartScreen({
   onNewDatabase: () => void;
   /** null where Vector Studio is not available (the web app) */
   onNewVector: (() => void) | null;
+  onNewPresentation: () => void;
   onOpen: () => void;
   onOpenFolder: () => void;
   recents: RecentEntry[] | null;
@@ -3269,6 +3444,11 @@ function StartScreen({
             <SheetIcon size={28} />
             <strong>Blank spreadsheet</strong>
             <span>An Excel workbook (.xlsx) with formulas, formatting, sorting and filters — save as CSV, TSV or a database</span>
+          </button>
+          <button type="button" className="start-card" onClick={onNewPresentation}>
+            <Presentation size={28} />
+            <strong>Blank presentation</strong>
+            <span>A PowerPoint deck (.pptx): slides, text, shapes, pictures, tables, themes, transitions and a slide show — also opens Google Slides files downloaded as PowerPoint</span>
           </button>
           <button type="button" className="start-card" onClick={onNewDatabase}>
             <Database size={28} />

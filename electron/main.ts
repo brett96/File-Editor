@@ -48,7 +48,9 @@ const MEDIA = [
 ];
 /** Studio project files (a zip of the timeline + its media), so as large as media */
 const PROJECTS = ['fstudio'];
-const OPENABLE = [...DOCUMENTS, ...IMAGES, ...MEDIA, ...PROJECTS];
+/** PowerPoint presentations (and the older / other formats, which open to a message saying how to convert them) */
+const PRESENTATIONS = ['pptx', 'ppsx', 'potx', 'pptm', 'ppsm', 'potm', 'ppt', 'pps', 'pot', 'odp', 'gslides', 'key'];
+const OPENABLE = [...DOCUMENTS, ...PRESENTATIONS, ...IMAGES, ...MEDIA, ...PROJECTS];
 /** Whether a path names a file the app opens (by extension, or a source file known by name such as Dockerfile). */
 const isOpenable = (path: string) => OPENABLE.includes(extname(path).slice(1).toLowerCase()) || isCodeFileName(basename(path));
 
@@ -417,6 +419,7 @@ function buildMenu() {
       submenu: [
         { label: 'New', accelerator: 'CmdOrCtrl+N', click: () => send('new') },
         { label: 'New Spreadsheet', accelerator: 'CmdOrCtrl+Shift+N', click: () => send('new-spreadsheet') },
+        { label: 'New Presentation', click: () => send('new-presentation') },
         { label: 'New Database', click: () => send('new-database') },
         { label: 'New Drawing', click: () => send('new-drawing') },
         { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: () => send('open') },

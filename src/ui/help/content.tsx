@@ -34,6 +34,7 @@ export const SECTIONS: GuideSection[] = [
             [<>Documents</>, <>Word (.docx, .doc), OpenDocument, Rich Text, Markdown, HTML, CSS, JavaScript and plain text. See <Go to="documents">Documents</Go>.</>],
             [<>PDF</>, <>Edit existing text, add text, images, links, shapes and signatures; insert, reorder, rotate and delete pages. See <Go to="pdf">PDF editing</Go>.</>],
             [<>Spreadsheets</>, <>Excel (.xlsx), CSV and TSV with 400+ formula functions. See <Go to="spreadsheets">Spreadsheets</Go>.</>],
+            [<>Presentations</>, <>PowerPoint (.pptx), including Google Slides decks downloaded as PowerPoint: slides, text, shapes, pictures, tables, themes, transitions and a slide show. See <Go to="slides">Presentations</Go>.</>],
             [<>Databases</>, <>SQLite and LiteDB (.sqlite, .db, …): browse tables, edit rows and run SQL. See <Go to="databases">Databases</Go>.</>],
             [<>Photos</>, <>Quick edits for any photo; a layered Photoshop-style editor in the desktop app. See <Go to="photo-quick">Photos</Go> and <Go to="photo-pro">Pro Photo</Go>.</>],
             [<>Video &amp; audio</>, <>Quick trims and conversions; a multi-track editor with a mixing console (Studio) in the desktop app. See <Go to="video-quick">Video &amp; audio</Go> and <Go to="studio">Studio</Go>.</>],
@@ -354,6 +355,109 @@ export const SECTIONS: GuideSection[] = [
           several columns first to fit them all.
         </p>
         <Tip>On a phone the sheet opens zoomed to fit. Drag with one finger to scroll, tap to select a cell, and double-tap to edit it.</Tip>
+      </>
+    ),
+  },
+  {
+    id: 'slides',
+    group: 'Documents',
+    title: 'Presentations (PowerPoint, Google Slides)',
+    keywords: 'powerpoint pptx ppsx slides presentation deck google slides keynote slide show transition theme layout notes bullet shape table picture',
+    body: (
+      <>
+        <p>
+          Open a PowerPoint file (<code>.pptx</code>, also <code>.ppsx</code> shows and <code>.potx</code> templates), or choose <Ui>New</Ui> →{' '}
+          <Ui>Blank presentation</Ui>. <Ui>Save</Ui> writes a <code>.pptx</code> that opens in PowerPoint, Google Slides and Keynote.
+        </p>
+        <Note title="Google Slides, Keynote and old .ppt files.">
+          A Google Slides presentation lives online, so download it first: in Google Slides choose <Ui>File ▸ Download ▸ Microsoft PowerPoint</Ui>{' '}
+          and open that file here. To send one back, upload the saved <code>.pptx</code> to Google Drive and open it with Google Slides. From
+          Keynote use <Ui>File ▸ Export To ▸ PowerPoint</Ui>. PowerPoint 97–2003 files (<code>.ppt</code>) and OpenDocument presentations
+          (<code>.odp</code>) need saving as <code>.pptx</code> in PowerPoint, Google Slides or LibreOffice first.
+        </Note>
+        <h3>The window</h3>
+        <p>
+          Slides are listed on the left: click one to work on it, drag it to reorder. The slide itself is in the middle, with speaker notes
+          under it. The ribbon across the top has five tabs: <Ui>Home</Ui>, <Ui>Insert</Ui>, <Ui>Design</Ui>, <Ui>Transitions</Ui> and{' '}
+          <Ui>Slide Show</Ui>.
+        </p>
+        <h3>Slides and layouts</h3>
+        <ul>
+          <li><Ui>New slide</Ui> (<K>Ctrl</K>+<K>M</K>) adds a slide after the current one; choose its layout from the menu: Title, Title and content, Section header, Two content, Title only or Blank.</li>
+          <li><Ui>Layout</Ui> changes the layout of the current slide. Text you have typed moves into the matching boxes of the new layout.</li>
+          <li>Duplicate (<K>Ctrl</K>+<K>D</K> with nothing selected) and delete are beside it. <Ui>Slide Show ▸ Hide this slide</Ui> keeps a slide in the file but skips it when presenting.</li>
+        </ul>
+        <h3>Text</h3>
+        <ul>
+          <li>Click a “Click to add…” box and type, or double-click any text. With a shape selected, just start typing. <K>Esc</K> finishes.</li>
+          <li><K>Enter</K> starts a new paragraph (a new bullet); <K>Tab</K> and <K>Shift</K>+<K>Tab</K> move a bullet in or out a level.</li>
+          <li>Font, size, bold, italic, underline, strikethrough, colour and links apply to the selected words while you are typing, or to the whole box when the box is selected. So do bullets, numbering, alignment, line spacing and vertical alignment.</li>
+          <li>Text pasted from elsewhere comes in as plain text, taking the formatting of where it lands.</li>
+        </ul>
+        <h3>Shapes, pictures, lines and tables</h3>
+        <ul>
+          <li><Ui>Insert</Ui> adds a text box, a picture (or paste one), one of 24 shapes, a line or arrow, a table, or a chart.</li>
+          <li>Drag to move; red guides appear when an edge or centre lines up with the slide or another object (hold <K>Alt</K> to move freely, <K>Shift</K> to keep to a straight line). Arrow keys nudge by 1 px, with <K>Shift</K> by 10.</li>
+          <li>Drag a round handle to resize (<K>Shift</K> keeps the proportions) and the handle above the object to rotate (<K>Shift</K> snaps to 15°).</li>
+          <li><K>Shift</K>-click or drag a box around several objects to select them together; <Ui>Align</Ui> lines them up or spaces them evenly. One object alone is aligned to the slide.</li>
+          <li><Ui>Fill</Ui>, <Ui>Outline</Ui>, outline width and style, <Ui>Shadow</Ui>, and the front / back buttons are in the <Ui>Shape</Ui> and <Ui>Arrange</Ui> groups of the Home tab.</li>
+          <li>In a table, double-click a cell to type; <K>Tab</K> moves to the next cell and adds a row after the last one. With the table selected, the <Ui>Table</Ui> group adds or removes rows and columns and switches the header row and banding. <Ui>Fill</Ui> colours the cell being edited.</li>
+          <li><K>Ctrl</K>+<K>C</K>, <K>X</K>, <K>V</K> and <K>D</K> copy, cut, paste and duplicate objects; <K>Del</K> removes them.</li>
+        </ul>
+        <h3>Charts</h3>
+        <p>
+          <Ui>Insert ▸ Chart</Ui> adds a column, bar, line or pie chart with sample numbers. Select it (or double-click it) and choose{' '}
+          <Ui>Edit data…</Ui>: the data is a small table as text, one row per line, with the series names in the first row and the categories
+          in the first column. Type it, or paste a range copied from a spreadsheet. The <Ui>Chart</Ui> group also changes the chart type, its
+          title and whether the legend shows; the colours follow the theme. Charts in files from PowerPoint or Google Slides (column, bar,
+          line, area and pie) open as editable charts too.
+        </p>
+        <Note title="Charts in PowerPoint.">
+          A chart saved here carries its numbers inside the chart, so PowerPoint, Google Slides and LibreOffice all draw it, but PowerPoint's
+          own <i>Edit Data</i> button (which needs an embedded Excel sheet) is not available for it. Change the numbers here instead.
+        </Note>
+        <h3>Design</h3>
+        <p>
+          <Ui>Design</Ui> has seven themes (colours and fonts for the whole deck), the slide size (16:9, 4:3, 16:10, A4, portrait), and the
+          background of the current slide: a colour, a two-colour gradient or a picture, with <Ui>Apply to all</Ui>.
+        </p>
+        <h3>Finding text and sorting slides</h3>
+        <ul>
+          <li><K>Ctrl</K>+<K>F</K> (or the magnifier at the top right) opens <Ui>Find and replace</Ui>: <Ui>Find next</Ui> jumps to the next slide and object containing the text; <Ui>Replace all</Ui> changes it on every slide and in the speaker notes, keeping its formatting.</li>
+          <li>The grid button beside it is the <b>slide sorter</b>: every slide at once. Drag slides to reorder them; double-click one to go back to editing it.</li>
+        </ul>
+        <h3>Transitions and the slide show</h3>
+        <p>
+          <Ui>Transitions</Ui> sets how the current slide arrives (Fade, Push, Wipe, Cover, Zoom) and how long it takes. <K>F5</K> or{' '}
+          <Ui>Slide Show ▸ From beginning</Ui> presents full screen; <K>Shift</K>+<K>F5</K> starts from the current slide.
+        </p>
+        <Shortcuts
+          rows={[
+            ['→ / Space / click', <>Next slide</>],
+            ['← / right-click', <>Previous slide</>],
+            ['Home / End', <>First / last slide</>],
+            ['B', <>Black screen, and back</>],
+            ['S', <>Show or hide the speaker notes of the current slide</>],
+            ['Esc', <>End the show</>],
+          ]}
+        />
+        <h3>Saving and exporting</h3>
+        <p>
+          <Ui>Save as</Ui> offers a PowerPoint presentation (<code>.pptx</code>), a PowerPoint show (<code>.ppsx</code>, opens straight into the
+          slide show), a PDF with one page per slide, or every slide as a PNG picture in a ZIP.
+        </p>
+        <p>
+          <Ui>Protect</Ui> sets a password that PowerPoint asks for when the file is opened (Microsoft Office's standard AES-256
+          encryption); it is applied the next time you save. A presentation that arrives with a password asks for it on opening and keeps
+          it when saved, until you remove it in <Ui>Protect</Ui>. PDF and picture copies are not protected.
+        </p>
+        <Warn title="What is not carried over from other programs.">
+          SmartArt, video and audio, animations of individual objects, slide masters, and special charts (scatter, radar, stock, combined
+          types) are not edited here. A grey box marks the place of such an object and a message says so on opening: saving would leave it
+          out, so keep the original. Charts that are drawn keep their type, title, legend and numbers, but not custom colours or axis settings.
+          Artwork from the file's slide master (logos, bands) is copied onto each slide. Freeform shapes are shown as rectangles, and fonts
+          that are not on this computer are replaced by similar ones.
+        </Warn>
       </>
     ),
   },

@@ -15,10 +15,10 @@ import { FORMATS, FORMAT_ORDER, extensionOf } from './registry';
 import { SHEET_EXTENSIONS, SHEET_FORMATS, SHEET_FORMAT_ORDER } from './sheet/workbook';
 
 /** The kinds of open document (one per editor). */
-export type DocKind = 'flow' | 'code' | 'pdf' | 'sheet' | 'database' | 'image' | 'proimage' | 'media' | 'studio' | 'vector';
+export type DocKind = 'flow' | 'code' | 'pdf' | 'sheet' | 'database' | 'image' | 'proimage' | 'media' | 'studio' | 'vector' | 'slides';
 
 /** Families of file formats. */
-export type FileFamily = 'document' | 'pdf' | 'spreadsheet' | 'database' | 'image' | 'video' | 'audio' | 'project';
+export type FileFamily = 'document' | 'pdf' | 'spreadsheet' | 'database' | 'image' | 'video' | 'audio' | 'project' | 'presentation' | 'archive';
 
 const FAMILY_LABEL: Record<FileFamily, string> = {
   document: 'a document',
@@ -29,6 +29,8 @@ const FAMILY_LABEL: Record<FileFamily, string> = {
   video: 'a video',
   audio: 'an audio file',
   project: 'a Studio project',
+  presentation: 'a presentation',
+  archive: 'a ZIP archive',
 };
 
 const KIND_LABEL: Record<DocKind, string> = {
@@ -42,6 +44,7 @@ const KIND_LABEL: Record<DocKind, string> = {
   media: 'A video or audio file',
   studio: 'A Studio project',
   vector: 'A drawing',
+  slides: 'A presentation',
 };
 
 /**
@@ -61,6 +64,8 @@ const TARGETS: Record<DocKind, FileFamily[]> = {
   studio: ['video', 'audio', 'project'],
   // a drawing is written as SVG / Illustrator (vector images), a PDF, or a picture of an artboard
   vector: ['image', 'pdf'],
+  // archive: every slide as a picture, zipped
+  slides: ['presentation', 'pdf', 'archive'],
 };
 
 /** The only document format a photo can become: a Word document holding the picture. */
@@ -88,6 +93,8 @@ function families(): Map<string, FileFamily[]> {
     for (const ext of CONTAINERS[id].extensions) add(ext, CONTAINERS[id].kind);
   }
   add('fstudio', 'project');
+  for (const ext of ['pptx', 'ppsx', 'potx', 'pptm']) add(ext, 'presentation');
+  add('zip', 'archive');
   familyByExt = map;
   return map;
 }

@@ -14,6 +14,7 @@ import {
   FolderPlus,
   Image as ImageIcon,
   Music,
+  Presentation,
   Pencil,
   RefreshCw,
   Sheet as SheetIcon,
@@ -30,6 +31,7 @@ const VIDEO = /\.(mp4|m4v|mov|webm|mkv|avi|wmv|flv|mpe?g|3gp|ogv|fstudio)$/i;
 const AUDIO = /\.(mp3|m4a|wav|flac|ogg|oga|opus|aac|wma|aiff?)$/i;
 const SHEET = /\.(xlsx|xlsm|xltx|csv|tsv)$/i;
 const DATA = /\.(sqlite3?|db3?|sdb)$/i;
+const SLIDES = /\.(pptx|ppsx|potx|pptm|ppsm|potm|ppt|pps|pot|odp|key)$/i;
 const DOC = /\.(docx?|docm|dotx|odt|rtf|pdf|md|markdown|txt|log)$/i;
 const WEB = /\.(html?|xhtml|css|m?js)$/i;
 
@@ -39,6 +41,7 @@ function fileIcon(name: string): ReactNode {
   if (AUDIO.test(name)) return <Music size={14} />;
   if (SHEET.test(name)) return <SheetIcon size={14} />;
   if (DATA.test(name)) return <Database size={14} />;
+  if (SLIDES.test(name)) return <Presentation size={14} />;
   if (WEB.test(name) || isCodeFileName(name)) return <FileCode size={14} />;
   if (DOC.test(name)) return <FileText size={14} />;
   return <FileIcon size={14} />;
