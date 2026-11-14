@@ -458,7 +458,7 @@ export const SECTIONS: GuideSection[] = [
           it at any time.
         </p>
         <Steps>
-          <li><Ui>Layer ▸ New Adjustment Layer</Ui> and pick one: Curves, Levels, Hue/Saturation, Color Balance, Black &amp; White, Exposure, Brightness/Contrast, Vibrance, Photo Filter, Invert, Threshold or Posterize.</li>
+          <li><Ui>Layer ▸ New Adjustment Layer</Ui> and pick one: Curves, Levels, Hue/Saturation, Color Balance, Black &amp; White, Exposure, Brightness/Contrast, Vibrance, Photo Filter, Clarity, Dehaze, Grain, Color Lookup (LUT), Invert, Threshold or Posterize.</li>
           <li>Set it in the <Ui>Properties</Ui> panel.</li>
           <li>To affect only part of the picture, select that part first: the adjustment gets a mask (see <Go to="pro-layers">masks</Go>).</li>
         </Steps>
@@ -473,6 +473,19 @@ export const SECTIONS: GuideSection[] = [
           Move the input black and white sliders inwards, to where the histogram starts and ends, to give a flat photo full contrast;{' '}
           <Ui>Auto</Ui> does it for you. <Ui>Midtones (γ)</Ui> brightens or darkens the mid-tones.
         </p>
+        <h3>Clarity, Dehaze, Grain and LUTs</h3>
+        <Defs
+          rows={[
+            [<>Clarity</>, <>Adds contrast to midtone detail (texture, clouds, fabric) while leaving the darkest and brightest areas alone, so nothing clips. Negative values give a soft glow.</>],
+            [<>Dehaze</>, <>Works out how much haze lies over each part of the picture and its colour, then removes it: distant hills, mist and flat, milky photos regain depth. Negative values add haze.</>],
+            [<>Grain</>, <>Film grain that is strongest in the midtones. <Ui>Size</Ui> is in image pixels; <Ui>Roughness</Ui> goes from soft clumps to sharp speckle. The pattern is fixed to the picture, so it does not change while you work.</>],
+            [<>Color Lookup (LUT)</>, <>Remaps every colour through a 3D table for a complete look. Choose a built-in look (Teal &amp; Orange, Warm film, Cool fade, Bleach bypass, Noir) or <Ui>Load .cube…</Ui> to use a LUT file from a camera maker or colourist. <Ui>Strength</Ui> blends it with the original.</>],
+          ]}
+        />
+        <Note title="Saving to Photoshop.">
+          Photoshop has no matching layer types for these four, so in a <code>.psd</code> each is saved as a pixel layer that holds the picture
+          as it looks at that point. The file opens looking the same, but that layer is no longer adjustable there.
+        </Note>
       </>
     ),
   },
@@ -711,7 +724,32 @@ export const SECTIONS: GuideSection[] = [
         </Steps>
         <p>
           <Ui>Colour</Ui> adds a full-frame colour layer (tick <Ui>Gradient</Ui> for two colours). Use it as a background on the lowest video
-          track, or scale it down for a coloured bar behind a lower-third title.
+          track, or set its <Ui>Width %</Ui> and <Ui>Height %</Ui> for a coloured bar or panel.
+        </p>
+        <h3>Ready-made animated titles</h3>
+        <p>
+          The <Ui>Titles…</Ui> menu in the toolbar adds a finished, animated title at the playhead. Each one is made of ordinary text and
+          colour clips with keyframes, so you can retype the words, change colours and retime or reshape the motion afterwards.
+        </p>
+        <Defs
+          rows={[
+            [<>Lower third</>, <>A bar slides in at the bottom left with a name and a smaller line under it. Its four layers are linked and move together on the timeline.</>],
+            [<>Fade and drift in, Slide up, Pop</>, <>A centred title that fades in while growing, rises from below, or springs in past its size and settles.</>],
+            [<>Typewriter</>, <>Letters appear one at a time. The speed is the two <Ui>Typed %</Ui> keyframes; any text clip can be typed on this way.</>],
+            [<>3D swing</>, <>Swings in like a door, in perspective.</>],
+            [<>Scrolling credits</>, <>Lines of text roll from below the frame to above it over 12 seconds. Make the clip longer to slow it down, then move its last keyframe to the new end.</>],
+          ]}
+        />
+        <p>
+          <Ui>Anchor</Ui> decides which part of a text stays on its position when you retype it: <Ui>Left edge</Ui> for lower thirds and
+          captions that should grow to the right, <Ui>Centre</Ui> for titles.
+        </p>
+        <h3>Logos and vector artwork</h3>
+        <p>
+          <Ui>Add media</Ui> also takes vector files: <b>SVG</b>, <b>Illustrator (.ai)</b> and <b>PDF</b> (first page or artboard). They are
+          drawn large enough to stay sharp at twice the frame size and keep their transparent background, so a logo can be scaled up and
+          animated like any picture. The artwork becomes a picture layer: its shapes and text are not editable inside Studio, so change them
+          in Illustrator and add the file again. Illustrator files must be saved with <i>Create PDF Compatible File</i> on (the default).
         </p>
       </>
     ),
@@ -721,7 +759,7 @@ export const SECTIONS: GuideSection[] = [
     group: 'Studio (video & audio)',
     title: 'Studio: animating with keyframes',
     desktop: true,
-    keywords: 'keyframe animate animation motion diamond easing ease position scale rotation opacity zoom ken burns',
+    keywords: 'keyframe animate animation motion diamond easing ease position scale rotation opacity zoom ken burns graph editor curve bezier expression wiggle loop formula data csv command palette mask track tracking 3d perspective',
     body: (
       <>
         <p>
@@ -762,8 +800,76 @@ export const SECTIONS: GuideSection[] = [
             [<>Ease in</>, <>Starts slowly and accelerates; for things leaving the screen.</>],
             [<>Ease out</>, <>Arrives fast and settles gently; for things entering.</>],
             [<>Hold</>, <>No movement: the value jumps at the next keyframe. Good for blinking or step-by-step reveals.</>],
+            [<>Custom curve</>, <>A curve you shape yourself in the graph editor, including overshoot and bounce-back.</>],
           ]}
         />
+        <h3>Expressions</h3>
+        <p>
+          The <Ui>ƒ</Ui> button beside every property opens a box for a formula that drives the property instead of (or on top of) its
+          keyframes. <code>value</code> is what the property would be without the formula, and <code>time</code> is seconds from the start of
+          the clip, so <code>value + wiggle(2, 30)</code> shakes a layer and <code>value + time * 90</code> spins it. The graph editor draws
+          the result as a dotted line. A formula with a mistake is outlined in red with the reason, and the property falls back to its
+          keyframes. Click <Ui>ƒ</Ui> again to remove the formula.
+        </p>
+        <Defs
+          rows={[
+            [<><code>time</code>, <code>value</code>, <code>frame</code>, <code>duration</code></>, <>Seconds into the clip; the keyframed value; the timeline frame number; the clip length. Also <code>fps</code>, <code>start</code>, <code>playhead</code>, <code>width</code>, <code>height</code>, <code>PI</code>.</>],
+            [<><code>wiggle(perSecond, amount)</code></>, <>Smooth random movement: how often and how far. Each property of each clip wiggles differently.</>],
+            [<><code>linear(time, t0, t1, a, b)</code>, <code>ease(…)</code></>, <>Goes from <code>a</code> to <code>b</code> between two times, at constant speed or eased.</>],
+            [<><code>loopOut()</code>, <code>pingPong()</code></>, <>Repeats the property's keyframes for the rest of the clip, forwards or back and forth.</>],
+            [<><code>sin cos abs min max clamp lerp floor round noise random</code></>, <>Ordinary maths. <code>a ? b : c</code>, comparisons and <code>&amp;&amp;</code> / <code>||</code> also work.</>],
+            [<><code>data("column")</code></>, <>A number from an imported CSV file: one row per frame, or <code>data("column", row)</code> for a row you choose.</>],
+          ]}
+        />
+        <p>
+          <b>Data-driven animation.</b> Open the command palette and choose <Ui>Import data for expressions (CSV)</Ui>: a table with a row of
+          column names followed by rows of numbers. <code>data("height")</code> then reads that column, moving one row per frame and
+          gliding between rows, so a bar can grow with measurements or a marker can follow recorded positions. The data is saved in the
+          project.
+        </p>
+        <h3>The command palette</h3>
+        <p>
+          Press <K>Ctrl</K>+<K>K</K> (or the <Ui>⌘</Ui> button in the toolbar) and type a few letters of what you want: “wig” finds
+          <Ui>Wiggle position</Ui>, “glow” adds the Glow effect, “key sc” adds a Scale keyframe. <K>↑</K> <K>↓</K> choose, <K>Enter</K> runs,
+          <K>Esc</K> closes. With a clip selected it also lists ready-made expressions, every effect, mask and fade shortcuts.
+        </p>
+        <h3>Masks and motion tracking</h3>
+        <p>
+          <Ui>Mask</Ui> → <Ui>Show only part of this layer</Ui> keeps an ellipse or rectangle of the layer and hides the rest (a yellow outline
+          shows it in the preview). <Ui>Feather</Ui> softens the edge; <Ui>Invert</Ui> cuts a hole instead. The mask's position and size can be
+          keyframed like any other property.
+        </p>
+        <p>
+          On a video clip, <Ui>Track motion</Ui> makes the mask follow whatever is under it: place the mask over a face, a car or a logo, put
+          the playhead where tracking should start, and press the button. Studio steps through the clip, matching the picture frame to frame,
+          and writes the mask's position as keyframes. Press the button again to stop early; if the subject is lost (it leaves the frame or
+          is covered), move the mask back onto it and track again from there.
+        </p>
+        <Tip title="Blur a moving face or number plate.">
+          Put the same video on two tracks, one above the other. On the upper copy set <Ui>Blur</Ui> to about 20, add a mask over the face
+          and track it. Only the masked, blurred patch of the upper copy covers the sharp video below.
+        </Tip>
+        <h3>3D layers</h3>
+        <p>
+          The <Ui>3D</Ui> section of the inspector turns any layer (video, picture, title or colour) into a flat card in space, drawn in
+          perspective. <Ui>Tilt X</Ui> tips the top away from you, <Ui>Swivel Y</Ui> swings the right edge away, and <Ui>Depth Z</Ui> pushes the
+          layer back (or pulls it forward with a negative value). All three can be keyframed, so a title can swing in like a door or a photo
+          can fall back into the distance. <Ui>Camera lens</Ui> applies to the whole project: a short lens (24 mm) exaggerates the perspective,
+          a long one (135 mm) flattens it. Layers still stack in track order; they do not pass through each other.
+        </p>
+        <h3>The graph editor</h3>
+        <p>
+          <Ui>Graph</Ui> (next to <Ui>Timeline</Ui> and <Ui>Mixer</Ui>) shows the selected clip's animation as curves: time runs left to right, the
+          value runs bottom to top, and each property has its own colour. Each curve is scaled to its own range, so position and opacity can be
+          compared side by side.
+        </p>
+        <ul>
+          <li>Drag a diamond to move a keyframe in time and value. Hold <K>Shift</K> to change only the value, <K>Alt</K> to change only the time.</li>
+          <li>Double-click the graph to add a keyframe to the highlighted property (click a property in the list to highlight it).</li>
+          <li>Click a diamond to type its exact time and value, choose the easing of the segment that follows it, or delete it.</li>
+          <li>Choose <Ui>Custom curve</Ui> and two white handles appear on the segment: drag them to shape the speed. Pull a handle above the end value for an overshoot.</li>
+          <li>Untick a property to hide its curve. Click an empty part of the graph to move the playhead there.</li>
+        </ul>
         <Tip title="Ken Burns zoom on a photo.">
           Put a picture on the timeline. At its first frame, keyframe <Ui>Scale %</Ui> at 100; at its last frame set it to 120 and nudge Position X
           a little. The slow push-in makes a still photo feel alive.
@@ -807,6 +913,21 @@ export const SECTIONS: GuideSection[] = [
           <li><Ui>Spill</Ui> removes the green tint the screen casts on the subject's edges.</li>
         </Steps>
         <Tip>Even, wrinkle-free lighting on the screen makes a much cleaner key than any setting can.</Tip>
+        <h3>Stylize effects</h3>
+        <p>
+          <Ui>Effects</Ui> → <Ui>Add an effect…</Ui> stacks pixel effects on any layer, applied top to bottom after the colour grade and green
+          screen. Untick an effect to compare, or press <Ui>×</Ui> to remove it.
+        </p>
+        <Defs
+          rows={[
+            [<>Curl noise</>, <>Swirls the picture along a flowing noise field that drifts as the clip plays: heat haze, water, dream sequences. <Ui>Strength</Ui> is how far pixels move, <Ui>Swirl size</Ui> how large the eddies are.</>],
+            [<>Contour</>, <>Traces edges as white lines on black. Raise <Ui>Keep picture</Ui> to draw dark outlines over the original instead.</>],
+            [<>Glow</>, <>Bright areas bloom into their surroundings.</>],
+            [<>Pixelate</>, <>Mosaic blocks. With a tracked mask on a copy of the clip, it hides a face or a number plate.</>],
+            [<>Posterize, Sharpen, RGB split</>, <>Flat poster tones; crisper edges; red and blue pulled apart for a glitch look.</>],
+            [<>Luma key</>, <>Makes dark areas transparent, for fire, smoke, sparks and light leaks that were shot on black.</>],
+          ]}
+        />
       </>
     ),
   },

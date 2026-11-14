@@ -4,9 +4,16 @@ import {
   chromaKey, deleteRange, gateRange, encodeWav, fadeRange, fft, frames, gainRange, insertAudio, integratedLoudness, limit, loudnessGainDb,
   noiseProfile, normalizeRange, peak, reduceNoise, reverseRange, silenceRange, sliceAudio, waveformPeaks, type AudioData,
 } from '../src/core/studio/dsp';
+import { animProps, keyTimes, propValue } from '../src/core/studio/anim';
+import { PURE_FNS, evalExpression, expressionError, parseDataCsv } from '../src/core/studio/expr';
+import { fuzzyScore } from '../src/ui/studio/CommandPalette';
+import { TITLE_PRESETS, titlePreset } from '../src/core/studio/presets';
+import { simplifyKeys, toGray, trackPatch, type Gray } from '../src/core/studio/track';
+import { applyStyle, curlField, newStyle, noise3, type StyleEffect } from '../src/core/studio/fx';
+import { homography, projectQuad, type Quad } from '../src/core/studio/compose';
 import {
-  addKey, anim, audibleTracks, envelopeDb, hasKeyAt, newProject, newTrack, projectDuration, removeKey, setValueAt, snap, splitClip, valueAt,
-  defaultEffects, defaultTransform, type AudioClip, type MediaClip,
+  addKey, anim, audibleTracks, bezierAt, cameraDistance, defaultMask, defaultThree, is3D, envelopeDb, hasKeyAt, newProject, newTrack, projectDuration, removeKey, setValueAt, snap, splitClip, valueAt,
+  defaultEffects, defaultTransform, type AudioClip, type MediaClip, type SolidClip, type TextClip,
 } from '../src/core/studio/model';
 
 const sine = (freq: number, amp: number, seconds: number, sr = 48000, ch = 2): AudioData => {
@@ -16,7 +23,244 @@ const sine = (freq: number, amp: number, seconds: number, sr = 48000, ch = 2): A
   return { sampleRate: sr, channels: Array.from({ length: ch }, () => c.slice()) };
 };
 
+describe('title presets', () => {
+  const p = newProject(1920, 1080, 30);
+  it('builds editable clips for every preset', () => {
+    for (const { id } of TITLE_PRESETS) {
+      const clips = titlePreset(p, id, 3);
+      expect(clips.length).toBeGreaterThan(0);
+      expect(new Set(clips.map((c) => c.id)).size).toBe(clips.length);
+      for (const c of clips) {
+        expect(c.start).toBe(3);
+        expect(c.duration).toBeGreaterThan(0);
+        for (const pr of animProps(p, c)) for (const k of pr.get(c).keys) expect(k.t).toBeLessThanOrEqual(c.duration);
+      }
+    }
+  });
+  it('links the layers of a lower third and slides them in from the left', () => {
+    const clips = titlePreset(p, 'lowerThird', 0);
+    expect(clips.map((c) => c.kind)).toEqual(['text', 'text', 'solid', 'solid']);
+    expect(new Set(clips.map((c) => c.linkId)).size).toBe(1);
+    const bar = clips[3] as SolidClip;
+    expect(bar.size!.w).toBeLessThan(1);
+    expect(valueAt(bar.transform.x, 0)).toBeLessThan(valueAt(bar.transform.x, 1));
+    expect((clips[0] as TextClip).anchor).toBe('left');
+  });
+  it('types a text on and splits the typing between halves', () => {
+    const [t] = titlePreset(p, 'typewriter', 0) as [TextClip];
+    expect(valueAt(t.reveal!, 0)).toBe(0);
+    expect(valueAt(t.reveal!, 2)).toBe(1);
+    const [l, r] = splitClip(t, 1) as [TextClip, TextClip];
+    expect(valueAt(l.reveal!, 1)).toBeCloseTo(0.5, 6);
+    expect(valueAt(r.reveal!, 0)).toBeCloseTo(0.5, 6);
+    expect(animProps(p, t).some((x) => x.id === 'reveal')).toBe(true);
+  });
+});
+
+describe('expressions', () => {
+  const ctx = (vars: Record<string, number> = {}) => ({ vars: { time: 2, value: 10, PI: Math.PI, ...vars }, fns: { ...PURE_FNS, wiggle: () => 0, data: () => 0 } });
+  const run = (src: string, vars?: Record<string, number>) => evalExpression(src, ctx(vars), -999);
+  it('evaluates arithmetic with the usual precedence', () => {
+    expect(run('1 + 2 * 3')).toBe(7);
+    expect(run('(1 + 2) * 3')).toBe(9);
+    expect(run('-2 ^ 2')).toBe(-4);
+    expect(run('2 ** 3 ** 2')).toBe(512);
+    expect(run('7 % 3 + -7 % 3')).toBe(3);
+    expect(run('value + time * 5')).toBe(20);
+    expect(run('time > 1 && value == 10 ? 1 : 2')).toBe(1);
+    expect(run('!0 + (3 <= 2)')).toBe(1);
+    expect(run('clamp(linear(time, 0, 4, 0, 100), 0, 40) + max(1, 2, 3)')).toBe(43);
+    expect(run('ease(1, 0, 2, 0, 10)')).toBe(5);
+    expect(run('.5e1 + sin(PI / 2)')).toBe(6);
+  });
+  it('reports mistakes and falls back instead of throwing', () => {
+    expect(expressionError('value + wiggle(2, 30)')).toBeNull();
+    expect(expressionError('  ')).toBeNull();
+    expect(expressionError('valeu + 1')).toMatch(/valeu/);
+    expect(expressionError('sin')).toMatch(/function/);
+    expect(expressionError('nope(1)')).toMatch(/no function/);
+    expect(expressionError('1 +')).toMatch(/incomplete/);
+    expect(expressionError('(1 + 2')).toMatch(/Expected/);
+    expect(expressionError('1 2')).toMatch(/Unexpected/);
+    expect(expressionError('1 # 2')).toMatch(/Unexpected character/);
+    expect(run('valeu + 1')).toBe(-999);
+    expect(run('1 / 0')).toBe(-999);
+    // nothing outside the listed names is reachable
+    expect(expressionError('constructor("return 1")()')).not.toBeNull();
+    expect(expressionError('window.alert(1)')).not.toBeNull();
+  });
+  it('drives a property: percentages, wiggle, loops and data', () => {
+    const p = { ...newProject(1000, 500, 10), data: parseDataCsv('frame;height\n0;10\n1;20\n2;40\n', 'd.csv') };
+    const base: MediaClip = { id: 'c', kind: 'video', sourceId: 's', name: 'c', start: 0, duration: 10, in: 0, linkId: null, transform: defaultTransform(p), effects: defaultEffects() };
+    const withExpr = (id: string, src: string, c: MediaClip = base) => ({ ...c, expressions: { [id]: src } });
+    // scale is stored 0–1 but written as a percentage
+    expect(propValue(p, withExpr('scale', 'value / 2'), 'scale', base.transform.scale, 0)).toBeCloseTo(0.5, 9);
+    expect(propValue(p, withExpr('x', 'value + time * 10'), 'x', base.transform.x, 3)).toBe(530);
+    expect(propValue(p, withExpr('x', 'value +'), 'x', base.transform.x, 3)).toBe(500);
+    const w = (t: number) => propValue(p, withExpr('x', 'wiggle(2, 30)'), 'x', base.transform.x, t);
+    expect(w(1.234)).toBe(w(1.234));
+    expect(Math.abs(w(1.234))).toBeLessThanOrEqual(30);
+    expect(new Set([0.1, 0.9, 1.7, 2.6, 3.3].map(w)).size).toBeGreaterThan(3);
+    const keyed = addKey(addKey(anim(0), 0, 0), 2, 100);
+    const looping = { ...withExpr('rotation', 'loopOut()'), transform: { ...base.transform, rotation: keyed } };
+    expect(propValue(p, looping, 'rotation', keyed, 5)).toBeCloseTo(50, 6);
+    const pp = { ...looping, expressions: { rotation: 'pingPong()' } };
+    expect(propValue(p, pp, 'rotation', keyed, 2.5)).toBeCloseTo(75, 6);
+    // one data row per frame (10 fps), interpolated, held at the last row
+    expect(propValue(p, withExpr('y', 'data("height")'), 'y', base.transform.y, 0.1)).toBe(20);
+    expect(propValue(p, withExpr('y', 'data("HEIGHT", 0.5)'), 'y', base.transform.y, 0)).toBe(15);
+    expect(propValue(p, withExpr('y', 'data(2)'), 'y', base.transform.y, 9)).toBe(40);
+    expect(parseDataCsv('1,2\n3,4', 'n.csv')).toMatchObject({ columns: ['col1', 'col2'], rows: [[1, 2], [3, 4]] });
+  });
+  it('ranks command palette matches', () => {
+    expect(fuzzyScore('wig', 'Wiggle position')).toBeGreaterThan(fuzzyScore('wig', 'Show mixer'));
+    expect(fuzzyScore('xyz', 'Wiggle position')).toBe(-1);
+    expect(fuzzyScore('adtx', 'Add text (title)')).toBeGreaterThan(0);
+  });
+});
+
+describe('stylize effects', () => {
+  const grad = () => {
+    const px = createPixels(64, 48);
+    for (let y = 0; y < 48; y++) for (let x = 0; x < 64; x++) px.data.set([x * 4, y * 5, 128, 255], (y * 64 + x) * 4);
+    return px;
+  };
+  const fx = (type: StyleEffect['type'], amount: number, size = 0): StyleEffect => ({ ...newStyle(type), amount, size });
+  it('curl noise moves pixels without inventing colours, and drifts over time', () => {
+    const a = grad();
+    const b = grad();
+    applyStyle(a, fx('curlNoise', 12, 30), 0);
+    applyStyle(b, fx('curlNoise', 12, 30), 2);
+    const src = grad();
+    let moved = 0;
+    let differs = 0;
+    for (let i = 0; i < src.data.length; i += 4) {
+      if (a.data[i] !== src.data[i] || a.data[i + 1] !== src.data[i + 1]) moved++;
+      if (a.data[i] !== b.data[i] || a.data[i + 1] !== b.data[i + 1]) differs++;
+      expect(a.data[i + 2]).toBe(128);
+    }
+    expect(moved).toBeGreaterThan(500);
+    expect(differs).toBeGreaterThan(200);
+    // the field is a curl, so it has (almost) no divergence
+    const f = curlField(200, 200, 4, 40, 1);
+    let div = 0;
+    let mag = 0;
+    for (let y = 1; y < f.gh - 1; y++) for (let x = 1; x < f.gw - 1; x++) {
+      const i = y * f.gw + x;
+      div += Math.abs(f.vx[i + 1] - f.vx[i - 1] + f.vy[i + f.gw] - f.vy[i - f.gw]);
+      mag += Math.abs(f.vx[i]) + Math.abs(f.vy[i]);
+    }
+    expect(div / mag).toBeLessThan(0.02);
+    expect(noise3(1.5, 2.5, 3.5)).toBeGreaterThanOrEqual(0);
+  });
+  it('pixelates, posterizes, keys and finds contours', () => {
+    const px = grad();
+    applyStyle(px, fx('pixelate', 8), 0);
+    expect(px.data[0]).toBe(px.data[7 * 4]);
+    expect(px.data[0]).not.toBe(px.data[8 * 4]);
+    const po = grad();
+    applyStyle(po, fx('posterize', 2), 0);
+    expect(new Set(Array.from(po.data).filter((_, i) => i % 4 === 0))).toEqual(new Set([0, 255]));
+    const key = createPixels(2, 1);
+    key.data.set([5, 5, 5, 255, 250, 250, 250, 255]);
+    applyStyle(key, fx('lumaKey', 15, 20), 0);
+    expect([key.data[3], key.data[7]]).toEqual([0, 255]);
+    const edge = createPixels(8, 8);
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) edge.data.set(x < 4 ? [0, 0, 0, 255] : [255, 255, 255, 255], (y * 8 + x) * 4);
+    applyStyle(edge, fx('contour', 55, 0), 0);
+    expect(edge.data[(4 * 8 + 4) * 4]).toBe(255);
+    expect(edge.data[(4 * 8 + 1) * 4]).toBe(0);
+    const off = grad();
+    applyStyle(off, { ...fx('pixelate', 8), enabled: false }, 0);
+    expect(off.data).toEqual(grad().data);
+  });
+});
+
+describe('motion tracking', () => {
+  const frame = (ox: number, oy: number): Gray => {
+    const g = { data: new Float32Array(120 * 80).fill(40), width: 120, height: 80 };
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) g.data[(oy + y) * 120 + ox + x] = 60 + ((Math.imul(x * 31 + y * 17 + 7, 2654435761) >>> 24) % 160);
+    return g;
+  };
+  it('follows a patch between frames', () => {
+    const hit = trackPatch(frame(30, 20), frame(37, 15), 38, 28, 16, 16, 12);
+    expect([hit.x, hit.y]).toEqual([45, 23]);
+    expect(hit.error).toBeLessThan(1);
+    // nothing moved: the region stays where it is
+    expect(trackPatch(frame(30, 20), frame(30, 20), 38, 28, 16, 16, 12)).toMatchObject({ x: 38, y: 28 });
+    // a featureless region does not wander
+    expect(trackPatch(frame(30, 20), frame(37, 15), 90, 60, 16, 16, 12)).toMatchObject({ x: 90, y: 60 });
+  });
+  it('reads luma from pixels and thins straight runs of keys', () => {
+    const px = createPixels(2, 1);
+    px.data.set([255, 255, 255, 255, 0, 0, 0, 255]);
+    expect(Array.from(toGray(px).data).map(Math.round)).toEqual([255, 0]);
+    const keys = [0, 1, 2, 3, 4, 5, 6].map((t) => ({ t, v: t <= 3 ? t * 2 : 6 + (t - 3) * -1, ease: 'linear' as const }));
+    expect(simplifyKeys(keys, 0.1).map((k) => k.t)).toEqual([0, 3, 6]);
+  });
+  it('splits mask animation and lists mask properties only when there is a mask', () => {
+    const p = newProject(1000, 500, 30);
+    const base: MediaClip = { id: 'c', kind: 'video', sourceId: 's', name: 'c', start: 0, duration: 4, in: 0, linkId: null, transform: defaultTransform(p), effects: defaultEffects() };
+    expect(animProps(p, base).some((x) => x.group === 'Mask')).toBe(false);
+    const masked = { ...base, mask: { ...defaultMask(), x: addKey(addKey(anim(0), 0, 0.2), 4, 0.6) } };
+    expect(animProps(p, masked).filter((x) => x.group === 'Mask').map((x) => x.id)).toEqual(['mask.x', 'mask.y', 'mask.w', 'mask.h']);
+    expect(keyTimes(p, masked)).toEqual([0, 4]);
+    const [, r] = splitClip(masked, 2) as [MediaClip, MediaClip];
+    expect(valueAt(r.mask!.x, 0)).toBeCloseTo(0.4, 6);
+  });
+});
+
+describe('3D layers', () => {
+  const p = newProject(1000, 500, 30);
+  const edge = (q: Quad, a: number, b: number) => Math.hypot(q[a][0] - q[b][0], q[a][1] - q[b][1]);
+  it('leaves a flat layer where it was and shrinks it with depth', () => {
+    expect(projectQuad(p, 500, 250, 400, 200, 0, 0, 0, 0)).toEqual([[300, 150], [700, 150], [700, 350], [300, 350]]);
+    const far = projectQuad(p, 500, 250, 400, 200, 0, 0, 0, cameraDistance(p))!;
+    expect(edge(far, 0, 1)).toBeCloseTo(200, 6);
+    expect(projectQuad(p, 500, 250, 400, 200, 0, 0, 0, -cameraDistance(p))).toBeNull();
+  });
+  it('foreshortens the edge that turns away', () => {
+    const swivel = projectQuad(p, 500, 250, 400, 200, 0, 0, 40, 0)!;
+    expect(edge(swivel, 1, 2)).toBeLessThan(edge(swivel, 0, 3));
+    const tilt = projectQuad(p, 500, 250, 400, 200, 0, 40, 0, 0)!;
+    expect(edge(tilt, 0, 1)).toBeLessThan(edge(tilt, 3, 2));
+    // a longer lens flattens the perspective
+    const tele = projectQuad({ ...p, lens: 200 }, 500, 250, 400, 200, 0, 0, 40, 0)!;
+    expect(edge(tele, 0, 3) - edge(tele, 1, 2)).toBeLessThan(edge(swivel, 0, 3) - edge(swivel, 1, 2));
+  });
+  it('maps the unit square onto the quad', () => {
+    const q = projectQuad(p, 500, 250, 400, 200, 10, 30, -25, 80)!;
+    const H = homography(q);
+    const at = (u: number, v: number) => [(H[0] * u + H[1] * v + H[2]) / (H[6] * u + H[7] * v + 1), (H[3] * u + H[4] * v + H[5]) / (H[6] * u + H[7] * v + 1)];
+    ([[0, 0], [1, 0], [1, 1], [0, 1]] as const).forEach(([u, v], i) => {
+      expect(at(u, v)[0]).toBeCloseTo(q[i][0], 6);
+      expect(at(u, v)[1]).toBeCloseTo(q[i][1], 6);
+    });
+  });
+  it('splits 3D animation between the halves', () => {
+    const base: MediaClip = { id: 'c', kind: 'video', sourceId: 's', name: 'c', start: 0, duration: 4, in: 0, linkId: null, transform: defaultTransform(p), effects: defaultEffects() };
+    const clip = { ...base, three: { ...defaultThree(), rotY: addKey(addKey(anim(0), 0, 0), 4, 80) } };
+    expect(is3D(base)).toBe(false);
+    expect(is3D(clip)).toBe(true);
+    const [l, r] = splitClip(clip, 1) as [MediaClip, MediaClip];
+    expect(valueAt(l.three!.rotY, 1)).toBe(20);
+    expect(valueAt(r.three!.rotY, 0)).toBe(20);
+    expect(valueAt(r.three!.rotY, 3)).toBe(80);
+  });
+});
+
 describe('keyframes', () => {
+  it('follows a custom bezier curve, with overshoot', () => {
+    expect(bezierAt(0.5, [0, 0, 1, 1])).toBeCloseTo(0.5, 3);
+    expect(bezierAt(0.25, [0.42, 0, 1, 1])).toBeLessThan(0.25);
+    let a = addKey(addKey(anim(0), 0, 0, 'bezier'), 1, 10);
+    a = { ...a, keys: [{ ...a.keys[0], bez: [0.3, 1.6, 0.6, 1] }, a.keys[1]] };
+    expect(Math.max(...[0.3, 0.4, 0.5, 0.6].map((t) => valueAt(a, t)))).toBeGreaterThan(10);
+    expect(valueAt(a, 1)).toBe(10);
+    // re-keying a time keeps that key's easing and curve
+    expect(addKey(a, 0, 5).keys[0]).toMatchObject({ v: 5, ease: 'bezier', bez: [0.3, 1.6, 0.6, 1] });
+  });
+
   it('interpolates with easing and holds outside the keys', () => {
     let a = anim(5);
     expect(valueAt(a, 3)).toBe(5);

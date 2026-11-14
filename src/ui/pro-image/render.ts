@@ -179,7 +179,7 @@ export function composite(doc: ProDocument, scale = 1, options: { background?: s
         for (let i = 0; i < mask.length; i++) mask[i] = md[i * 4 + 3];
       }
       const adjusted = { data: new Uint8ClampedArray(img.data), width: out.width, height: out.height };
-      applyAdjust(adjusted, l.adjust, mask);
+      applyAdjust(adjusted, l.adjust, mask, scale);
       const tmp = canvas(out.width, out.height);
       tmp.getContext('2d')!.putImageData(new ImageData(adjusted.data, out.width, out.height), 0, 0);
       ctx.save();

@@ -2,6 +2,7 @@
 import { useEffect, useRef, type PointerEvent as RPointerEvent } from 'react';
 import { Eye, EyeOff, Lock, Unlock, Volume2, VolumeX } from 'lucide-react';
 import { clipEnd, snap, snapPoints, type Clip, type Project, type Track, type VisualClip } from '../../core/studio/model';
+import { keyTimes } from '../../core/studio/anim';
 import { cx } from '../components';
 
 export interface TimelineProps {
@@ -244,11 +245,9 @@ export function Timeline(props: TimelineProps) {
 }
 
 function KeyMarks({ clip, pps }: { clip: VisualClip; pps: number }) {
-  const times = new Set<number>();
-  for (const k of Object.values(clip.transform)) for (const key of k.keys) times.add(Math.round(key.t * 1000) / 1000);
   return (
     <>
-      {[...times].map((t) => (
+      {keyTimes({ width: 0, height: 0 }, clip).map((t) => (
         <span key={t} className="st-key" style={{ left: t * pps - 4 }} />
       ))}
     </>

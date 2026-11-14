@@ -163,9 +163,9 @@
 
 .st-row {
   display: grid;
-  grid-template-columns: 86px minmax(0, 1fr) auto;
+  grid-template-columns: 86px minmax(0, 1fr) auto auto;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   margin: 3px 0;
 }
 
@@ -207,6 +207,8 @@
 
 .studio .st-inspector .tb-select,
 .studio .st-inspector .input,
+.studio .st-toolbar .st-titles,
+.studio .st-graph-bar .tb-select,
 .studio .st-mixer .tb-select {
   background: var(--st-panel-2);
   color: var(--st-text);
@@ -933,4 +935,246 @@
   .ae-groups {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* ── graph editor ─────────────────────────────────────────────────────── */
+.st-graph {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  background: var(--st-bg);
+  color: var(--st-text);
+}
+.st-graph-empty {
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  text-align: center;
+}
+.st-graph-list {
+  width: 190px;
+  flex: none;
+  overflow-y: auto;
+  border-right: 1px solid var(--st-border);
+  background: var(--st-panel);
+  padding: 4px 0;
+}
+.st-graph-prop {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.st-graph-prop.is-active {
+  background: rgba(59, 130, 246, 0.22);
+}
+.st-graph-prop.is-off .st-graph-name {
+  opacity: 0.5;
+}
+.st-graph-prop small {
+  margin-left: auto;
+  color: var(--st-muted);
+}
+.st-graph-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  flex: none;
+  display: inline-block;
+}
+.st-graph-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.st-graph-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 34px;
+  padding: 3px 10px;
+  border-bottom: 1px solid var(--st-border);
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.st-graph-bar label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--st-muted);
+}
+.st-graph-bar .st-num {
+  width: 76px;
+}
+.st-graph-plot {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  touch-action: none;
+}
+.st-graph-plot svg {
+  display: block;
+  cursor: crosshair;
+}
+.st-graph-grid {
+  stroke: var(--st-border);
+  stroke-width: 1;
+  opacity: 0.6;
+}
+.st-graph-frame {
+  fill: none;
+  stroke: var(--st-border);
+}
+.st-graph-tick {
+  fill: var(--st-muted);
+  font-size: 10px;
+}
+.st-graph-key {
+  stroke: #0b0c0f;
+  stroke-width: 1.5;
+  cursor: grab;
+}
+.st-graph-key.is-sel {
+  stroke: #fff;
+  stroke-width: 2;
+}
+.st-graph-handle {
+  fill: #fff;
+  stroke: #0b0c0f;
+  cursor: grab;
+}
+.st-graph-handle-line {
+  stroke: #fff;
+  stroke-width: 1;
+  opacity: 0.7;
+}
+.st-graph-playhead {
+  stroke: #ff5252;
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.st-fx {
+  margin-top: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--st-border);
+  border-radius: 6px;
+}
+.st-fx .st-row-btns {
+  justify-content: space-between;
+  margin: 0 0 2px;
+}
+
+/* ── command palette ──────────────────────────────────────────────────── */
+.st-palette-backdrop {
+  align-items: flex-start;
+  padding-top: 12vh;
+}
+.st-palette {
+  width: min(560px, 92vw);
+  background: #222329;
+  color: #e6e7ea;
+  border: 1px solid #383a42;
+  border-radius: 10px;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+.st-palette-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  font-size: 15px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid #383a42;
+  outline: none;
+}
+.st-palette-list {
+  max-height: 48vh;
+  overflow-y: auto;
+  padding: 4px;
+}
+.st-palette-list .st-hint {
+  padding: 10px;
+}
+.st-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.st-palette-item.is-active {
+  background: #3b82f6;
+  color: #fff;
+}
+.st-palette-item small {
+  width: 84px;
+  flex: none;
+  opacity: 0.65;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.st-palette-item span {
+  flex: 1;
+}
+.st-palette-item kbd {
+  font: inherit;
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+/* ── expressions ──────────────────────────────────────────────────────── */
+.st-fn {
+  width: 20px;
+  height: 20px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--st-muted);
+  font: italic 600 12px Georgia, serif;
+  cursor: pointer;
+}
+.st-fn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.st-fn.is-on {
+  color: #34d399;
+}
+.st-expr {
+  margin: 0 0 6px;
+}
+.st-expr input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  font: 12px ui-monospace, Consolas, monospace;
+  color: var(--st-text);
+  background: #14151a;
+  border: 1px solid var(--st-border);
+  border-radius: 4px;
+}
+.st-expr.is-bad input {
+  border-color: #f87171;
+}
+.st-expr small {
+  display: block;
+  margin-top: 2px;
+  color: #f87171;
+  font-size: 11px;
 }

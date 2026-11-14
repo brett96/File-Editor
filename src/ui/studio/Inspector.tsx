@@ -1,6 +1,6 @@
 /** Studio inspector: properties of the selected clip, with keyframes for the transform. */
-import type { ReactNode } from 'react';
-import { ChevronLeft, ChevronRight, Diamond, AudioWaveform } from 'lucide-react';
+import { Fragment, useState, type ReactNode } from 'react';
+import { ChevronLeft, ChevronRight, Crosshair, Diamond, AudioWaveform } from 'lucide-react';
 import { FILTER_LABELS, type Adjustments, type FilterPreset } from '../../core/media/image-ops';
 import { BLEND_MODES, type BlendMode } from '../../core/pro-image/document';
 import {
@@ -14,9 +14,13 @@ import {
   type Clip,
   type Easing,
   type Project,
-  type TransformProp,
+  DEFAULT_LENS,
+  defaultMask,
   type VisualClip,
 } from '../../core/studio/model';
+import { STYLE_DEFS, newStyle, type StyleEffect, type StyleType } from '../../core/studio/fx';
+import { animProps, keyTimes, type AnimProp } from '../../core/studio/anim';
+import { expressionError } from '../../core/studio/expr';
 import { cx } from '../components';
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -46,14 +50,6 @@ function Num({ value, min, max, step = 1, onChange, slider = true }: { value: nu
   );
 }
 
-const PROPS: { key: TransformProp; label: string; min: number; max: number; step: number; toView?: (v: number) => number; fromView?: (v: number) => number }[] = [
-  { key: 'x', label: 'Position X', min: -2000, max: 6000, step: 1 },
-  { key: 'y', label: 'Position Y', min: -2000, max: 4000, step: 1 },
-  { key: 'scale', label: 'Scale %', min: 1, max: 500, step: 1, toView: (v) => v * 100, fromView: (v) => v / 100 },
-  { key: 'rotation', label: 'Rotation °', min: -360, max: 360, step: 0.5 },
-  { key: 'opacity', label: 'Opacity %', min: 0, max: 100, step: 1, toView: (v) => v * 100, fromView: (v) => v / 100 },
-];
-
 const LOOK: { key: keyof Adjustments; label: string; min: number; max: number }[] = [
   { key: 'exposure', label: 'Exposure', min: -100, max: 100 },
   { key: 'contrast', label: 'Contrast', min: -100, max: 100 },
@@ -73,8 +69,11 @@ export function Inspector({
   easing,
   onEasing,
   onChange,
+  onProject,
   onSeek,
   onEditAudio,
+  tracking,
+  onTrack,
 }: {
   project: Project;
   clip: Clip | null;
@@ -82,15 +81,22 @@ export function Inspector({
   easing: Easing;
   onEasing: (e: Easing) => void;
   onChange: (c: Clip) => void;
+  onProject: (p: Project) => void;
   onSeek: (t: number) => void;
   onEditAudio: (c: AudioClip) => void;
+  /** progress text while a mask is being tracked, else null */
+  tracking: string | null;
+  /** start (or, while tracking, stop) following the picture under the mask */
+  onTrack: (c: VisualClip) => void;
 }) {
+  /** properties whose expression box is open although still empty */
+  const [exprOpen, setExprOpen] = useState<Set<string>>(() => new Set());
   if (!clip) {
     return (
       <aside className="st-inspector">
         <h3>Inspector</h3>
         <p className="st-hint">Select a clip on the timeline. Add media, text or a colour layer from the toolbar.</p>
-        <p className="st-hint">Keys: Space play/pause · S split · Del delete · ← → step a frame · Ctrl+Z undo</p>
+        <p className="st-hint">Keys: Space play/pause · S split · Del delete · ← → step a frame · Ctrl+Z undo · Ctrl+K command palette</p>
       </aside>
     );
   }
@@ -148,17 +154,67 @@ export function Inspector({
   }
 
   const c = clip as VisualClip;
-  const keyTimes = [...new Set(Object.values(c.transform).flatMap((a) => a.keys.map((k: { t: number }) => k.t)))].sort((a, b) => a - b);
-  const prevKey = [...keyTimes].reverse().find((t) => t < local - 1e-3);
-  const nextKey = keyTimes.find((t) => t > local + 1e-3);
-  const setTransform = (prop: TransformProp, v: number) => onChange({ ...c, transform: { ...c.transform, [prop]: setValueAt(c.transform[prop], local, v) } } as Clip);
-  const toggleKey = (prop: TransformProp) => {
-    const a = c.transform[prop];
-    const next = hasKeyAt(a, local) ? removeKey(a, local) : addKey(a, local, valueAt(a, local), easing);
-    onChange({ ...c, transform: { ...c.transform, [prop]: next } } as Clip);
+  const times = keyTimes(project, c);
+  const prevKey = [...times].reverse().find((t) => t < local - 1e-3);
+  const nextKey = times.find((t) => t > local + 1e-3);
+  const props = animProps(project, c);
+  const setProp = (pr: AnimProp, v: number) => onChange(pr.set(c, setValueAt(pr.get(c), local, v)));
+  const toggleKey = (pr: AnimProp) => {
+    const a = pr.get(c);
+    onChange(pr.set(c, hasKeyAt(a, local) ? removeKey(a, local) : addKey(a, local, valueAt(a, local), easing)));
   };
+  /** Slider, number box and keyframe diamond for every property of a group. */
+  const propRows = (group: AnimProp['group']) =>
+    props.filter((pr) => pr.group === group).map((pr) => {
+      const a = pr.get(c);
+      const keyed = hasKeyAt(a, local);
+      const expr = c.expressions?.[pr.id] ?? '';
+      const open = !!expr || exprOpen.has(pr.id);
+      const bad = expr ? expressionError(expr) : null;
+      const setExpr = (text: string) => {
+        const next = { ...(c.expressions ?? {}) };
+        if (text) next[pr.id] = text;
+        else delete next[pr.id];
+        onChange({ ...c, expressions: next } as Clip);
+      };
+      return (
+        <Fragment key={pr.id}>
+          <div className="st-row">
+            <span>{pr.label}</span>
+            <Num value={valueAt(a, local) * pr.view} min={pr.min} max={pr.max} step={pr.step} onChange={(nv) => setProp(pr, nv / pr.view)} />
+            <button
+              type="button"
+              className={cx('st-fn', expr && 'is-on')}
+              title={expr ? 'Edit or remove the expression' : 'Drive this property with an expression, e.g. value + wiggle(2, 30)'}
+              aria-label={`${pr.label} expression`}
+              aria-pressed={open}
+              onClick={() => {
+                const next = new Set(exprOpen);
+                if (open) {
+                  next.delete(pr.id);
+                  if (expr) setExpr('');
+                } else next.add(pr.id);
+                setExprOpen(next);
+              }}
+            >
+              ƒ
+            </button>
+            <button type="button" className={cx('st-diamond', keyed && 'is-key', a.keys.length > 0 && 'is-anim')} disabled={!inClip} title={keyed ? 'Remove keyframe' : 'Add keyframe at the playhead'} aria-label={`${keyed ? 'Remove' : 'Add'} ${pr.label} keyframe`} onClick={() => toggleKey(pr)}>
+              <Diamond size={12} />
+            </button>
+          </div>
+          {open && (
+            <div className={cx('st-expr', bad && 'is-bad')}>
+              <input value={expr} spellCheck={false} placeholder="value + wiggle(2, 30)" aria-label={`${pr.label} expression text`} onChange={(e) => setExpr(e.target.value)} />
+              {bad && <small role="alert">{bad}</small>}
+            </div>
+          )}
+        </Fragment>
+      );
+    });
   const fx = c.effects;
   const setFx = (patch: Partial<VisualClip['effects']>) => onChange({ ...c, effects: { ...fx, ...patch } } as Clip);
+  const styles = fx.stylize ?? [];
 
   return (
     <aside className="st-inspector">
@@ -181,6 +237,14 @@ export function Inspector({
             <label className="check"><input type="checkbox" checked={c.bold} onChange={(e) => onChange({ ...c, bold: e.target.checked })} /> Bold</label>
             <label className="check"><input type="checkbox" checked={c.italic} onChange={(e) => onChange({ ...c, italic: e.target.checked })} /> Italic</label>
           </div>
+          <Row label="Anchor">
+            <select className="tb-select" value={c.anchor ?? 'center'} title="Which part of the text stays on its position when the text gets longer" onChange={(e) => onChange({ ...c, anchor: e.target.value as 'left' | 'center' | 'right' })}>
+              <option value="center">Centre</option>
+              <option value="left">Left edge</option>
+              <option value="right">Right edge</option>
+            </select>
+          </Row>
+          {propRows('Text')}
           <Row label="Outline"><Num value={c.stroke} min={0} max={30} onChange={(v) => onChange({ ...c, stroke: v })} /></Row>
           <div className="st-row-btns">
             {c.stroke > 0 && <input type="color" aria-label="Outline colour" value={c.strokeColor} onChange={(e) => onChange({ ...c, strokeColor: e.target.value })} />}
@@ -197,6 +261,8 @@ export function Inspector({
             <label className="check"><input type="checkbox" checked={!!c.color2} onChange={(e) => onChange({ ...c, color2: e.target.checked ? '#000000' : null })} /> Gradient</label>
             {c.color2 && <input type="color" aria-label="Second colour" value={c.color2} onChange={(e) => onChange({ ...c, color2: e.target.value })} />}
           </div>
+          <Row label="Width %"><Num value={(c.size?.w ?? 1) * 100} min={0.5} max={100} step={0.5} onChange={(v) => onChange({ ...c, size: { w: Math.min(1, Math.max(0.002, v / 100)), h: c.size?.h ?? 1 } })} /></Row>
+          <Row label="Height %"><Num value={(c.size?.h ?? 1) * 100} min={0.5} max={100} step={0.5} onChange={(v) => onChange({ ...c, size: { w: c.size?.w ?? 1, h: Math.min(1, Math.max(0.002, v / 100)) } })} /></Row>
         </section>
       )}
       <section>
@@ -211,25 +277,48 @@ export function Inspector({
               <option value="easeIn">Ease in</option>
               <option value="easeOut">Ease out</option>
               <option value="hold">Hold</option>
+              <option value="bezier">Custom curve</option>
             </select>
           </span>
         </h4>
         {!inClip && <p className="st-hint">Move the playhead over the clip to edit and keyframe it.</p>}
-        {PROPS.map((pr) => {
-          const a = c.transform[pr.key];
-          const v = valueAt(a, local);
-          const shown = pr.toView ? pr.toView(v) : v;
-          const keyed = hasKeyAt(a, local);
-          return (
-            <div key={pr.key} className="st-row">
-              <span>{pr.label}</span>
-              <Num value={shown} min={pr.key === 'x' ? -project.width : pr.key === 'y' ? -project.height : pr.min} max={pr.key === 'x' ? project.width * 2 : pr.key === 'y' ? project.height * 2 : pr.max} step={pr.step} onChange={(nv) => setTransform(pr.key, pr.fromView ? pr.fromView(nv) : nv)} />
-              <button type="button" className={cx('st-diamond', keyed && 'is-key', a.keys.length > 0 && 'is-anim')} disabled={!inClip} title={keyed ? 'Remove keyframe' : 'Add keyframe at the playhead'} aria-label={`${keyed ? 'Remove' : 'Add'} ${pr.label} keyframe`} onClick={() => toggleKey(pr.key)}>
-                <Diamond size={12} />
-              </button>
+        {propRows('Transform')}
+      </section>
+      <section>
+        <h4>3D</h4>
+        <p className="st-hint">Turn the layer in space or push it back; it is drawn in perspective through the project camera.</p>
+        {propRows('3D')}
+        <Row label="Camera lens (mm)"><Num value={project.lens ?? DEFAULT_LENS} min={12} max={200} onChange={(v) => onProject({ ...project, lens: Math.min(400, Math.max(8, v)) })} /></Row>
+      </section>
+      <section>
+        <h4>Mask</h4>
+        <label className="check">
+          <input type="checkbox" checked={!!c.mask?.enabled} onChange={(e) => onChange({ ...c, mask: { ...(c.mask ?? defaultMask()), enabled: e.target.checked } } as Clip)} /> Show only part of this layer
+        </label>
+        {c.mask?.enabled && (
+          <>
+            <div className="st-row-btns">
+              <select className="tb-select" aria-label="Mask shape" value={c.mask.shape} onChange={(e) => onChange({ ...c, mask: { ...c.mask!, shape: e.target.value as 'rect' | 'ellipse' } } as Clip)}>
+                <option value="ellipse">Ellipse</option>
+                <option value="rect">Rectangle</option>
+              </select>
+              <label className="check"><input type="checkbox" checked={c.mask.invert} onChange={(e) => onChange({ ...c, mask: { ...c.mask!, invert: e.target.checked } } as Clip)} /> Invert (cut a hole)</label>
             </div>
-          );
-        })}
+            {propRows('Mask')}
+            <Row label="Feather"><Num value={c.mask.feather} min={0} max={100} onChange={(v) => onChange({ ...c, mask: { ...c.mask!, feather: Math.max(0, v) } } as Clip)} /></Row>
+            {c.kind === 'video' && (
+              <>
+                <div className="st-row-btns">
+                  <button type="button" className={cx('btn', tracking && 'is-active')} disabled={!inClip && !tracking} onClick={() => onTrack(c)} title="Follow whatever is under the mask, from the playhead to the end of the clip">
+                    <Crosshair size={13} /> {tracking ? 'Stop tracking' : 'Track motion'}
+                  </button>
+                  {tracking && <span className="st-hint" role="status">{tracking}</span>}
+                </div>
+                <p className="st-hint">Place the mask over a subject, then Track motion: the mask follows it frame by frame and its position is keyframed.</p>
+              </>
+            )}
+          </>
+        )}
       </section>
       <section>
         <h4>Compositing</h4>
@@ -242,6 +331,32 @@ export function Inspector({
         <Row label="Fade out (s)"><Num value={fx.fadeOut} min={0} max={Math.min(30, c.duration)} step={0.05} onChange={(v) => setFx({ fadeOut: v })} /></Row>
         <Row label="Blur (px)"><Num value={fx.blur} min={0} max={80} step={0.5} onChange={(v) => setFx({ blur: v })} /></Row>
         <label className="check"><input type="checkbox" checked={fx.shadow} onChange={(e) => setFx({ shadow: e.target.checked })} /> Drop shadow</label>
+      </section>
+      <section>
+        <h4>Effects</h4>
+        <select
+          className="tb-select"
+          aria-label="Add an effect"
+          value=""
+          onChange={(e) => e.target.value && setFx({ stylize: [...styles, newStyle(e.target.value as StyleType)] })}
+        >
+          <option value="">Add an effect…</option>
+          {(Object.keys(STYLE_DEFS) as StyleType[]).map((t) => <option key={t} value={t}>{STYLE_DEFS[t].label}</option>)}
+        </select>
+        {styles.map((e) => {
+          const def = STYLE_DEFS[e.type];
+          const patch = (pt: Partial<StyleEffect>) => setFx({ stylize: styles.map((x) => (x.id === e.id ? { ...x, ...pt } : x)) });
+          return (
+            <div key={e.id} className="st-fx">
+              <div className="st-row-btns">
+                <label className="check" title={def.hint}><input type="checkbox" checked={e.enabled} onChange={(ev) => patch({ enabled: ev.target.checked })} /> {def.label}</label>
+                <button type="button" className="btn btn-text" aria-label={`Remove ${def.label}`} title="Remove effect" onClick={() => setFx({ stylize: styles.filter((x) => x.id !== e.id) })}>×</button>
+              </div>
+              <Row label={def.amount.label}><Num value={e.amount} min={def.amount.min} max={def.amount.max} onChange={(v) => patch({ amount: v })} /></Row>
+              {def.size && <Row label={def.size.label}><Num value={e.size} min={def.size.min} max={def.size.max} onChange={(v) => patch({ size: v })} /></Row>}
+            </div>
+          );
+        })}
       </section>
       {(c.kind === 'video' || c.kind === 'image') && (
         <>

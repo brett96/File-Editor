@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createPixels, type Pixels } from '../src/core/media/image-ops';
 import { applyAdjust, autoLevels, curveLut, defaultAdjust, histogram, levelsLut } from '../src/core/pro-image/adjust';
+import { LUT_PRESETS, applyLut, clarity, dehaze, grain, makeLut, parseCube } from '../src/core/pro-image/tone';
 import { addNoise, dodgeBurn, findEdges, gaussianBlur, median, motionBlur, spotHeal, unsharpMask } from '../src/core/pro-image/filters';
 import { combineMasks, ellipseMask, featherMask, invertMask, isEmptyMask, magicWand, maskBounds, polygonMask, rectMask } from '../src/core/pro-image/selection';
 import { duplicateLayer, moveLayer, newDocument, rasterLayer, rasterToDocSize, textLayer } from '../src/core/pro-image/document';
@@ -11,6 +12,97 @@ function solid(w: number, h: number, rgba: [number, number, number, number]): Pi
   return px;
 }
 const at = (px: Pixels, x: number, y: number) => Array.from(px.data.subarray((y * px.width + x) * 4, (y * px.width + x) * 4 + 4));
+
+describe('clarity, dehaze, grain and LUTs', () => {
+  const scene = (haze = 0): Pixels => {
+    const px = createPixels(64, 48);
+    for (let y = 0; y < 48; y++) for (let x = 0; x < 64; x++) {
+      const v = (x >> 3) % 2 ? 60 : 180;
+      const c = [v, (v * 0.6) | 0, 255 - v].map((ch) => ch * (1 - haze) + 230 * haze);
+      px.data.set([c[0], c[1], c[2], 255], (y * 64 + x) * 4);
+    }
+    return px;
+  };
+  const contrast = (px: Pixels | { data: Uint8ClampedArray }) => {
+    let lo = 255;
+    let hi = 0;
+    for (let i = 0; i < px.data.length; i += 4) {
+      lo = Math.min(lo, px.data[i]);
+      hi = Math.max(hi, px.data[i]);
+    }
+    return hi - lo;
+  };
+  it('clarity raises local contrast and leaves flat areas and extremes alone', () => {
+    const px = scene();
+    // the step across a stripe edge (x = 7 → 8)
+    const step = (d: Uint8ClampedArray) => Math.abs(d[(10 * 64 + 8) * 4] - d[(10 * 64 + 7) * 4]);
+    expect(step(clarity(px, 60))).toBeGreaterThan(step(px.data));
+    expect(step(clarity(px, -60))).toBeLessThan(step(px.data));
+    expect(clarity(solid(16, 16, [120, 120, 120, 255]), 100)[0]).toBe(120);
+    expect(Array.from(clarity(solid(8, 8, [255, 255, 255, 255]), 100).subarray(0, 3))).toEqual([255, 255, 255]);
+    expect(clarity(px, 0)).toEqual(px.data);
+  });
+  it('dehaze restores contrast lost to haze, and can add haze', () => {
+    const hazy = scene(0.5);
+    const clear = dehaze(hazy, 90);
+    expect(contrast({ data: clear })).toBeGreaterThan(contrast(hazy) * 1.3);
+    expect(contrast({ data: dehaze(scene(), -80) })).toBeLessThan(contrast(scene()));
+  });
+  it('grain is repeatable, scaled with the preview and gentlest at the extremes', () => {
+    const grey = solid(64, 64, [128, 128, 128, 255]);
+    const a = grain(grey, 50, 2, 50);
+    expect(a).toEqual(grain(grey, 50, 2, 50));
+    /** mean distance of the red channel from its average */
+    const spread = (d: Uint8ClampedArray) => {
+      let mean = 0;
+      for (let i = 0; i < d.length; i += 4) mean += d[i];
+      mean /= d.length / 4;
+      let dev = 0;
+      for (let i = 0; i < d.length; i += 4) dev += Math.abs(d[i] - mean);
+      return dev / (d.length / 4);
+    };
+    expect(spread(a)).toBeGreaterThan(2);
+    expect(spread(grain(solid(64, 64, [250, 250, 250, 255]), 50, 2, 50))).toBeLessThan(spread(a));
+    // monochrome: the three channels move together
+    expect(a[0] - 128).toBe(a[1] - 128);
+    expect(grain(grey, 0, 2, 50)).toEqual(grey.data);
+  });
+  it('reads .cube files and applies them with trilinear interpolation', () => {
+    const cube = ['TITLE "Swap"', '# red and blue exchanged', 'LUT_3D_SIZE 2', '0 0 0', '0 0 1', '0 1 0', '0 1 1', '1 0 0', '1 0 1', '1 1 0', '1 1 1'].join('\n');
+    const lut = parseCube(cube);
+    expect(lut).toMatchObject({ name: 'Swap', size: 2 });
+    const px = solid(2, 2, [200, 100, 30, 255]);
+    expect(Array.from(applyLut(px, lut).subarray(0, 4))).toEqual([30, 100, 200, 255]);
+    expect(Array.from(applyLut(px, lut, 50).subarray(0, 3))).toEqual([115, 100, 115]);
+    const identity = makeLut('id', 9, (r, g, b) => [r, g, b]);
+    expect(Array.from(applyLut(px, identity).subarray(0, 3))).toEqual([200, 100, 30]);
+    expect(() => parseCube('LUT_3D_SIZE 2\n0 0 0')).toThrow(/incomplete/);
+    expect(() => parseCube('LUT_1D_SIZE 16')).toThrow(/1D/);
+    expect(() => parseCube('hello')).toThrow(/not a .cube/);
+    for (const p of LUT_PRESETS) {
+      const t = p.build();
+      expect(t.table.length).toBe(t.size ** 3 * 3);
+      expect(t.name).toBe(p.label);
+    }
+  });
+  it('run as adjustment layers, respecting the mask', () => {
+    const px = scene();
+    const half = new Uint8Array(64 * 48);
+    for (let y = 0; y < 48; y++) for (let x = 0; x < 32; x++) half[y * 64 + x] = 255;
+    const noir = LUT_PRESETS.find((p) => p.id === 'noir')!.build();
+    applyAdjust(px, { type: 'lut', lut: noir, strength: 100 }, half);
+    expect(at(px, 4, 4)[0]).toBe(at(px, 4, 4)[2]);
+    expect(at(px, 40, 4)).toEqual(at(scene(), 40, 4));
+    const untouched = scene();
+    applyAdjust(untouched, defaultAdjust('lut'));
+    expect(untouched.data).toEqual(scene().data);
+    for (const t of ['clarity', 'dehaze', 'grain'] as const) {
+      const p2 = scene();
+      applyAdjust(p2, defaultAdjust(t));
+      expect(p2.data).not.toEqual(scene().data);
+    }
+  });
+});
 
 describe('adjustments', () => {
   it('curves: identity, monotone and through the points', () => {

@@ -523,3 +523,11 @@
 .pi-anchor button.is-active {
   background: var(--accent);
 }
+
+.pi-file-btn {
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pi-error {
+  color: #f87171;
+}

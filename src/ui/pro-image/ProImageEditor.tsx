@@ -86,7 +86,7 @@ import {
 } from '../../core/pro-image/selection';
 import { Field, Modal, MenuItem, Popover, cx } from '../components';
 import { LayersPanel, PropertiesPanel, Slider } from './panels';
-import { bucketFill, canvasToPixels, clearSelection, copySelection, cropToSelection, fillRaster, flattenDocument, flipImage, mergeDown, rasterize, resizeCanvas, resizeImage, rotateImage, transformLayer } from './ops';
+import { bakeForPsd, bucketFill, canvasToPixels, clearSelection, copySelection, cropToSelection, fillRaster, flattenDocument, flipImage, mergeDown, rasterize, resizeCanvas, resizeImage, rotateImage, transformLayer } from './ops';
 import { composite, flatten, invalidateLayer, invalidateMask, pixelsCanvas, rasterizeLayer, textBox } from './render';
 import './pro-image.css';
 
@@ -146,7 +146,7 @@ const TOOLS: { id: Tool; label: string; key: string; icon: ReactNode }[] = [
 
 const PAINT_TOOLS: Tool[] = ['brush', 'eraser', 'clone', 'heal', 'dodge', 'burn'];
 const RASTER_TOOLS: Tool[] = [...PAINT_TOOLS, 'bucket', 'gradient'];
-const ADJUST_ORDER: AdjustType[] = ['brightnessContrast', 'levels', 'curves', 'exposure', 'vibrance', 'hueSat', 'colorBalance', 'blackWhite', 'photoFilter', 'invert', 'posterize', 'threshold'];
+const ADJUST_ORDER: AdjustType[] = ['brightnessContrast', 'levels', 'curves', 'exposure', 'vibrance', 'hueSat', 'colorBalance', 'blackWhite', 'photoFilter', 'clarity', 'dehaze', 'grain', 'lut', 'invert', 'posterize', 'threshold'];
 const MAX_HISTORY = 40;
 const MAX_RENDER_SIDE = 4096;
 
@@ -421,7 +421,10 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
 
   useImperativeHandle(ref, () => ({
     getPixels: () => flatten(docRef.current),
-    getPsd: () => writePsdDocument(docRef.current, flatten(docRef.current), (l) => rasterizeLayer(l, docRef.current)),
+    getPsd: () => {
+      const d = bakeForPsd(docRef.current);
+      return writePsdDocument(d, flatten(docRef.current), (l) => rasterizeLayer(l, d));
+    },
     getDocument: () => docRef.current,
   }));
 

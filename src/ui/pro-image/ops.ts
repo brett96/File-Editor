@@ -2,6 +2,7 @@
  * Document-level operations for the pro photo editor that need a canvas (resampling,
  * rotating, merging). Each returns a new document; inputs are never mutated.
  */
+import { adjustToPsd } from '../../core/pro-image/psd';
 import type { Pixels } from '../../core/media/image-ops';
 import {
   clonePixels,
@@ -183,6 +184,21 @@ export function transformLayer(l: RasterLayer, sx: number, sy: number, degrees: 
   const cx = l.x + l.px.width / 2;
   const cy = l.y + l.px.height / 2;
   return { ...l, px: canvasToPixels(c), x: Math.round(cx - c.width / 2), y: Math.round(cy - c.height / 2) };
+}
+
+/**
+ * For saving as Photoshop: adjustment layers Photoshop has no equivalent of (Clarity, Dehaze,
+ * Grain, LUT) become pixel layers holding the picture as it looks up to and including them,
+ * so the file opens looking the same. The other layers are untouched.
+ */
+export function bakeForPsd(doc: ProDocument): ProDocument {
+  if (!doc.layers.some((l) => l.kind === 'adjust' && !adjustToPsd(l.adjust))) return doc;
+  const layers = doc.layers.map((l, i) => {
+    if (l.kind !== 'adjust' || adjustToPsd(l.adjust) || !l.visible) return l;
+    const baked = rasterLayer(l.name, canvasToPixels(composite({ ...doc, layers: doc.layers.slice(0, i + 1) }, 1)));
+    return { ...baked, id: l.id, locked: l.locked };
+  });
+  return { ...doc, layers };
 }
 
 /** Merge Down: the layer and the one below become one raster layer (with the lower layer's settings). */

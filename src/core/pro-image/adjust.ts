@@ -5,6 +5,7 @@
  * `mask` (0–255 per pixel, optional) blends the result with the original, as a layer mask
  * or selection does.
  */
+import { applyLut, clarity, dehaze, grain, type Lut3D } from './tone';
 import type { Pixels } from '../media/image-ops';
 
 export type CurvePoint = [number, number];
@@ -94,7 +95,38 @@ export interface PhotoFilterSpec {
   density: number;
 }
 
+export interface ClaritySpec {
+  type: 'clarity';
+  /** −100…100: midtone local contrast (negative softens) */
+  amount: number;
+}
+export interface DehazeSpec {
+  type: 'dehaze';
+  /** −100…100 (negative adds haze) */
+  amount: number;
+}
+export interface GrainSpec {
+  type: 'grain';
+  /** 0–100 */
+  amount: number;
+  /** grain size in document pixels, 1–10 */
+  size: number;
+  /** 0–100: smooth clumps … sharp speckle */
+  roughness: number;
+}
+export interface LutSpec {
+  type: 'lut';
+  /** the colour table (a built-in look or a loaded .cube file), or null until one is chosen */
+  lut: Lut3D | null;
+  /** 0–100 */
+  strength: number;
+}
+
 export type AdjustSpec =
+  | ClaritySpec
+  | DehazeSpec
+  | GrainSpec
+  | LutSpec
   | CurvesSpec
   | LevelsSpec
   | HueSatSpec
@@ -123,7 +155,14 @@ export const ADJUST_LABELS: Record<AdjustType, string> = {
   threshold: 'Threshold',
   posterize: 'Posterize',
   photoFilter: 'Photo Filter',
+  clarity: 'Clarity',
+  dehaze: 'Dehaze',
+  grain: 'Grain',
+  lut: 'Color Lookup (LUT)',
 };
+
+/** Adjustments that need the pixels around each pixel (or a table), handled in ./tone. */
+const AREA_TYPES = new Set<AdjustType>(['clarity', 'dehaze', 'grain', 'lut']);
 
 export function defaultAdjust(type: AdjustType): AdjustSpec {
   const line: CurvePoint[] = [
@@ -155,6 +194,14 @@ export function defaultAdjust(type: AdjustType): AdjustSpec {
       return { type, levels: 4 };
     case 'photoFilter':
       return { type, color: '#ec8a00', density: 25 };
+    case 'clarity':
+      return { type, amount: 40 };
+    case 'dehaze':
+      return { type, amount: 40 };
+    case 'grain':
+      return { type, amount: 25, size: 2, roughness: 50 };
+    case 'lut':
+      return { type, lut: null, strength: 100 };
   }
 }
 
@@ -269,10 +316,31 @@ function hslToRgb(h: number, s: number, l: number): [number, number, number] {
 
 const luma = (r: number, g: number, b: number) => 0.299 * r + 0.587 * g + 0.114 * b;
 
-/** Applies an adjustment in place. `mask` (w*h, 0–255) limits where it applies. */
-export function applyAdjust(px: Pixels, spec: AdjustSpec, mask?: Uint8Array | null): Pixels {
+/**
+ * Applies an adjustment in place. `mask` (w*h, 0–255) limits where it applies; `scale` is
+ * preview pixels per document pixel (1 for the saved file).
+ */
+export function applyAdjust(px: Pixels, spec: AdjustSpec, mask?: Uint8Array | null, scale = 1): Pixels {
   const d = px.data;
   const n = px.width * px.height;
+  if (AREA_TYPES.has(spec.type)) {
+    let out: Uint8ClampedArray | null = null;
+    if (spec.type === 'clarity') out = clarity(px, spec.amount);
+    else if (spec.type === 'dehaze') out = dehaze(px, spec.amount);
+    else if (spec.type === 'grain') out = grain(px, spec.amount, spec.size, spec.roughness, scale);
+    else if (spec.type === 'lut' && spec.lut) out = applyLut(px, spec.lut, spec.strength);
+    if (!out) return px;
+    for (let i = 0; i < n; i++) {
+      const k = i * 4;
+      const m = mask ? mask[i] : 255;
+      if (m === 0 || d[k + 3] === 0) continue;
+      const a = m / 255;
+      d[k] += (out[k] - d[k]) * a;
+      d[k + 1] += (out[k + 1] - d[k + 1]) * a;
+      d[k + 2] += (out[k + 2] - d[k + 2]) * a;
+    }
+    return px;
+  }
   const fn = pixelFn(spec);
   for (let i = 0; i < n; i++) {
     const k = i * 4;
@@ -419,6 +487,9 @@ function pixelFn(spec: AdjustSpec): PixelFn {
         return [clamp(r + (mr * k - r) * a), clamp(g + (mg * k - g) * a), clamp(b + (mb * k - b) * a)];
       };
     }
+    default:
+      // area adjustments never reach here (applyAdjust handles them)
+      return (r, g, b) => [r, g, b];
   }
 }
 

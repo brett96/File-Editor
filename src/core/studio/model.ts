@@ -12,14 +12,24 @@
  */
 import { NO_ADJUSTMENTS, type Adjustments, type FilterPreset } from '../media/image-ops';
 import type { BlendMode } from '../pro-image/document';
+import type { ExprData } from './expr';
+import type { StyleEffect } from './fx';
 
-export type Easing = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' | 'hold';
+export type Easing = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' | 'hold' | 'bezier';
+
+/** Control points of a custom easing curve, as in CSS cubic-bezier(x1, y1, x2, y2). */
+export type Bezier = [number, number, number, number];
+
+export const DEFAULT_BEZIER: Bezier = [0.33, 0, 0.67, 1];
 
 export interface Keyframe {
   /** seconds from the clip start */
   t: number;
   v: number;
+  /** shapes the segment from this key to the next */
   ease: Easing;
+  /** the curve of a 'bezier' segment (drawn in the graph editor) */
+  bez?: Bezier;
 }
 
 /** A value that is either constant or animated by keyframes. */
@@ -40,6 +50,31 @@ export interface Transform {
   rotation: Animatable;
   /** 0–1 */
   opacity: Animatable;
+}
+
+/** Optional 3D placement: the layer becomes a plane seen through the project's camera. */
+export interface Transform3D {
+  /** degrees: tips the top of the layer away from the viewer */
+  rotX: Animatable;
+  /** degrees: swings the right edge away from the viewer */
+  rotY: Animatable;
+  /** output pixels: positive is further from the camera */
+  z: Animatable;
+}
+
+/** Shows only part of a layer (or, inverted, hides part of it). Position and size are fractions of the layer. */
+export interface ClipMask {
+  enabled: boolean;
+  shape: 'rect' | 'ellipse';
+  /** centre, 0–1 across and down the layer */
+  x: Animatable;
+  y: Animatable;
+  /** size, 0–1 of the layer's width and height */
+  w: Animatable;
+  h: Animatable;
+  /** edge softness, 0–100 (% of half the layer's shorter side) */
+  feather: number;
+  invert: boolean;
 }
 
 export interface ChromaKey {
@@ -65,6 +100,8 @@ export interface VisualEffects {
   fadeOut: number;
   /** drop shadow (useful on text and keyed footage) */
   shadow: boolean;
+  /** stylize effects, applied in order (absent in projects from older versions) */
+  stylize?: StyleEffect[];
 }
 
 export interface SourceMeta {
@@ -90,7 +127,15 @@ interface ClipBase {
   linkId: string | null;
 }
 
-export interface MediaClip extends ClipBase {
+/** Extras every visual clip can have. All optional, so projects from older versions still open. */
+interface VisualExtras {
+  three?: Transform3D;
+  mask?: ClipMask;
+  /** formulas that drive a property, by property id (see core/studio/expr.ts) */
+  expressions?: Record<string, string>;
+}
+
+export interface MediaClip extends ClipBase, VisualExtras {
   kind: 'video' | 'image';
   sourceId: string;
   /** source time at the clip start */
@@ -99,7 +144,7 @@ export interface MediaClip extends ClipBase {
   effects: VisualEffects;
 }
 
-export interface TextClip extends ClipBase {
+export interface TextClip extends ClipBase, VisualExtras {
   kind: 'text';
   text: string;
   font: string;
@@ -113,15 +158,21 @@ export interface TextClip extends ClipBase {
   strokeColor: string;
   /** box behind the text, or null */
   background: string | null;
+  /** which edge of the text sits on its position (default: its centre), so edited text grows away from it */
+  anchor?: 'left' | 'center' | 'right';
+  /** 0–1: how much of the text has been typed so far (typewriter); absent = all of it */
+  reveal?: Animatable;
   transform: Transform;
   effects: VisualEffects;
 }
 
-export interface SolidClip extends ClipBase {
+export interface SolidClip extends ClipBase, VisualExtras {
   kind: 'solid';
   color: string;
   /** optional second colour: a vertical gradient */
   color2: string | null;
+  /** size as fractions of the frame (default: the whole frame), for bars and panels */
+  size?: { w: number; h: number };
   transform: Transform;
   effects: VisualEffects;
 }
@@ -221,6 +272,36 @@ export interface Project {
   tracks: Track[];
   master: MasterBus;
   sources: Record<string, SourceMeta>;
+  /** camera lens for 3D layers, as a 35 mm-equivalent focal length (default 50) */
+  lens?: number;
+  /** numbers imported from a CSV file, read by expressions with data("column") */
+  data?: ExprData;
+}
+
+export const DEFAULT_LENS = 50;
+
+/** Distance from the camera to the frame plane, in output pixels (a longer lens flattens perspective). */
+export const cameraDistance = (p: Pick<Project, 'width' | 'lens'>) => (p.width * Math.max(8, p.lens ?? DEFAULT_LENS)) / 36;
+
+export const defaultMask = (): ClipMask => ({ enabled: true, shape: 'ellipse', x: anim(0.5), y: anim(0.5), w: anim(0.5), h: anim(0.5), feather: 8, invert: false });
+
+export const defaultThree = (): Transform3D => ({ rotX: anim(0), rotY: anim(0), z: anim(0) });
+
+/** True when the clip is actually turned or moved in depth at some point. */
+export function is3D(c: VisualExtras): boolean {
+  const t = c.three;
+  if (!t) return false;
+  return [t.rotX, t.rotY, t.z].some((a) => a.value !== 0 || a.keys.some((k) => k.v !== 0));
+}
+
+/** Applies `fn` to every animatable of a visual clip (transform and the optional extras). */
+export function mapAnimatables<T extends VisualClip>(c: T, fn: (a: Animatable) => Animatable): T {
+  const out = { ...c, transform: { ...c.transform } } as T;
+  for (const k of ['x', 'y', 'scale', 'rotation', 'opacity'] as TransformProp[]) out.transform[k] = fn(c.transform[k]);
+  if (c.three) out.three = { rotX: fn(c.three.rotX), rotY: fn(c.three.rotY), z: fn(c.three.z) };
+  if (c.mask) out.mask = { ...c.mask, x: fn(c.mask.x), y: fn(c.mask.y), w: fn(c.mask.w), h: fn(c.mask.h) };
+  if (out.kind === 'text' && out.reveal) out.reveal = fn(out.reveal);
+  return out;
 }
 
 let n = 0;
@@ -299,8 +380,31 @@ export function hasVideoTracks(p: Project): boolean {
 
 // ── keyframes ────────────────────────────────────────────────────────────
 
-function ease(t: number, e: Easing): number {
+/** y of a CSS-style cubic bezier at x (both 0–1). */
+export function bezierAt(x: number, [x1, y1, x2, y2]: Bezier): number {
+  if (x <= 0) return 0;
+  if (x >= 1) return 1;
+  const a = Math.min(1, Math.max(0, x1));
+  const b = Math.min(1, Math.max(0, x2));
+  const curve = (p1: number, p2: number, u: number) => 3 * (1 - u) * (1 - u) * u * p1 + 3 * (1 - u) * u * u * p2 + u * u * u;
+  // x(u) is monotonic for control x in 0–1, so bisection always converges
+  let lo = 0;
+  let hi = 1;
+  let u = x;
+  for (let i = 0; i < 24; i++) {
+    const cx = curve(a, b, u);
+    if (Math.abs(cx - x) < 1e-5) break;
+    if (cx < x) lo = u;
+    else hi = u;
+    u = (lo + hi) / 2;
+  }
+  return curve(y1, y2, u);
+}
+
+function ease(t: number, e: Easing, bez?: Bezier): number {
   switch (e) {
+    case 'bezier':
+      return bezierAt(t, bez ?? DEFAULT_BEZIER);
     case 'easeIn':
       return t * t * t;
     case 'easeOut':
@@ -326,7 +430,7 @@ export function valueAt(a: Animatable, t: number): number {
   const a0 = k[i];
   const a1 = k[i + 1];
   const span = a1.t - a0.t || 1;
-  return a0.v + (a1.v - a0.v) * ease((t - a0.t) / span, a0.ease);
+  return a0.v + (a1.v - a0.v) * ease((t - a0.t) / span, a0.ease, a0.bez);
 }
 
 /** Sets the value: a keyframe at `t` when the property is animated, otherwise the constant. */
@@ -337,7 +441,8 @@ export function setValueAt(a: Animatable, t: number, v: number): Animatable {
 
 export function addKey(a: Animatable, t: number, v = valueAt(a, t), e: Easing = 'linear'): Animatable {
   const keys = a.keys.filter((k) => Math.abs(k.t - t) > 1e-4);
-  keys.push({ t, v, ease: a.keys.find((k) => Math.abs(k.t - t) <= 1e-4)?.ease ?? e });
+  const old = a.keys.find((k) => Math.abs(k.t - t) <= 1e-4);
+  keys.push(old ? { ...old, t, v } : { t, v, ease: e });
   keys.sort((x, y) => x.t - y.t);
   return { value: a.value, keys };
 }
@@ -365,20 +470,20 @@ export const gainToDb = (g: number) => (g <= 0 ? -Infinity : 20 * Math.log10(g))
 export function splitClip(c: Clip, t: number): [Clip, Clip] | null {
   if (t <= c.start + 1e-3 || t >= clipEnd(c) - 1e-3) return null;
   const local = t - c.start;
-  const left = { ...structuredClone(c), duration: local } as Clip;
-  const right = { ...structuredClone(c), id: sid('C'), start: t, duration: c.duration - local } as Clip;
-  if ('in' in right) (right as MediaClip | AudioClip).in = (c as MediaClip | AudioClip).in + local;
   const shiftAnim = (a: Animatable, keepLeft: boolean): Animatable => {
     if (!a.keys.length) return a;
     const v = valueAt(a, local);
     if (keepLeft) return { value: a.value, keys: [...a.keys.filter((k) => k.t < local), { t: local, v, ease: 'linear' }] };
     return { value: a.value, keys: [{ t: 0, v, ease: 'linear' }, ...a.keys.filter((k) => k.t > local).map((k) => ({ ...k, t: k.t - local }))] };
   };
-  if ('transform' in left && 'transform' in right) {
-    for (const prop of ['x', 'y', 'scale', 'rotation', 'opacity'] as TransformProp[]) {
-      left.transform[prop] = shiftAnim((c as VisualClip).transform[prop], true);
-      right.transform[prop] = shiftAnim((c as VisualClip).transform[prop], false);
-    }
+  const half = (keepLeft: boolean): Clip => {
+    const copy = structuredClone(c);
+    return copy.kind === 'audio' ? copy : mapAnimatables(copy, (a) => shiftAnim(a, keepLeft));
+  };
+  const left = { ...half(true), duration: local } as Clip;
+  const right = { ...half(false), id: sid('C'), start: t, duration: c.duration - local } as Clip;
+  if ('in' in right) (right as MediaClip | AudioClip).in = (c as MediaClip | AudioClip).in + local;
+  if (left.kind !== 'audio' && right.kind !== 'audio') {
     left.effects.fadeOut = 0;
     right.effects.fadeIn = 0;
   }

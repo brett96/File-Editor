@@ -27,13 +27,24 @@ import {
   Undo2,
   Unlink,
   Rows3,
+  Spline,
+  Command as CommandIcon,
 } from 'lucide-react';
 import { addMediaClips, deleteClips, findClip, linkedIds, placeClip, replaceClip, solidClip, splitAt, textClip, unlink } from '../../core/studio/build';
 import { bufferToData, buildMix, dataToBuffer, decodeAudio, meterDb, renderMix, type Mix } from '../../core/studio/audio';
-import { clipBox, drawFrame } from '../../core/studio/compose';
+import { clipBox, clipQuad, drawFrame, homography } from '../../core/studio/compose';
+import { animProps } from '../../core/studio/anim';
+import { parseDataCsv } from '../../core/studio/expr';
+import { TITLE_PRESETS, titlePreset, type TitlePreset } from '../../core/studio/presets';
+import { STYLE_DEFS, newStyle, type StyleType } from '../../core/studio/fx';
+import { simplifyKeys, toGray, trackPatch, type Gray } from '../../core/studio/track';
 import { encodeWav, frames, sliceAudio, waveformPeaks, type AudioData } from '../../core/studio/dsp';
 import {
+  addKey,
   clipEnd,
+  defaultMask,
+  defaultThree,
+  defaultTransform,
   newTrack,
   projectDuration,
   setValueAt,
@@ -51,6 +62,8 @@ import {
 } from '../../core/studio/model';
 import { cx } from '../components';
 import { AudioClipEditor } from './AudioClipEditor';
+import { CommandPalette, type Command } from './CommandPalette';
+import { GraphEditor } from './GraphEditor';
 import { Inspector } from './Inspector';
 import { Mixer } from './Mixer';
 import { Timeline, TIMELINE_HEADER, formatTimecode } from './Timeline';
@@ -80,6 +93,55 @@ interface SourceRt {
 }
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif|bmp|avif|svg)$/i;
+const VECTOR_EXT = /\.(svg|ai|pdf)$/i;
+
+/**
+ * Vector artwork (SVG, and Illustrator .ai / PDF, which carry a PDF copy of the page) drawn
+ * as a PNG large enough to stay sharp when scaled up to `fill` × the frame.
+ */
+async function rasterizeVector(file: File, frameW: number, frameH: number, fill = 2): Promise<Blob> {
+  const toPng = (cv: HTMLCanvasElement) => new Promise<Blob>((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('The artwork could not be drawn.'))), 'image/png'));
+  const sized = (w: number, h: number) => {
+    const k = Math.min(8192 / Math.max(w, h), Math.max(1, Math.min((frameW * fill) / w, (frameH * fill) / h)));
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(1, Math.round(w * k));
+    cv.height = Math.max(1, Math.round(h * k));
+    return { cv, k };
+  };
+  if (/\.svg$/i.test(file.name) || file.type === 'image/svg+xml') {
+    const url = URL.createObjectURL(new Blob([await file.arrayBuffer()], { type: 'image/svg+xml' }));
+    try {
+      const img = new Image();
+      await new Promise<void>((res, rej) => {
+        img.onload = () => res();
+        img.onerror = () => rej(new Error(`${file.name} is not an SVG picture that can be drawn.`));
+        img.src = url;
+      });
+      const { cv } = sized(img.naturalWidth || 512, img.naturalHeight || 512);
+      cv.getContext('2d')!.drawImage(img, 0, 0, cv.width, cv.height);
+      return await toPng(cv);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+  const { openPdf } = await import('../../core/pdf/pdfjs');
+  let pdf;
+  try {
+    pdf = await openPdf(new Uint8Array(await file.arrayBuffer()));
+  } catch {
+    throw new Error(`${file.name} can't be read. Illustrator files need “Create PDF Compatible File” ticked when they are saved (it is by default).`);
+  }
+  try {
+    const page = await pdf.doc.getPage(1);
+    const base = page.getViewport({ scale: 1 });
+    const { cv, k } = sized(base.width, base.height);
+    // no background: the artboard stays transparent, as it does in Illustrator
+    await page.render({ canvas: cv, canvasContext: cv.getContext('2d')!, viewport: page.getViewport({ scale: k }), background: 'rgba(0,0,0,0)' } as never).promise;
+    return await toPng(cv);
+  } finally {
+    await pdf.close();
+  }
+}
 
 export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEditor({ initial, blobs, onChange, onError }, ref) {
   // ── project + history ───────────────────────────────────────────────────
@@ -121,7 +183,7 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
   const playheadRef = useRef(0);
   const [playing, setPlaying] = useState(false);
   const [pps, setPps] = useState(40);
-  const [view, setView] = useState<'timeline' | 'mixer'>('timeline');
+  const [view, setView] = useState<'timeline' | 'graph' | 'mixer'>('timeline');
   const [snapOn, setSnapOn] = useState(true);
   const [easing, setEasing] = useState<Easing>('easeInOut');
   const [levels, setLevels] = useState<Record<string, number>>({});
@@ -307,20 +369,42 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
     drawFrame(ctx, p, t, frameFor, scale);
     const c = findClip(p, selectedRef.current);
     if (c && c.kind !== 'audio' && t >= c.start && t < clipEnd(c) && !playingRef.current) {
-      const b = clipBox(p, c, t - c.start, sizeOf);
-      if (b) {
+      const q = clipQuad(p, c, t - c.start, sizeOf);
+      if (q) {
         ctx.save();
         ctx.strokeStyle = '#4ea1ff';
         ctx.lineWidth = 1.5;
         ctx.setLineDash([5, 4]);
-        const cx0 = valueAt(c.transform.x, t - c.start) * scale;
-        const cy0 = valueAt(c.transform.y, t - c.start) * scale;
-        ctx.translate(cx0, cy0);
-        ctx.rotate((valueAt(c.transform.rotation, t - c.start) * Math.PI) / 180);
-        ctx.strokeRect((b.x * scale) - cx0, (b.y * scale) - cy0, b.w * scale, b.h * scale);
+        ctx.beginPath();
+        q.forEach(([qx, qy], i) => (i ? ctx.lineTo(qx * scale, qy * scale) : ctx.moveTo(qx * scale, qy * scale)));
+        ctx.closePath();
+        ctx.stroke();
         ctx.setLineDash([]);
         ctx.fillStyle = '#4ea1ff';
-        ctx.fillRect(-3, -3, 6, 6);
+        const mx = (q[0][0] + q[1][0] + q[2][0] + q[3][0]) / 4;
+        const my = (q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4;
+        ctx.fillRect(mx * scale - 3, my * scale - 3, 6, 6);
+        if (c.mask?.enabled) {
+          // the mask outline, placed through the layer's own (possibly 3D) outline
+          const H = homography(q);
+          const lt = t - c.start;
+          const [ox, oy, mw, mh] = [valueAt(c.mask.x, lt), valueAt(c.mask.y, lt), valueAt(c.mask.w, lt) / 2, valueAt(c.mask.h, lt) / 2];
+          const pts: [number, number][] = c.mask.shape === 'rect' ? [[-1, -1], [1, -1], [1, 1], [-1, 1]] : Array.from({ length: 48 }, (_, i) => [Math.cos((i / 48) * Math.PI * 2), Math.sin((i / 48) * Math.PI * 2)] as [number, number]);
+          ctx.strokeStyle = '#ffd24a';
+          ctx.setLineDash([4, 3]);
+          ctx.beginPath();
+          pts.forEach(([ux, uy], i) => {
+            const u = ox + ux * mw;
+            const v = oy + uy * mh;
+            const d = H[6] * u + H[7] * v + 1;
+            const sx = ((H[0] * u + H[1] * v + H[2]) / d) * scale;
+            const sy = ((H[3] * u + H[4] * v + H[5]) / d) * scale;
+            if (i) ctx.lineTo(sx, sy);
+            else ctx.moveTo(sx, sy);
+          });
+          ctx.closePath();
+          ctx.stroke();
+        }
         ctx.restore();
       }
     }
@@ -480,23 +564,39 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
     setView('timeline');
   };
 
+  /** Adds a ready-made title: its layers go on new tracks above everything, in order. */
+  const addTitle = (id: TitlePreset) => {
+    const clips = titlePreset(projectRef.current, id, playheadRef.current);
+    if (clips.length === 1) return addVisual(clips[0]);
+    const p = projectRef.current;
+    const count = p.tracks.filter((t) => t.kind === 'video').length;
+    const tracks = clips.map((c, i) => ({ ...newTrack('video', `V${count + clips.length - i}`), clips: [c as Clip] }));
+    commit({ ...p, tracks: [...tracks, ...p.tracks] });
+    setSelectedId(clips[0].id);
+    setView('timeline');
+  };
+
   const addFiles = async (files: FileList | null) => {
     if (!files?.length) return;
-    for (const file of Array.from(files)) {
+    for (const picked of Array.from(files)) {
+      let file: File | Blob = picked;
+      const name = picked.name;
       try {
-        setStatus(`Adding ${file.name}…`);
+        setStatus(`Adding ${name}…`);
         const id = sid('S');
         let meta: SourceMeta;
-        const isImage = file.type.startsWith('image/') || IMAGE_EXT.test(file.name);
+        const vector = VECTOR_EXT.test(name) || picked.type === 'image/svg+xml' || picked.type === 'application/pdf';
+        if (vector) file = await rasterizeVector(picked, projectRef.current.width, projectRef.current.height);
+        const isImage = vector || picked.type.startsWith('image/') || IMAGE_EXT.test(name);
         if (isImage) {
           const bmp = await createImageBitmap(file);
-          meta = { id, name: file.name, kind: 'image', duration: 0, width: bmp.width, height: bmp.height, hasAudio: false, fps: null };
+          meta = { id, name: name, kind: 'image', duration: 0, width: bmp.width, height: bmp.height, hasAudio: false, fps: null };
           bmp.close();
         } else {
           const { probeMedia } = await import('../../core/media/video-engine');
-          const info = await probeMedia(file).catch(() => null);
-          if (!info || (!info.hasVideo && !info.hasAudio)) throw new Error(`${file.name} can't be read here. Open it on its own first (it will be converted), save it as MP4 or WAV, then add it.`);
-          meta = { id, name: file.name, kind: info.hasVideo ? 'video' : 'audio', duration: info.duration, width: info.width, height: info.height, hasAudio: info.hasAudio, fps: info.fps };
+          const info = await probeMedia(picked).catch(() => null);
+          if (!info || (!info.hasVideo && !info.hasAudio)) throw new Error(`${name} can't be read here. Open it on its own first (it will be converted), save it as MP4 or WAV, then add it.`);
+          meta = { id, name: name, kind: info.hasVideo ? 'video' : 'audio', duration: info.duration, width: info.width, height: info.height, hasAudio: info.hasAudio, fps: info.fps };
         }
         const rt = registerSource(id, file, meta);
         const { project: next, clipId } = addMediaClips(projectRef.current, meta, playheadRef.current);
@@ -543,6 +643,110 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
     let out = replaceClip({ ...p, sources: { ...p.sources, [id]: meta } }, next);
     if (lengthChanged && c.linkId) out = unlink(out, c.id);
     commit(out);
+  };
+
+  // ── motion tracking: the mask follows the picture under it ──────────────
+  const [tracking, setTracking] = useState<string | null>(null);
+  const trackStop = useRef(false);
+  const trackMask = async (clip: VisualClip) => {
+    if (tracking) {
+      trackStop.current = true;
+      return;
+    }
+    const rt = clip.kind === 'video' ? media.current.get(clip.sourceId) : null;
+    const m = clip.mask;
+    if (clip.kind !== 'video' || !rt || !m) return;
+    if (playingRef.current) stopPlayback();
+    const p = projectRef.current;
+    const from = Math.max(0, Math.min(clip.duration, playheadRef.current - clip.start));
+    const step = 1 / p.fps;
+    const total = Math.floor((clip.duration - from) / step);
+    if (total < 1) {
+      onError('Move the playhead to where tracking should start (before the end of the clip).');
+      return;
+    }
+    trackStop.current = false;
+    setTracking('Tracking… 0%');
+    const el = document.createElement('video');
+    el.muted = true;
+    el.playsInline = true;
+    el.preload = 'auto';
+    el.src = rt.url;
+    try {
+      await new Promise<void>((res, rej) => {
+        el.addEventListener('loadeddata', () => res(), { once: true });
+        el.addEventListener('error', () => rej(new Error('The video could not be read for tracking.')), { once: true });
+      });
+      // a small frame is enough to follow motion, and keeps every step fast
+      const aw = Math.min(480, el.videoWidth);
+      const ah = Math.max(8, Math.round((aw * el.videoHeight) / el.videoWidth));
+      const cv = document.createElement('canvas');
+      cv.width = aw;
+      cv.height = ah;
+      const actx = cv.getContext('2d', { willReadFrequently: true })!;
+      const grab = async (local: number): Promise<Gray> => {
+        const target = Math.min(Math.max(0, el.duration - 0.001), clip.in + local);
+        if (Math.abs(el.currentTime - target) > 1e-4) {
+          await new Promise<void>((res) => {
+            const done = () => {
+              clearTimeout(timer);
+              el.removeEventListener('seeked', done);
+              res();
+            };
+            const timer = setTimeout(done, 3000);
+            el.addEventListener('seeked', done);
+            el.currentTime = target;
+          });
+        }
+        actx.drawImage(el, 0, 0, aw, ah);
+        return toGray(actx.getImageData(0, 0, aw, ah));
+      };
+      let cx = valueAt(m.x, from) * aw;
+      let cy = valueAt(m.y, from) * ah;
+      const bw = Math.max(8, valueAt(m.w, from) * aw);
+      const bh = Math.max(8, valueAt(m.h, from) * ah);
+      const radius = Math.max(6, Math.round(aw / 16));
+      const xs = [{ t: from, v: cx / aw, ease: 'linear' as Easing }];
+      const ys = [{ t: from, v: cy / ah, ease: 'linear' as Easing }];
+      let prev = await grab(from);
+      let lost = 0;
+      for (let i = 1; i <= total && !trackStop.current; i++) {
+        const local = from + i * step;
+        const next = await grab(local);
+        const hit = trackPatch(prev, next, cx, cy, bw, bh, radius);
+        lost = hit.error > 45 ? lost + 1 : 0;
+        if (lost >= 5) {
+          onError('Tracking stopped: the subject under the mask was lost. Move the mask back onto it and track again from there.');
+          break;
+        }
+        cx = Math.min(aw, Math.max(0, hit.x));
+        cy = Math.min(ah, Math.max(0, hit.y));
+        xs.push({ t: local, v: cx / aw, ease: 'linear' });
+        ys.push({ t: local, v: cy / ah, ease: 'linear' });
+        prev = next;
+        if (i % 3 === 0) {
+          setTracking(`Tracking… ${Math.round((i / total) * 100)}%`);
+          playheadRef.current = clip.start + local;
+          setPlayheadState(clip.start + local);
+        }
+      }
+      const cur = findClip(projectRef.current, clip.id) as VisualClip | null;
+      if (cur?.mask && xs.length > 1) {
+        const end = xs[xs.length - 1].t;
+        // keep keys outside the tracked span, replace those inside it
+        const merge = (a: { value: number; keys: typeof xs }, tracked: typeof xs) => ({
+          value: a.value,
+          keys: [...a.keys.filter((k) => k.t < from - 1e-4 || k.t > end + 1e-4), ...simplifyKeys(tracked, 2.5 / aw)].sort((k1, k2) => k1.t - k2.t),
+        });
+        commit(replaceClip(projectRef.current, { ...cur, mask: { ...cur.mask, x: merge(cur.mask.x, xs), y: merge(cur.mask.y, ys) } } as Clip));
+      }
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    } finally {
+      el.removeAttribute('src');
+      el.load();
+      setTracking(null);
+    }
   };
 
   const measure = async () => {
@@ -622,15 +826,101 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
     endDrag();
   };
 
+  // ── command palette ─────────────────────────────────────────────────────
+  const [palette, setPalette] = useState(false);
+  const dataInput = useRef<HTMLInputElement>(null);
+  const importData = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const data = parseDataCsv(await file.text(), file.name);
+      commit({ ...projectRef.current, data });
+      setStatus(`Data loaded: ${data.rows.length} rows · ${data.columns.join(', ')}`);
+      setTimeout(() => setStatus(null), 6000);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  };
+  const buildCommands = (): Command[] => {
+    const p = projectRef.current;
+    const t = playheadRef.current;
+    const sel = findClip(p, selectedRef.current);
+    const vis = sel && sel.kind !== 'audio' ? (sel as VisualClip) : null;
+    const local = vis ? Math.max(0, Math.min(vis.duration, t - vis.start)) : 0;
+    const set = (c: VisualClip) => commit(replaceClip(projectRef.current, c as Clip));
+    const expr = (c: VisualClip, entries: Record<string, string>) => set({ ...c, expressions: { ...(c.expressions ?? {}), ...entries } } as VisualClip);
+    const list: Command[] = [
+      { id: 'add-media', group: 'Add', label: 'Add media files…', run: () => fileInput.current?.click() },
+      { id: 'add-text', group: 'Add', label: 'Add text (title)', run: () => addVisual(textClip(projectRef.current, playheadRef.current)) },
+      { id: 'add-solid', group: 'Add', label: 'Add colour / gradient layer', run: () => addVisual(solidClip(projectRef.current, playheadRef.current)) },
+      ...TITLE_PRESETS.map((tp): Command => ({ id: `title-${tp.id}`, group: 'Title', label: tp.label, run: () => addTitle(tp.id) })),
+      { id: 'add-vtrack', group: 'Add', label: 'Add video track', run: () => addTrack('video') },
+      { id: 'add-atrack', group: 'Add', label: 'Add audio track', run: () => addTrack('audio') },
+      { id: 'split', group: 'Edit', label: 'Split clip at playhead', hint: 'S', disabled: !sel, run: split },
+      { id: 'delete', group: 'Edit', label: 'Delete clip', hint: 'Del', disabled: !sel, run: remove },
+      { id: 'unlink', group: 'Edit', label: 'Unlink picture and sound', disabled: !sel?.linkId, run: () => selectedRef.current && commit(unlink(projectRef.current, selectedRef.current)) },
+      { id: 'undo', group: 'Edit', label: 'Undo', hint: 'Ctrl+Z', run: undo },
+      { id: 'redo', group: 'Edit', label: 'Redo', hint: 'Ctrl+Shift+Z', run: redo },
+      { id: 'play', group: 'Transport', label: 'Play / pause', hint: 'Space', run: togglePlay },
+      { id: 'home', group: 'Transport', label: 'Go to start', hint: 'Home', run: () => seek(0) },
+      { id: 'end', group: 'Transport', label: 'Go to end', hint: 'End', run: () => seek(projectDuration(projectRef.current)) },
+      { id: 'view-timeline', group: 'View', label: 'Show timeline', run: () => setView('timeline') },
+      { id: 'view-graph', group: 'View', label: 'Show graph editor', run: () => setView('graph') },
+      { id: 'view-mixer', group: 'View', label: 'Show mixer', run: () => setView('mixer') },
+      { id: 'fit', group: 'View', label: 'Fit the whole timeline', run: fit },
+      { id: 'snap', group: 'View', label: snapOn ? 'Turn snapping off' : 'Turn snapping on', run: () => setSnapOn(!snapOn) },
+      { id: 'data-import', group: 'Data', label: 'Import data for expressions (CSV)…', run: () => dataInput.current?.click() },
+      { id: 'data-clear', group: 'Data', label: `Remove imported data${p.data ? ` (${p.data.name})` : ''}`, disabled: !p.data, run: () => commit({ ...projectRef.current, data: undefined }) },
+    ];
+    if (vis) {
+      const props = animProps(p, vis);
+      for (const pr of props) {
+        list.push({ id: `key-${pr.id}`, group: 'Keyframe', label: `Add keyframe: ${pr.label}`, run: () => set(pr.set(vis, addKey(pr.get(vis), local, valueAt(pr.get(vis), local), easing))) });
+      }
+      list.push(
+        { id: 'key-clear', group: 'Keyframe', label: 'Remove all keyframes from this clip', run: () => set(props.reduce((cl, pr) => pr.set(cl, { value: valueAt(pr.get(cl), local), keys: [] }), vis)) },
+        { id: 'tf-reset', group: 'Layer', label: 'Reset transform', run: () => set({ ...vis, transform: defaultTransform(p), three: undefined } as VisualClip) },
+        { id: 'tf-center', group: 'Layer', label: 'Centre layer in the frame', run: () => set({ ...vis, transform: { ...vis.transform, x: setValueAt(vis.transform.x, local, p.width / 2), y: setValueAt(vis.transform.y, local, p.height / 2) } } as VisualClip) },
+        { id: 'fade-in', group: 'Layer', label: 'Fade in (0.5 s)', run: () => set({ ...vis, effects: { ...vis.effects, fadeIn: Math.min(0.5, vis.duration / 2) } } as VisualClip) },
+        { id: 'fade-out', group: 'Layer', label: 'Fade out (0.5 s)', run: () => set({ ...vis, effects: { ...vis.effects, fadeOut: Math.min(0.5, vis.duration / 2) } } as VisualClip) },
+        { id: 'mask-add', group: 'Layer', label: vis.mask?.enabled ? 'Remove mask' : 'Add mask', run: () => set({ ...vis, mask: vis.mask?.enabled ? { ...vis.mask, enabled: false } : { ...(vis.mask ?? defaultMask()), enabled: true } } as VisualClip) },
+        { id: '3d-spin', group: 'Layer', label: '3D: swivel in from the side (1 s)', run: () => set({ ...vis, three: { ...(vis.three ?? defaultThree()), rotY: { value: 0, keys: [{ t: 0, v: -80, ease: 'easeOut' }, { t: Math.min(1, vis.duration), v: 0, ease: 'linear' }] } }, effects: { ...vis.effects, fadeIn: Math.min(0.4, vis.duration / 2) } } as VisualClip) },
+        { id: 'x-wiggle', group: 'Expression', label: 'Wiggle position (hand-held shake)', run: () => expr(vis, { x: 'value + wiggle(2, 12)', y: 'value + wiggle(2.3, 12)' }) },
+        { id: 'x-wiggle-rot', group: 'Expression', label: 'Wiggle rotation', run: () => expr(vis, { rotation: 'value + wiggle(1.5, 4)' }) },
+        { id: 'x-spin', group: 'Expression', label: 'Spin continuously (90° per second)', run: () => expr(vis, { rotation: 'value + time * 90' }) },
+        { id: 'x-pulse', group: 'Expression', label: 'Pulse scale (heartbeat)', run: () => expr(vis, { scale: 'value * (1 + 0.06 * sin(time * 2 * PI * 1.2))' }) },
+        { id: 'x-flicker', group: 'Expression', label: 'Flicker opacity', run: () => expr(vis, { opacity: 'value * (0.7 + 0.3 * noise(time * 14))' }) },
+        { id: 'x-loop', group: 'Expression', label: 'Loop the keyframes of every animated property', run: () => expr(vis, Object.fromEntries(props.filter((pr) => pr.get(vis).keys.length > 1).map((pr) => [pr.id, 'loopOut()']))) },
+        { id: 'x-clear', group: 'Expression', label: 'Remove all expressions from this clip', disabled: !vis.expressions || !Object.keys(vis.expressions).length, run: () => set({ ...vis, expressions: {} } as VisualClip) },
+      );
+      for (const type of Object.keys(STYLE_DEFS) as StyleType[]) {
+        list.push({ id: `fx-${type}`, group: 'Effect', label: `Add effect: ${STYLE_DEFS[type].label}`, run: () => set({ ...vis, effects: { ...vis.effects, stylize: [...(vis.effects.stylize ?? []), newStyle(type)] } } as VisualClip) });
+      }
+      if (p.data) {
+        for (const col of p.data.columns) {
+          list.push({ id: `data-${col}`, group: 'Data', label: `Drive Position Y from data column “${col}”`, run: () => expr(vis, { y: `data("${col.replace(/"/g, '')}")` }) });
+        }
+      }
+    }
+    return list;
+  };
+
   // ── keyboard ────────────────────────────────────────────────────────────
   const keyHandler = useRef<(e: KeyboardEvent) => void>(() => undefined);
   keyHandler.current = (e: KeyboardEvent) => {
     if (editAudio) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && !document.querySelector('.modal-backdrop')) {
+      e.preventDefault();
+      setPalette(true);
+      return;
+    }
     const el = e.target as HTMLElement | null;
     if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
     if (document.querySelector('.modal-backdrop')) return;
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.key.toLowerCase() === 'z') {
+    if (mod && (e.key.toLowerCase() === 'k' || (e.shiftKey && e.key.toLowerCase() === 'p'))) {
+      e.preventDefault();
+      setPalette(true);
+    } else if (mod && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       if (e.shiftKey) redo();
       else undo();
@@ -681,11 +971,15 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
   return (
     <div className="studio">
       <div className="st-toolbar" role="toolbar" aria-label="Studio">
-        <button type="button" className="btn" onClick={() => fileInput.current?.click()} title="Add video, audio or image files at the playhead">
+        <button type="button" className="btn" onClick={() => fileInput.current?.click()} title="Add video, audio, image or vector (SVG, Illustrator .ai, PDF) files at the playhead">
           <Plus size={14} /> Add media
         </button>
-        <input ref={fileInput} type="file" hidden multiple accept="video/*,audio/*,image/*,.mkv,.mov,.m4a,.flac,.opus,.ogg,.wav" onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
+        <input ref={fileInput} type="file" hidden multiple accept="video/*,audio/*,image/*,.mkv,.mov,.m4a,.flac,.opus,.ogg,.wav,.svg,.ai,.pdf" onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
         <button type="button" className="btn" onClick={() => addVisual(textClip(projectRef.current, playheadRef.current))} title="Add a title"><Type size={14} /> Text</button>
+        <select className="tb-select st-titles" aria-label="Add an animated title" title="Add a ready-made animated title at the playhead" value="" onChange={(e) => e.target.value && addTitle(e.target.value as TitlePreset)}>
+          <option value="">Titles…</option>
+          {TITLE_PRESETS.map((t) => <option key={t.id} value={t.id} title={t.hint}>{t.label}</option>)}
+        </select>
         <button type="button" className="btn" onClick={() => addVisual(solidClip(projectRef.current, playheadRef.current))} title="Add a colour / gradient layer"><Square size={14} /> Colour</button>
         <button type="button" className="btn btn-text" onClick={() => addTrack('video')} title="Add a video track"><Film size={14} /> + Video track</button>
         <button type="button" className="btn btn-text" onClick={() => addTrack('audio')} title="Add an audio track"><Rows3 size={14} /> + Audio track</button>
@@ -699,8 +993,13 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
         {status && <span className="st-hint" role="status">{status}</span>}
         <div className="workspace-switch st-view" role="radiogroup" aria-label="Bottom panel">
           <button type="button" role="radio" aria-checked={view === 'timeline'} className={view === 'timeline' ? 'is-active' : ''} onClick={() => setView('timeline')}><Rows3 size={13} /> Timeline</button>
+          <button type="button" role="radio" aria-checked={view === 'graph'} className={view === 'graph' ? 'is-active' : ''} onClick={() => setView('graph')} title="Animation curves of the selected clip"><Spline size={13} /> Graph</button>
           <button type="button" role="radio" aria-checked={view === 'mixer'} className={view === 'mixer' ? 'is-active' : ''} onClick={() => setView('mixer')}><SlidersHorizontal size={13} /> Mixer</button>
         </div>
+        <button type="button" className="btn btn-icon" title="Command palette: find any action (Ctrl+K)" aria-label="Command palette" onClick={() => setPalette(true)}>
+          <CommandIcon size={15} />
+        </button>
+        <input ref={dataInput} type="file" hidden accept=".csv,.tsv,.txt,text/csv" onChange={(e) => { void importData(e.target.files?.[0]); e.target.value = ''; }} />
         <button type="button" className="btn btn-icon" title="Studio guide" aria-label="Studio guide" onClick={() => openGuide(view === 'mixer' ? 'studio-mixer' : 'studio')}>
           <CircleHelp size={15} />
         </button>
@@ -725,8 +1024,11 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
           easing={easing}
           onEasing={setEasing}
           onChange={updateClip}
+          onProject={(np) => commit(np, 'project')}
           onSeek={seek}
           onEditAudio={openAudioEditor}
+          tracking={tracking}
+          onTrack={(c) => void trackMask(c)}
         />
       </div>
 
@@ -762,11 +1064,14 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
             onCommit={endDrag}
             onTrack={updateTrack}
           />
+        ) : view === 'graph' ? (
+          <GraphEditor project={project} clip={selected} playhead={playhead} onChange={updateClip} onSeek={seek} />
         ) : (
           <Mixer project={project} levels={levels} onTrack={updateTrack} onMaster={updateMaster} onMeasure={() => void measure()} measured={measured} />
         )}
       </div>
 
+      {palette && <CommandPalette commands={buildCommands()} onClose={() => setPalette(false)} />}
       {editAudio && editing && (
         <AudioClipEditor name={editing.name} data={editAudio.data} onApply={applyAudioEdit} onClose={() => setEditAudio(null)} />
       )}
