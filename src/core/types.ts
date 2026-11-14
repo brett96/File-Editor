@@ -38,13 +38,19 @@
  */
 export const CSS_LINE_PER_WORD_LINE = 1.22;
 
-export type FlowFormat = 'docx' | 'doc' | 'odt' | 'rtf' | 'md' | 'html' | 'txt' | 'css' | 'js';
+export type FlowFormat = 'docx' | 'doc' | 'odt' | 'rtf' | 'md' | 'html' | 'txt' | 'css' | 'js' | 'code';
 export type DocFormat = FlowFormat | 'pdf';
+/** The web languages the code editor can preview and convert. */
 export type CodeLanguage = 'html' | 'css' | 'js';
+/**
+ * Everything edited as source text. 'code' is any other language (TypeScript, Python, YAML…):
+ * the file keeps its own extension and is saved back as the text it is (core/code/languages.ts).
+ */
+export type CodeFormat = CodeLanguage | 'code';
 
 /** Formats edited as source text in the code editor (not TipTap). */
-export function isCodeFormat(format: DocFormat): format is CodeLanguage {
-  return format === 'html' || format === 'css' || format === 'js';
+export function isCodeFormat(format: DocFormat): format is CodeFormat {
+  return format === 'html' || format === 'css' || format === 'js' || format === 'code';
 }
 
 export type PageSize = 'letter' | 'a4' | 'legal';

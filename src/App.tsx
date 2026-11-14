@@ -12,6 +12,8 @@ import {
   Image as ImageIcon,
   FileText,
   FolderOpen,
+  FolderTree,
+  PanelLeft,
   Sheet as SheetIcon,
   Lock,
   LockOpen,
@@ -29,12 +31,18 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import { baseName, exportFlow, FORMATS, OPEN_EXTENSIONS, openDocument, type OpenResult } from './core/registry';
+import { baseName, exportFlow, extensionOf, FORMATS, OPEN_EXTENSIONS, openDocument, type OpenResult } from './core/registry';
+import { languageLabel } from './core/code/languages';
+import { leafOf } from './core/web/paths';
 import { buildPdf } from './core/pdf/apply-edits';
 import type { PdfProtection } from './core/pdf/types';
-import { PasswordError, UnsupportedError, isCodeFormat, type CodeLanguage, type DocFormat, type FlowFormat, type RichDocument } from './core/types';
+import { PasswordError, UnsupportedError, isCodeFormat, type CodeFormat, type DocFormat, type FlowFormat, type RichDocument } from './core/types';
 import { escapeHtml, utf8Encode } from './core/dom';
-import { fileBytes, getHost, readDroppedFile, type FileHost, type OpenedFile, type RecentEntry, type UpdateStatus } from './platform/host';
+import { fileBytes, getHost, readDroppedFile, type FileHost, type OpenedFile, type OpenedFolder, type RecentEntry, type UpdateStatus } from './platform/host';
+import { droppedFolder, memoryFolder } from './platform/folders';
+import { Explorer } from './ui/workspace/Explorer';
+import { registerBuffer } from './ui/workspace/buffers';
+import { folderPages } from './ui/workspace/pages';
 import { ownedExtensions } from './core/conversions';
 import { WorkbookTooLargeError, memoryProfile, sheetCellBudget } from './core/memory';
 import {
@@ -66,7 +74,7 @@ import type { StudioHandle } from './ui/studio/StudioEditor';
 import type { StudioExportChoice } from './ui/studio/StudioExport';
 import type { Project as StudioProject } from './core/studio/model';
 import { VideoEditor, formatTime, rotatedSize, type VideoEditorHandle } from './ui/video/VideoEditor';
-import { CodeEditor, type CodeEditorHandle } from './ui/code/CodeEditor';
+import { CodeEditor, type CodeEditorHandle, type PreviewSource } from './ui/code/CodeEditor';
 import { ImageExportModal, MediaExportModal, ProgressModal, type ImageExportChoice, type MediaExportChoice } from './ui/media-dialogs';
 import { CONTAINERS, IMAGE_FORMATS, MEDIA_EXTENSIONS_ALL, IMAGE_EXTENSIONS_ALL, sniffMedia, type ContainerFormat, type ImageFormat } from './core/media/media-formats';
 import type { DecodedImage } from './core/media/image-codecs';
@@ -117,7 +125,8 @@ type MediaDoc = { kind: 'media'; key: number; name: string; blob: Blob; info: Me
 
 type OpenDoc =
   | { kind: 'flow'; key: number; name: string; format: FlowFormat; initial: RichDocument; handle?: unknown; protection: ProtectionDraft }
-  | { kind: 'code'; key: number; name: string; format: CodeLanguage; language: CodeLanguage; text: string; handle?: unknown; protection: ProtectionDraft }
+  /** format 'code': any language but HTML / CSS / JS, saved under the file's own extension; language: its display name */
+  | { kind: 'code'; key: number; name: string; format: CodeFormat; language: string; text: string; handle?: unknown; protection: ProtectionDraft }
   | { kind: 'pdf'; key: number; name: string; bytes: Uint8Array; handle?: unknown; protection: ProtectionDraft }
   | { kind: 'image'; key: number; name: string; decoded: DecodedImage; format: ImageFormat; handle?: unknown; protection: ProtectionDraft }
   /** desktop pro photo editor: a layered document (format: what Save writes without asking) */
@@ -135,8 +144,11 @@ const SHEET_SWITCH: SheetFormat[] = ['xlsx', 'csv', 'tsv'];
 type SwitchTarget = DocFormat | 'image' | SheetFormat | 'database';
 const isSheetFormat = (t: SwitchTarget): t is SheetFormat => (SHEET_SWITCH as string[]).includes(t);
 
-async function codeToRich(language: CodeLanguage, text: string): Promise<RichDocument> {
-  if (language === 'html') {
+/** What the status bar calls a code file: "HTML" for the web formats, else the language its name says. */
+const codeLabel = (format: CodeFormat, name: string) => languageLabel(format === 'code' ? name : `x.${FORMATS[format].ext}`);
+
+async function codeToRich(format: CodeFormat, text: string): Promise<RichDocument> {
+  if (format === 'html') {
     const { importHtml } = await import('./core/formats/html');
     return importHtml(utf8Encode(text));
   }
@@ -343,6 +355,28 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     if (!docName) return;
     onInfo(tabId, { name: docName, dirty, locked: docLocked, kind: docKind ?? null });
   }, [onInfo, tabId, docName, dirty, docLocked, docKind]);
+
+  // ── where a code file lives: its folder (or, on desktop, the files beside it) feeds the web preview ──
+  const startFile = start.kind === 'open' ? start.file : null;
+  // only while the tab still shows the file it was opened for (not after Save as or a format switch)
+  const fromStart = doc?.kind === 'code' && !!startFile && doc.name === startFile.name;
+  const previewSource = useMemo<PreviewSource | null>(() => {
+    if (!fromStart || !startFile) return null;
+    if (startFile.folder) {
+      const { folder, path } = startFile.folder;
+      return { id: folder.id, path, read: (p) => folder.read(p), pages: () => folderPages(folder) };
+    }
+    const read = rawHost.siblingReader(startFile.handle);
+    return read ? { id: `file:${String(startFile.handle)}`, path: startFile.name, read } : null;
+  }, [fromStart, startFile, rawHost]);
+  // other tabs' previews use this tab's text as it is on screen, saved or not
+  useEffect(() => {
+    if (!previewSource) return;
+    return registerBuffer(previewSource.id, previewSource.path, () => {
+      const d = docRef.current;
+      return codeRef.current?.getText() ?? (d?.kind === 'code' ? d.text : '');
+    });
+  }, [previewSource]);
 
   // a tab sent to the background stops playing (Studio, the video editor, previews)
   useEffect(() => {
@@ -770,7 +804,8 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
         setDoc({ kind: 'pdf', key: docKey++, name: file.name, bytes: result.bytes, handle: file.handle, protection });
         setPageCount(null);
       } else if (result.kind === 'code') {
-        const sameFormat = FORMATS[result.format].extensions.includes(file.name.split('.').pop()?.toLowerCase() ?? '');
+        // source code keeps its own name, whatever it is (Dockerfile, .env, main.py)
+        const sameFormat = result.format === 'code' || FORMATS[result.format].extensions.includes(file.name.split('.').pop()?.toLowerCase() ?? '');
         setDoc({
           kind: 'code',
           key: docKey++,
@@ -884,7 +919,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     setBusy('Converting to PDF…');
     try {
       if (opened.result.kind === 'code') {
-        const rich = await codeToRich(opened.result.language, opened.result.text);
+        const rich = await codeToRich(opened.result.format, opened.result.text);
         return await exportFlow(rich, 'pdf');
       }
       return await exportFlow(opened.result.doc, 'pdf');
@@ -968,7 +1003,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
         if (d.kind === 'code') {
           const text = codeRef.current?.getText() ?? d.text;
           // source code: one line per row (a CSS rule's semicolons aren't columns)
-          workbook = d.language === 'html' ? htmlToWorkbook(text, title) : plainTextToWorkbook(text, title, false);
+          workbook = d.format === 'html' ? htmlToWorkbook(text, title) : plainTextToWorkbook(text, title, false);
         } else if (d.format === 'txt') {
           const tmp = document.createElement('div');
           tmp.innerHTML = currentFlow()!.html;
@@ -1000,7 +1035,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     const richOf = async (): Promise<RichDocument> => {
       if (fromSheet) return fromSheet.rich;
       if (d.kind === 'flow') return currentFlow()!;
-      if (d.kind === 'code') return { ...(await codeToRich(d.language, codeRef.current?.getText() ?? d.text)), title };
+      if (d.kind === 'code') return { ...(await codeToRich(d.format, codeRef.current?.getText() ?? d.text)), title };
       throw new Error('Nothing to convert.');
     };
 
@@ -1043,7 +1078,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
           key: docKey++,
           name: `${title}.${FORMATS[target].ext}`,
           format: target,
-          language: target,
+          language: codeLabel(target, ''),
           text,
           handle: undefined,
           protection: EMPTY_PROTECTION,
@@ -1115,7 +1150,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     if (d.kind === 'code') {
       const text = codeRef.current?.getText() ?? d.text;
       if (isCodeFormat(format) || format === 'txt') return utf8Encode(text);
-      const rich = await codeToRich(d.language, text);
+      const rich = await codeToRich(d.format, text);
       return exportFlow({ ...rich, title: baseName(d.name) }, format, {
         password: format === 'docx' ? pw : undefined,
         pdfProtection: format === 'pdf' ? pdfProt : null,
@@ -1144,7 +1179,9 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       await nextPaint();
       const bytes = await render(choice.format, choice.protection);
       const info = FORMATS[choice.format];
-      const res = await host.save({ suggestedName: choice.fileName, bytes, mime: info.mime, ext: info.ext, description: info.label, handle, quiet });
+      // source code is written under the extension its name has (main.py, not main.txt)
+      const ext = choice.format === 'code' ? extensionOf(choice.fileName) || info.ext : info.ext;
+      const res = await host.save({ suggestedName: choice.fileName, bytes, mime: info.mime, ext, description: choice.format === 'code' ? codeLabel('code', choice.fileName) : info.label, handle, quiet });
       if (!res) return;
       if (adopt && quiet) {
         markClean(seq);
@@ -1155,13 +1192,13 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
             key: docKey++,
             name: res.name,
             format: choice.format,
-            language: choice.format,
+            language: codeLabel(choice.format, res.name),
             text: new TextDecoder().decode(bytes),
             handle: res.handle,
             protection: choice.protection,
           });
         } else if (d.kind === 'code' && !isCodeFormat(choice.format) && choice.format !== 'pdf') {
-          const rich = await codeToRich(d.language, codeRef.current?.getText() ?? d.text);
+          const rich = await codeToRich(d.format, codeRef.current?.getText() ?? d.text);
           setDoc({
             kind: 'flow',
             key: docKey++,
@@ -1182,7 +1219,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
                 ...cur,
                 name: res.name,
                 format: choice.format,
-                language: choice.format,
+                language: codeLabel(choice.format, res.name),
                 text: codeRef.current?.getText() ?? cur.text,
                 handle: res.handle,
                 protection: choice.protection,
@@ -1782,7 +1819,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
         url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
       } else if (d.kind === 'code') {
         const text = codeRef.current?.getText() ?? d.text;
-        const html = d.language === 'html'
+        const html = d.format === 'html'
           ? text
           : `<!doctype html><html><head><meta charset="utf-8"><title>${baseName(d.name)}</title><style>pre{white-space:pre-wrap;font:12pt/1.4 Consolas,monospace}</style></head><body><pre>${escapeHtml(text)}</pre></body></html>`;
         url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
@@ -1975,7 +2012,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
           <RichEditor key={doc.key} ref={richRef} initial={doc.initial} zoom={zoom} onZoom={setZoom} onChange={markDirty} onStats={setStats} onPageCount={setPageCount} onError={toast} />
         )}
         {doc?.kind === 'code' && (
-          <CodeEditor key={doc.key} ref={codeRef} initialText={doc.text} language={doc.language} onChange={markDirty} />
+          <CodeEditor key={doc.key} ref={codeRef} initialText={doc.text} format={doc.format} fileName={doc.name} source={previewSource} onChange={markDirty} />
         )}
         {doc?.kind === 'pdf' && (
           <PdfEditor key={doc.key} ref={pdfRef} bytes={doc.bytes} zoom={zoom} onZoom={setZoom} onChange={markDirty} onError={toast} onPageCount={setPageCount} loadAsPdf={loadAsPdf} />
@@ -2078,7 +2115,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
           ) : (
             <span>{formatLabel}</span>
           )}
-          {doc.kind === 'code' && <span>{doc.language.toUpperCase()}</span>}
+          {doc.kind === 'code' && doc.format === 'code' && <span>{doc.language}</span>}
           {host.kind === 'desktop' && (doc.kind === 'image' || doc.kind === 'proimage') && (
             <div className="workspace-switch" role="radiogroup" aria-label="Photo workspace">
               <button type="button" role="radio" aria-checked={doc.kind === 'image'} className={doc.kind === 'image' ? 'is-active' : ''} onClick={() => void switchPhotoWorkspace('quick')} title="Crop, adjust, filters, text and drawing on one image">Quick edit</button>
@@ -2216,6 +2253,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
           sourceKind={doc.kind === 'pdf' ? 'pdf' : 'flow'}
           initialFormat={format}
           initialName={baseName(doc.name)}
+          codeExt={format === 'code' ? extensionOf(doc.name) : undefined}
           initialProtection={doc.protection}
           onClose={() => setExportOpen(null)}
           onSubmit={(choice) => {
@@ -2299,6 +2337,8 @@ interface TabEntry {
   id: number;
   start: TabStart;
   info: TabInfo;
+  /** the file of an opened folder this tab was opened for (the file tree focuses it instead of opening it twice) */
+  origin?: { folderId: string; path: string };
 }
 
 let tabSeq = 1;
@@ -2376,7 +2416,10 @@ export default function App() {
 
   const openTab = (start: TabStart) => {
     const id = tabSeq++;
-    setTabs((ts) => [...ts, { id, start, info: { name: startName(start), dirty: false, locked: false, kind: null } }]);
+    const from = start.kind === 'open' ? start.file.folder : undefined;
+    const entry: TabEntry = { id, start, info: { name: startName(start), dirty: false, locked: false, kind: null }, origin: from && { folderId: from.folder.id, path: from.path } };
+    tabsRef.current = [...tabsRef.current, entry];
+    setTabs((ts) => [...ts, entry]);
     activate(id);
   };
 
@@ -2409,12 +2452,83 @@ export default function App() {
   const pickAndOpen = async () => {
     try {
       const extensions = host.kind === 'desktop' ? [...ALL_OPEN_EXTENSIONS, 'psd', 'fstudio'] : ALL_OPEN_EXTENSIONS;
-      const files = await host.openFiles({ extensions, multiple: true, description: 'Documents, spreadsheets, databases, images, video & audio' });
+      const files = await host.openFiles({ extensions, multiple: true, description: 'Documents, spreadsheets, databases, images, video, audio & code' });
       files.forEach(openFile);
     } catch (err) {
       toast(errorText(err));
     }
   };
+
+  // ── the opened folder: its file tree sits beside the tabs ────────────────
+  const [folder, setFolder] = useState<OpenedFolder | null>(null);
+  const folderRef = useRef(folder);
+  folderRef.current = folder;
+  /** the file tree is showing (it can be hidden without closing the folder; on a phone it is a drawer) */
+  const [explorerOpen, setExplorerOpen] = useState(true);
+  const showFolder = (f: OpenedFolder) => {
+    setFolder(f);
+    setExplorerOpen(true);
+  };
+  const openFolder = async () => {
+    try {
+      const f = await host.openFolder();
+      if (f) showFolder(f);
+    } catch (err) {
+      toast(errorText(err));
+    }
+  };
+  /** files being read for a tab right now, so a double click doesn't open one twice */
+  const opening = useRef(new Set<string>());
+  const openFolderFile = async (path: string) => {
+    const f = folderRef.current;
+    if (!f) return;
+    // a phone shows the tree as a drawer over the editor: put it away once a file is chosen
+    if (window.innerWidth < 760) setExplorerOpen(false);
+    const existing = tabsRef.current.find((t) => t.origin?.folderId === f.id && t.origin.path === path);
+    if (existing) {
+      activate(existing.id);
+      return;
+    }
+    const key = `${f.id}\n${path}`;
+    if (opening.current.has(key)) return;
+    opening.current.add(key);
+    try {
+      openFile(await f.open(path));
+    } catch (err) {
+      toast(`Could not open ${leafOf(path)}: ${errorText(err)}`);
+    } finally {
+      opening.current.delete(key);
+    }
+  };
+  /** A renamed file's tab keeps answering to the tree under its new path. */
+  const onFolderRenamed = (from: string, to: string) => {
+    const id = folderRef.current?.id;
+    setTabs((ts) =>
+      ts.map((t) => {
+        if (!t.origin || t.origin.folderId !== id || (t.origin.path !== from && !t.origin.path.startsWith(`${from}/`))) return t;
+        return { ...t, origin: { folderId: t.origin.folderId, path: to + t.origin.path.slice(from.length) } };
+      }),
+    );
+  };
+  const activeOrigin = activeTab?.origin;
+  const activeFolderPath = folder && activeOrigin?.folderId === folder.id ? activeOrigin.path : null;
+
+  // development: open a folder held in memory, to try the file tree and the preview without a picker
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as Window & { __feOpenMemoryFolder?: (files: Record<string, string | Uint8Array>, name?: string) => void };
+    w.__feOpenMemoryFolder = (files, name = 'project') => {
+      const map = new Map<string, Blob>();
+      for (const [path, content] of Object.entries(files)) {
+        const data = typeof content === 'string' && /^data:[^,]*;base64,/.test(content) ? Uint8Array.from(atob(content.slice(content.indexOf(',') + 1)), (c) => c.charCodeAt(0)) : content;
+        map.set(path, new Blob([data as BlobPart]));
+      }
+      showFolder(memoryFolder(name, map, true));
+    };
+    return () => {
+      delete w.__feOpenMemoryFolder;
+    };
+  }, []);
 
   // ── window title / unsaved changes ───────────────────────────────────────
   const activeInfo = activeTab?.info;
@@ -2507,8 +2621,8 @@ export default function App() {
   }, [toast]);
 
   // ── shortcuts, OS file-open events, native menu ──────────────────────────
-  const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, newDatabase, openFile, closeTab, activate });
-  shell.current = { pickAndOpen, newDocument, newSpreadsheet, newDatabase, openFile, closeTab, activate };
+  const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, newDatabase, openFile, closeTab, activate, openFolder, showFolder });
+  shell.current = { pickAndOpen, newDocument, newSpreadsheet, newDatabase, openFile, closeTab, activate, openFolder, showFolder };
 
   useEffect(() => {
     const cycle = (step: number) => {
@@ -2530,7 +2644,8 @@ export default function App() {
       const k = e.key.toLowerCase();
       if (k === 'o') {
         e.preventDefault();
-        void shell.current.pickAndOpen();
+        if (e.shiftKey) void shell.current.openFolder();
+        else void shell.current.pickAndOpen();
       } else if (k === 'n' && !e.shiftKey && host.kind === 'desktop') {
         e.preventDefault();
         shell.current.newDocument();
@@ -2554,6 +2669,7 @@ export default function App() {
       else if (cmd === 'new-spreadsheet') s.newSpreadsheet();
       else if (cmd === 'new-database') s.newDatabase();
       else if (cmd === 'open') void s.pickAndOpen();
+      else if (cmd === 'open-folder') void s.openFolder();
       else if (cmd === 'license') setLicenseOpen(true);
       else if (cmd === 'toggle-autosave') setAutoSave((v) => !v);
       else if (cmd === 'help' || cmd === 'help:context') {
@@ -2606,9 +2722,20 @@ export default function App() {
       type HandleItem = DataTransferItem & { getAsFileSystemHandle?(): Promise<FileSystemHandle | null> };
       const items = Array.from(e.dataTransfer?.items ?? []).filter((i) => i.kind === 'file') as HandleItem[];
       const dropped = items.length
-        ? items.map((item) => ({ file: item.getAsFile(), handleP: host.kind === 'web' && host.canSaveInPlace ? (item.getAsFileSystemHandle?.() ?? null) : null }))
-        : Array.from(e.dataTransfer?.files ?? []).map((file) => ({ file, handleP: null }));
-      for (const { file, handleP } of dropped) {
+        ? items.map((item) => ({
+            file: item.getAsFile(),
+            handleP: host.kind === 'web' && host.canSaveInPlace ? (item.getAsFileSystemHandle?.() ?? null) : null,
+            isDir: !!item.webkitGetAsEntry?.()?.isDirectory,
+          }))
+        : Array.from(e.dataTransfer?.files ?? []).map((file) => ({ file, handleP: null, isDir: false }));
+      for (const { file, handleP, isDir } of dropped) {
+        if (isDir) {
+          // a dropped folder opens as the working folder (where the browser hands over its handle)
+          const h = await handleP?.catch(() => null);
+          if (h?.kind === 'directory') shell.current.showFolder(await droppedFolder(h as FileSystemDirectoryHandle));
+          else toast('To work with a folder, use Open ▸ Open folder.', 'info');
+          continue;
+        }
         if (file) shell.current.openFile(await readDroppedFile(file, handleP));
       }
     };
@@ -2622,7 +2749,7 @@ export default function App() {
       window.removeEventListener('dragover', onOver);
       window.removeEventListener('drop', onDrop);
     };
-  }, [host]);
+  }, [host, toast]);
 
   return (
     <div className={cx('app', `host-${host.kind}`)}>
@@ -2647,7 +2774,19 @@ export default function App() {
               </div>
             )}
           </Popover>
-          <IconButton label="Open" text onClick={pickAndOpen}><FolderOpen size={16} /></IconButton>
+          <Popover label="Open" text align="left" button={<><FolderOpen size={16} /><span>Open</span></>}>
+            {(close) => (
+              <div className="format-menu" role="menu" aria-label="Open">
+                <MenuItem hint="Ctrl+O" onClick={() => { close(); void pickAndOpen(); }}>Open files…</MenuItem>
+                <MenuItem hint="Ctrl+Shift+O" onClick={() => { close(); void openFolder(); }}>Open folder…</MenuItem>
+              </div>
+            )}
+          </Popover>
+          {folder && (
+            <IconButton label={explorerOpen ? `Hide the files of ${folder.name}` : `Show the files of ${folder.name}`} active={explorerOpen} onClick={() => setExplorerOpen((v) => !v)}>
+              <PanelLeft size={16} />
+            </IconButton>
+          )}
           {host.recent && (
             <Popover label="Open recent" text align="left" button={<><History size={16} /><span>Recent</span></>}>
               {(close) => (
@@ -2692,6 +2831,7 @@ export default function App() {
                   {item('User guide', null, 'F1')}
                   <div className="menu-sep" role="separator" />
                   {item('Opening, saving & auto-save', 'saving')}
+                  {item('Folders, code & web preview', 'folders')}
                   {item('Documents & PDFs', 'documents')}
                   {item('Photos', 'photo-quick')}
                   {item('Video & audio', 'video-quick')}
@@ -2716,6 +2856,21 @@ export default function App() {
         </nav>
       </header>
 
+      <div className="app-body">
+      {folder && explorerOpen && (
+        <>
+          <button type="button" className="explorer-scrim" aria-label="Hide the file list" onClick={() => setExplorerOpen(false)} />
+          <Explorer
+            folder={folder}
+            activePath={activeFolderPath}
+            onOpenFile={(path) => void openFolderFile(path)}
+            onClose={() => setFolder(null)}
+            onRenamed={onFolderRenamed}
+            toast={toast}
+          />
+        </>
+      )}
+      <div className="app-content">
       {tabs.length > 0 && (
         <div className="tabbar" role="tablist" aria-label="Open files">
           {tabs.map((t) => (
@@ -2775,6 +2930,7 @@ export default function App() {
             onNewSheet={newSpreadsheet}
             onNewDatabase={newDatabase}
             onOpen={pickAndOpen}
+            onOpenFolder={() => void openFolder()}
             recents={host.recent ? recents : null}
             onOpenRecent={(id) => void openRecent(id)}
             onRemoveRecent={removeRecent}
@@ -2801,6 +2957,8 @@ export default function App() {
           register={register}
         />
       ))}
+      </div>
+      </div>
 
       {dragging && (
         <div className="drop-overlay" aria-hidden="true">
@@ -2888,6 +3046,7 @@ function StartScreen({
   onNewSheet,
   onNewDatabase,
   onOpen,
+  onOpenFolder,
   recents,
   onOpenRecent,
   onRemoveRecent,
@@ -2901,6 +3060,7 @@ function StartScreen({
   onNewSheet: () => void;
   onNewDatabase: () => void;
   onOpen: () => void;
+  onOpenFolder: () => void;
   recents: RecentEntry[] | null;
   onOpenRecent: (id: string) => void;
   onRemoveRecent: (id: string) => void;
@@ -2982,7 +3142,12 @@ function StartScreen({
           <button type="button" className="start-card" onClick={onOpen}>
             <FolderOpen size={28} />
             <strong>Open a file</strong>
-            <span>Documents, spreadsheets, photos, video or audio — or drag one onto this window</span>
+            <span>Documents, spreadsheets, photos, video, audio or code — or drag one onto this window</span>
+          </button>
+          <button type="button" className="start-card" onClick={onOpenFolder}>
+            <FolderTree size={28} />
+            <strong>Open a folder</strong>
+            <span>Work with every file in a folder or code repository: a file tree, syntax highlighting, and a web preview that uses the whole project</span>
           </button>
         </div>
         {openTabs.length > 0 && (
@@ -3030,6 +3195,7 @@ function StartScreen({
           <table>
             <tbody>
               <tr><th>Edit</th><td>Word (.docx, .doc), PDF, OpenDocument (.odt), Rich Text (.rtf), Markdown, HTML, CSS, JavaScript, plain text</td></tr>
+              <tr><th><FileCode size={14} /> Code</th><td>TypeScript, Python, JSON, YAML, Go, Rust, Java, C / C++, C#, PHP, Ruby, SQL, shell scripts and many more, with syntax highlighting — open a whole folder to browse its files and preview web pages with their stylesheets, scripts and images</td></tr>
               <tr><th><SheetIcon size={14} /> Spreadsheets</th><td>Excel (.xlsx, .xlsm), CSV, TSV — formulas (400+ functions), formatting, number formats, merge, freeze panes, sort, filter, find &amp; replace, multiple sheets</td></tr>
               <tr><th><Database size={14} /> Databases</th><td>SQLite (.sqlite, .sqlite3, .db, .db3) — start a new database or open one; make tables, browse tables and views, edit cells, add or delete rows, resize and rearrange columns, run SQL; everything stays on this device</td></tr>
               <tr><th>PDF</th><td>Edit existing text, add text, images, links, shapes and drawings; insert, delete, reorder and rotate pages; merge files</td></tr>

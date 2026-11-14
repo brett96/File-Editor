@@ -2699,3 +2699,334 @@ button.brand:focus-visible {
   font-size: 12.5px;
   color: var(--muted);
 }
+
+/* ── opened folder: file tree beside the tabs ───────────────────────── */
+.app-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  position: relative;
+}
+
+.app-content {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.explorer {
+  flex: none;
+  width: 250px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-2);
+  border-right: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.explorer-scrim {
+  display: none;
+}
+
+.explorer-head {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 6px 6px 6px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.explorer-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.explorer-head button,
+.explorer-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.explorer-head button:hover,
+.explorer-actions button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.explorer-readonly {
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+}
+
+.explorer-tree {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0 16px;
+  overscroll-behavior: contain;
+}
+
+.explorer-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding-right: 4px;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.explorer-row:hover {
+  background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
+}
+
+.explorer-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.explorer-row.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.explorer-row.is-dim {
+  opacity: 0.55;
+}
+
+.explorer-chevron,
+.explorer-icon {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  color: var(--muted);
+}
+
+.explorer-row.is-active .explorer-icon {
+  color: inherit;
+}
+
+.explorer-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.explorer-actions {
+  display: none;
+  flex: none;
+}
+
+.explorer-actions button {
+  width: 22px;
+  height: 22px;
+}
+
+.explorer-row:hover .explorer-actions,
+.explorer-row:focus-within .explorer-actions {
+  display: inline-flex;
+}
+
+.explorer-draft {
+  cursor: default;
+}
+
+.explorer-draft:hover {
+  background: transparent;
+}
+
+.explorer-input {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  font: inherit;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 4px;
+  outline: none;
+}
+
+.explorer-note {
+  height: 24px;
+  line-height: 24px;
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+@media (max-width: 760px) {
+  /* on a phone the tree is a drawer over the editor */
+  .explorer {
+    position: absolute;
+    z-index: 30;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: min(84vw, 320px);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.25);
+  }
+
+  .explorer-scrim {
+    display: block;
+    position: absolute;
+    z-index: 29;
+    inset: 0;
+    border: 0;
+    padding: 0;
+    background: rgba(0, 0, 0, 0.35);
+  }
+
+  .explorer-row {
+    height: 34px;
+  }
+
+  .explorer-actions {
+    display: inline-flex;
+  }
+}
+
+/* ── code editor: project preview ───────────────────────────────────── */
+.code-toolbar {
+  flex-wrap: wrap;
+}
+
+.code-tool-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  font: 600 12px/1 var(--font);
+  color: #c5c8d0;
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.code-tool-btn:hover {
+  color: #fff;
+  background: #2a2c32;
+}
+
+.code-warn-btn {
+  color: #e2b068;
+  border-color: #6b5326;
+}
+
+.code-warn-btn.is-active {
+  background: #3a2f18;
+}
+
+.code-page-pick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #8b8f9a;
+}
+
+.code-page-pick select {
+  height: 26px;
+  max-width: 220px;
+  padding: 0 6px;
+  font: 12px/1 var(--font);
+  color: #e7e8eb;
+  background: #1e1e1e;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+}
+
+.code-warnings {
+  flex: none;
+  max-height: 132px;
+  overflow: auto;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #c5c8d0;
+  background: #2b2619;
+  border-bottom: 1px solid #4a3d1c;
+}
+
+.code-warnings ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.code-warnings li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 2px 0;
+}
+
+.code-warnings code {
+  color: #e2b068;
+  font-family: Consolas, 'Cascadia Code', ui-monospace, monospace;
+}
+
+.code-warnings em {
+  color: #8b8f9a;
+  font-style: normal;
+}
+
+.code-warning-error {
+  margin: 2px 0;
+  color: #f0a59f;
+}
+
+.code-preview-wait {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #626775;
+  font-size: 13px;
+}
+
+@media (max-width: 760px) {
+  .code-preview-note {
+    display: none;
+  }
+
+  .code-panes.is-split {
+    grid-template-columns: 1fr;
+    grid-template-rows: 1fr 1fr;
+  }
+
+  .code-panes.is-split .code-preview {
+    border-left: 0;
+    border-top: 1px solid #2b2b2b;
+  }
+}

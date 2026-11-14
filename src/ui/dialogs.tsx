@@ -181,6 +181,7 @@ export function ExportModal({
   sourceKind,
   initialFormat,
   initialName,
+  codeExt,
   initialProtection,
   onSubmit,
   onClose,
@@ -189,6 +190,8 @@ export function ExportModal({
   sourceKind: 'flow' | 'pdf';
   initialFormat: DocFormat;
   initialName: string;
+  /** For a source-code file (format 'code'): the extension it keeps, without the dot. */
+  codeExt?: string;
   initialProtection: ProtectionDraft;
   onSubmit: (choice: ExportChoice) => void;
   onClose: () => void;
@@ -198,6 +201,9 @@ export function ExportModal({
   const [protection, setProtection] = useState<ProtectionDraft>(initialProtection);
   const [error, setError] = useState<string | null>(null);
   const info = FORMATS[format];
+  // source code keeps the extension it came with (.py, .ts); only that file's own tab offers it
+  const extOf = (f: DocFormat) => (f === 'code' ? codeExt || FORMATS.code.ext : FORMATS[f].ext);
+  const ext = extOf(format);
 
   let note: string | undefined = info.note;
   if (sourceKind === 'pdf' && format !== 'pdf') {
@@ -217,7 +223,7 @@ export function ExportModal({
       return;
     }
     const base = name.trim().replace(/\.[A-Za-z0-9]+$/, '') || 'Document';
-    onSubmit({ format, fileName: `${base}.${info.ext}`, protection: info.canProtect ? protection : EMPTY_PROTECTION });
+    onSubmit({ format, fileName: `${base}.${ext}`, protection: info.canProtect ? protection : EMPTY_PROTECTION });
   };
 
   return (
@@ -239,13 +245,13 @@ export function ExportModal({
           <Field label="File name">
             <div className="input-suffix">
               <input className="input" value={name} onChange={(e) => setName(e.target.value)} data-autofocus />
-              <span>.{info.ext}</span>
+              <span>.{ext}</span>
             </div>
           </Field>
           <Field label="Format">
             <select className="input" value={format} onChange={(e) => { setFormat(e.target.value as DocFormat); setError(null); }}>
-              {FORMAT_ORDER.map((f) => (
-                <option key={f} value={f}>{FORMATS[f].label} (.{FORMATS[f].ext})</option>
+              {FORMAT_ORDER.filter((f) => f !== 'code' || initialFormat === 'code').map((f) => (
+                <option key={f} value={f}>{FORMATS[f].label} (.{extOf(f)})</option>
               ))}
             </select>
           </Field>

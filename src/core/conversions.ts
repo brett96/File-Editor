@@ -112,6 +112,8 @@ export function ownedExtensions(ext: string): string[] {
   const e = ext.toLowerCase();
   if (e === 'docx' || e === 'doc' || e === 'xlsx' || e === 'pdf' || e === 'psd' || e === 'fstudio') return [e];
   if ((DB_EXTENSIONS as readonly string[]).includes(e)) return [...DB_EXTENSIONS];
+  // source code keeps the one extension it has: main.py is never offered as main.rb
+  if (FORMATS.code.extensions.includes(e)) return [e];
   for (const f of FORMAT_ORDER) if (FORMATS[f].extensions.includes(e)) return [...FORMATS[f].extensions];
   for (const f of SHEET_FORMAT_ORDER) if (SHEET_FORMATS[f].extensions.includes(e)) return [...SHEET_FORMATS[f].extensions];
   for (const info of Object.values(IMAGE_FORMATS)) if (info.extensions.includes(e)) return [...info.extensions];

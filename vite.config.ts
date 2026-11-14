@@ -20,7 +20,8 @@ export const CSP = [
   "worker-src 'self' blob:",
   "connect-src 'self' blob: data: https://api.github.com",
   "media-src 'self' blob: data:",
-  "frame-src 'self' blob:",
+  // fe-preview: is the desktop app's web-preview scheme (a sandboxed page with its own policy)
+  "frame-src 'self' blob: fe-preview:",
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'none'",

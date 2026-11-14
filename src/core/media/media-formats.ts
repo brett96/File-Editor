@@ -174,7 +174,8 @@ export function sniffMedia(name: string, head: Uint8Array): MediaKind | null {
   }
   if (ascii(h, 0, 3) === 'FLV') return { kind: 'video', ext: 'flv', ffmpegOnly: true };
   if (startsWith(h, [0x00, 0x00, 0x01, 0xba]) || startsWith(h, [0x00, 0x00, 0x01, 0xb3])) return { kind: 'video', ext: 'mpg', ffmpegOnly: true };
-  if (h[0] === 0x47 && h.length > 188 && h[188] === 0x47) return { kind: 'video', ext: 'ts', ffmpegOnly: false };
+  // a transport stream has a sync byte every 188 bytes; TypeScript source (also .ts) is text
+  if (h[0] === 0x47 && h.length > 188 && h[188] === 0x47 && (h.length <= 376 || h[376] === 0x47) && h.subarray(0, 188).some((b) => b < 9)) return { kind: 'video', ext: 'ts', ffmpegOnly: false };
   if (ascii(h, 0, 4) === 'OggS') {
     const isVideo = ascii(h, 0, 120).includes('theora') || ext === 'ogv';
     return { kind: isVideo ? 'video' : 'audio', ext: isVideo ? 'ogv' : ext || 'ogg', ffmpegOnly: isVideo };

@@ -8,6 +8,11 @@
  *  - The renderer never sees or names filesystem paths. Files are read/written only at paths
  *    the user picked in a native dialog or handed to the app via the OS; the renderer gets an
  *    opaque token for each.
+ *  - An opened folder is one more grant: the root stays here, and the renderer names files in
+ *    it by a folder id and a relative path that is checked (no '..', no absolute paths, and
+ *    the real path must stay inside the root, so a symlink can't lead out of it).
+ *  - The web preview's bundled page is served to a sandboxed sub-frame from fe-preview://, a
+ *    separate origin with no network access and no access to the app.
  *  - App files are served from the custom app:// protocol with traversal checks and a strict
  *    CSP. Navigation away from the app and new windows are blocked; external links open in
  *    the default browser.
@@ -15,14 +20,19 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell, type MenuItemConstructorOptions } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
-import { appendFile, copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { appendFile, copyFile, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { activateLicense, getLicenseState, refreshLicenseStatus } from './license';
+import { CODE_EXTENSIONS, isCodeFileName } from '../src/core/code/languages';
+import { isSafeName, safeSegments } from '../src/core/web/paths';
 
 const APP_SCHEME = 'app';
 const APP_HOST = 'editor';
 const APP_ORIGIN = `${APP_SCHEME}://${APP_HOST}`;
+/** The web preview's own origin: bundled pages are served from here to a sandboxed sub-frame. */
+const PREVIEW_SCHEME = 'fe-preview';
+const PREVIEW_ORIGIN = `${PREVIEW_SCHEME}://doc`;
 const DEV_URL = process.env.VITE_DEV_SERVER_URL;
 const MAX_FILE_BYTES = 250 * 1024 * 1024;
 /** Workbooks and databases: read as a stream / a page at a time by the renderer, so they can be large. */
@@ -30,7 +40,7 @@ const MAX_DATA_BYTES = 2 * 1024 * 1024 * 1024 - 1;
 const DATA = ['xlsx', 'xlsm', 'xltx', 'csv', 'tsv', 'tab', 'sqlite', 'sqlite3', 'db', 'db3', 'sdb'];
 /** Video can be much larger than a document. */
 const MAX_MEDIA_BYTES = 4 * 1024 * 1024 * 1024;
-const DOCUMENTS = ['docx', 'docm', 'dotx', 'doc', 'dot', 'pdf', 'odt', 'rtf', 'md', 'markdown', 'html', 'htm', 'txt', 'xlsx', 'xlsm', 'xltx', 'csv', 'tsv', 'tab', 'sqlite', 'sqlite3', 'db', 'db3', 'sdb'];
+const DOCUMENTS = ['docx', 'docm', 'dotx', 'doc', 'dot', 'pdf', 'odt', 'rtf', 'md', 'markdown', 'html', 'htm', 'css', 'js', 'mjs', 'txt', ...CODE_EXTENSIONS, 'xlsx', 'xlsm', 'xltx', 'csv', 'tsv', 'tab', 'sqlite', 'sqlite3', 'db', 'db3', 'sdb'];
 const IMAGES = ['png', 'jpg', 'jpeg', 'jfif', 'gif', 'webp', 'avif', 'heic', 'heif', 'jxl', 'bmp', 'tif', 'tiff', 'ico', 'svg', 'psd'];
 const MEDIA = [
   'mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', 'wmv', 'asf', 'flv', 'mpg', 'mpeg', 'vob', '3gp', '3g2', 'ogv', 'ts', 'mts', 'm2ts',
@@ -39,6 +49,8 @@ const MEDIA = [
 /** Studio project files (a zip of the timeline + its media), so as large as media */
 const PROJECTS = ['fstudio'];
 const OPENABLE = [...DOCUMENTS, ...IMAGES, ...MEDIA, ...PROJECTS];
+/** Whether a path names a file the app opens (by extension, or a source file known by name such as Dockerfile). */
+const isOpenable = (path: string) => OPENABLE.includes(extname(path).slice(1).toLowerCase()) || isCodeFileName(basename(path));
 
 const CSP = [
   "default-src 'self'",
@@ -49,14 +61,22 @@ const CSP = [
   "worker-src 'self' blob:",
   "connect-src 'self' blob: data:",
   "media-src 'self' blob: data:",
-  "frame-src 'self' blob:",
+  `frame-src 'self' blob: ${PREVIEW_SCHEME}:`,
   "object-src 'none'",
   "base-uri 'self'",
   "form-action 'none'",
 ].join('; ');
 
+/**
+ * What a previewed page may do: run its own (inlined) scripts and styles, nothing else. The
+ * sandbox gives it an opaque origin (no storage, no access to the app); default-src has no
+ * network scheme, so it can't load or send anything.
+ */
+const PREVIEW_CSP = "sandbox allow-scripts allow-forms allow-modals; default-src data: blob: 'unsafe-inline' 'unsafe-eval'";
+
 protocol.registerSchemesAsPrivileged([
   { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+  { scheme: PREVIEW_SCHEME, privileges: { standard: true, secure: true } },
 ]);
 
 let mainWindow: BrowserWindow | null = null;
@@ -106,7 +126,7 @@ async function loadRecents() {
     const raw = JSON.parse(await readFile(recentStore(), 'utf8')) as unknown;
     recents = Array.isArray(raw)
       ? raw
-          .filter((r): r is { path: string; openedAt?: number } => typeof r?.path === 'string' && OPENABLE.includes(extname(r.path).slice(1).toLowerCase()))
+          .filter((r): r is { path: string; openedAt?: number } => typeof r?.path === 'string' && isOpenable(r.path))
           .slice(0, RECENT_MAX)
           .map((r) => ({ id: randomUUID(), path: r.path, openedAt: Number(r.openedAt) || 0 }))
       : [];
@@ -158,7 +178,7 @@ if (!app.requestSingleInstanceLock()) {
 function filesFromArgv(argv: string[]): string[] {
   return argv
     .slice(app.isPackaged ? 1 : 2)
-    .filter((a) => !a.startsWith('-') && OPENABLE.includes(extname(a).slice(1).toLowerCase()))
+    .filter((a) => !a.startsWith('-') && isOpenable(a))
     .map((a) => resolve(a));
 }
 
@@ -228,6 +248,76 @@ function registerAppProtocol() {
     if (mime) headers.set('Content-Type', mime);
     headers.set('X-Content-Type-Options', 'nosniff');
     return new Response(res.body, { status: res.status, headers });
+  });
+}
+
+// ── opened folders ─────────────────────────────────────────────────────────
+/** folder id → the real path of a folder the user picked */
+const folderRoots = new Map<string, string>();
+/** Files the web preview may read without opening them (a page's stylesheets, scripts, images). */
+const MAX_PREVIEW_READ_BYTES = 64 * 1024 * 1024;
+
+/**
+ * The absolute path of `rel` inside `root`, or an error. `rel` must be a clean relative path
+ * (checked by safeSegments), and what it resolves to on disk — following symlinks, for the
+ * deepest part that exists — must still be inside the root.
+ */
+async function pathInside(root: string, rel: unknown): Promise<string> {
+  const parts = safeSegments(rel);
+  if (!parts) throw new Error('That is not a path inside the folder.');
+  const target = join(root, ...parts);
+  let existing = target;
+  for (;;) {
+    try {
+      existing = await realpath(existing);
+      break;
+    } catch {
+      const up = dirname(existing);
+      if (up === existing) throw new Error('That is not a path inside the folder.');
+      existing = up;
+    }
+  }
+  const back = relative(root, existing);
+  if (back === '..' || back.startsWith(`..${sep}`) || resolve(root, back) !== existing) throw new Error('That is not a path inside the folder.');
+  return target;
+}
+
+function folderRoot(id: unknown): string {
+  const root = folderRoots.get(String(id));
+  if (!root) throw new Error('This folder is no longer open.');
+  return root;
+}
+
+/** A file's bytes for the preview, or null when it is missing, not a file or too large. */
+async function peek(path: string): Promise<Uint8Array | null> {
+  try {
+    const info = await stat(path);
+    if (!info.isFile() || info.size > MAX_PREVIEW_READ_BYTES) return null;
+    return new Uint8Array(await readFile(path));
+  } catch {
+    return null;
+  }
+}
+
+// ── web preview documents ──────────────────────────────────────────────────
+/** preview id → the bundled page (one per open code tab; the oldest goes when there are too many) */
+const previews = new Map<string, string>();
+const MAX_PREVIEWS = 24;
+const MAX_PREVIEW_CHARS = 256 * 1024 * 1024;
+
+function registerPreviewProtocol() {
+  protocol.handle(PREVIEW_SCHEME, (request) => {
+    const url = new URL(request.url);
+    const html = url.host === 'doc' ? previews.get(decodeURIComponent(url.pathname.slice(1))) : undefined;
+    if (html === undefined) return new Response('Not found', { status: 404 });
+    return new Response(html, {
+      headers: {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Security-Policy': PREVIEW_CSP,
+        'X-Content-Type-Options': 'nosniff',
+        'Cache-Control': 'no-store',
+      },
+    });
   });
 }
 
@@ -329,6 +419,7 @@ function buildMenu() {
         { label: 'New Spreadsheet', accelerator: 'CmdOrCtrl+Shift+N', click: () => send('new-spreadsheet') },
         { label: 'New Database', click: () => send('new-database') },
         { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: () => send('open') },
+        { label: 'Open Folder…', accelerator: 'CmdOrCtrl+Shift+O', click: () => send('open-folder') },
         {
           label: 'Open Recent',
           submenu: recents.length
@@ -527,8 +618,123 @@ function registerIpc() {
     assertSender(e);
     if (typeof path !== 'string' || !path) return null;
     const full = resolve(path);
-    if (!OPENABLE.includes(extname(full).slice(1).toLowerCase())) return null;
+    if (!isOpenable(full)) return null;
     return readGranted(full);
+  });
+
+  // ── folders: the renderer names a folder id and a relative path, never a real one ──
+  ipcMain.handle('folder-pick', async (e) => {
+    assertSender(e);
+    const res = await dialog.showOpenDialog(mainWindow!, { title: 'Open Folder', properties: ['openDirectory', 'createDirectory'] });
+    if (res.canceled || !res.filePaths[0]) return null;
+    const root = await realpath(res.filePaths[0]);
+    for (const [id, p] of folderRoots) if (p === root) return { id, name: basename(root) || root };
+    const id = randomUUID();
+    folderRoots.set(id, root);
+    return { id, name: basename(root) || root };
+  });
+
+  ipcMain.handle('folder-list', async (e, id: unknown, rel: unknown) => {
+    assertSender(e);
+    const dir = await pathInside(folderRoot(id), rel);
+    const entries = await readdir(dir, { withFileTypes: true });
+    const out: { name: string; kind: 'file' | 'dir' }[] = [];
+    for (const d of entries) {
+      let kind: 'file' | 'dir' | null = d.isDirectory() ? 'dir' : d.isFile() ? 'file' : null;
+      if (d.isSymbolicLink()) {
+        // shown as what it points at; opening it is refused if that is outside the folder
+        kind = await stat(join(dir, d.name)).then((s) => (s.isDirectory() ? 'dir' : s.isFile() ? 'file' : null), () => null);
+      }
+      if (kind) out.push({ name: d.name, kind });
+    }
+    return out;
+  });
+
+  ipcMain.handle('folder-open', async (e, id: unknown, rel: unknown) => {
+    assertSender(e);
+    return readGranted(await pathInside(folderRoot(id), rel));
+  });
+
+  ipcMain.handle('folder-read', async (e, id: unknown, rel: unknown) => {
+    assertSender(e);
+    return peek(await pathInside(folderRoot(id), rel));
+  });
+
+  ipcMain.handle('folder-create-file', async (e, id: unknown, rel: unknown, data: unknown) => {
+    assertSender(e);
+    const path = await pathInside(folderRoot(id), rel);
+    if (!isSafeName(basename(path))) throw new Error('That name cannot be used.');
+    // wx: never overwrite something that is already there
+    await writeFile(path, toBytes(data), { flag: 'wx' }).catch((err) => {
+      throw (err as NodeJS.ErrnoException).code === 'EEXIST' ? new Error(`${basename(path)} already exists.`) : err;
+    });
+  });
+
+  ipcMain.handle('folder-create-dir', async (e, id: unknown, rel: unknown) => {
+    assertSender(e);
+    const path = await pathInside(folderRoot(id), rel);
+    if (!isSafeName(basename(path))) throw new Error('That name cannot be used.');
+    await mkdir(path).catch((err) => {
+      throw (err as NodeJS.ErrnoException).code === 'EEXIST' ? new Error(`${basename(path)} already exists.`) : err;
+    });
+  });
+
+  ipcMain.handle('folder-rename', async (e, id: unknown, rel: unknown, newName: unknown) => {
+    assertSender(e);
+    const root = folderRoot(id);
+    const from = await pathInside(root, rel);
+    if (from === root || typeof newName !== 'string' || !isSafeName(newName)) throw new Error('That name cannot be used.');
+    const to = join(dirname(from), newName);
+    const taken = await stat(to).then(() => true, () => false);
+    // on a case-insensitive disk "readme.md" → "README.md" finds itself
+    if (taken && from.toLowerCase() !== to.toLowerCase()) throw new Error(`${newName} already exists.`);
+    await rename(from, to);
+    // a file that is open keeps saving to where it now is
+    for (const [token, p] of grants) {
+      if (p === from) grants.set(token, to);
+      else if (p.startsWith(from + sep)) grants.set(token, to + p.slice(from.length));
+    }
+    return relative(root, to).split(sep).join('/');
+  });
+
+  ipcMain.handle('folder-remove', async (e, id: unknown, rel: unknown) => {
+    assertSender(e);
+    const root = folderRoot(id);
+    const path = await pathInside(root, rel);
+    if (path === root) throw new Error('The opened folder itself cannot be deleted from here.');
+    // the recycle bin / Trash, so a slip can be undone
+    await shell.trashItem(path);
+  });
+
+  // a page opened on its own: its preview may read the files beside it (same directory or below)
+  ipcMain.handle('sibling-read', async (e, token: unknown, rel: unknown) => {
+    assertSender(e);
+    const path = grants.get(String(token));
+    if (!path) return null;
+    try {
+      return await peek(await pathInside(await realpath(dirname(path)), rel));
+    } catch {
+      return null;
+    }
+  });
+
+  // ── web preview: the renderer hands over a bundled page and gets the URL it is served at ──
+  ipcMain.handle('preview-set', (e, id: unknown, html: unknown) => {
+    assertSender(e);
+    if (typeof id !== 'string' || !/^[\w-]{1,64}$/.test(id) || typeof html !== 'string' || html.length > MAX_PREVIEW_CHARS) throw new Error('Invalid preview.');
+    previews.delete(id);
+    previews.set(id, html);
+    while (previews.size > MAX_PREVIEWS) previews.delete(previews.keys().next().value!);
+    return `${PREVIEW_ORIGIN}/${id}`;
+  });
+
+  ipcMain.on('preview-clear', (e, id: unknown) => {
+    try {
+      assertSender(e);
+      previews.delete(String(id));
+    } catch {
+      /* ignore */
+    }
   });
 
   ipcMain.handle('recent-list', (e) => {
@@ -804,11 +1010,14 @@ app.whenReady().then(async () => {
   session.defaultSession.webRequest.onBeforeRequest((details, cb) => {
     const u = details.url;
     // file: is only allowed for the bundled app files the app:// handler reads
-    const ok = u.startsWith(APP_ORIGIN) || u.startsWith(APP_ROOT_URL) || u.startsWith('blob:') || u.startsWith('data:') || u.startsWith('devtools:') || (DEV_URL ? u.startsWith(DEV_URL) || u.startsWith(DEV_URL.replace('http', 'ws')) : false);
+    // a previewed page loads only as a sub-frame of the app (never as the window itself)
+    const preview = u.startsWith(PREVIEW_ORIGIN + '/') && details.resourceType === 'subFrame';
+    const ok = preview || u.startsWith(APP_ORIGIN) || u.startsWith(APP_ROOT_URL) || u.startsWith('blob:') || u.startsWith('data:') || u.startsWith('devtools:') || (DEV_URL ? u.startsWith(DEV_URL) || u.startsWith(DEV_URL.replace('http', 'ws')) : false);
     cb({ cancel: !ok });
   });
 
   registerAppProtocol();
+  registerPreviewProtocol();
   registerIpc();
   registerUpdateIpc();
   await loadRecents();

@@ -2,7 +2,8 @@ import JSZip from 'jszip';
 import { isCfb, isOfficeEncrypted, decryptOffice, encryptOffice } from './crypto/office-crypto';
 import { pdfLockState, protectPdf, unlockPdf } from './crypto/pdf-crypto';
 import type { PdfProtection } from './pdf/types';
-import { PasswordError, UnsupportedError, isCodeFormat, type CodeLanguage, type DocFormat, type FlowFormat, type RichDocument } from './types';
+import { CODE_EXTENSIONS, isCodeFileName, languageLabel } from './code/languages';
+import { PasswordError, UnsupportedError, isCodeFormat, type CodeFormat, type DocFormat, type FlowFormat, type RichDocument } from './types';
 
 export interface FormatInfo {
   id: DocFormat;
@@ -36,9 +37,11 @@ export const FORMATS: Record<DocFormat, FormatInfo> = {
   css: { id: 'css', label: 'CSS stylesheet', ext: 'css', extensions: ['css'], mime: 'text/css', canProtect: false },
   js: { id: 'js', label: 'JavaScript', ext: 'js', extensions: ['js', 'mjs'], mime: 'text/javascript', canProtect: false },
   txt: { id: 'txt', label: 'Plain text', ext: 'txt', extensions: ['txt', 'text', 'log'], mime: 'text/plain', canProtect: false },
+  // any other programming or configuration language: saved under the file's own extension
+  code: { id: 'code', label: 'Source code', ext: 'txt', extensions: CODE_EXTENSIONS, mime: 'text/plain', canProtect: false },
 };
 
-export const FORMAT_ORDER: DocFormat[] = ['docx', 'pdf', 'odt', 'rtf', 'doc', 'md', 'html', 'css', 'js', 'txt'];
+export const FORMAT_ORDER: DocFormat[] = ['docx', 'pdf', 'odt', 'rtf', 'doc', 'md', 'html', 'css', 'js', 'txt', 'code'];
 
 export const OPEN_EXTENSIONS: string[] = FORMAT_ORDER.flatMap((f) => FORMATS[f].extensions);
 
@@ -53,7 +56,8 @@ export function baseName(name: string): string {
 
 export function formatFromExtension(name: string): DocFormat | null {
   const ext = extensionOf(name);
-  return FORMAT_ORDER.find((f) => FORMATS[f].extensions.includes(ext)) ?? null;
+  // Dockerfile, Makefile, .env.local: source files known by name rather than extension
+  return FORMAT_ORDER.find((f) => FORMATS[f].extensions.includes(ext)) ?? (isCodeFileName(name) ? 'code' : null);
 }
 
 function startsWith(bytes: Uint8Array, ascii: string, offset = 0): boolean {
@@ -107,6 +111,10 @@ export async function sniffFormat(name: string, bytes: Uint8Array): Promise<Snif
   }
   if (startsWith(bytes, '{\\rtf')) return { format: 'rtf', officeEncrypted: false };
   const byExt = formatFromExtension(name);
+  // a source-code name on a binary file (a .ts video the media sniffer did not recognise)
+  if (byExt === 'code' && bytes.subarray(0, 4096).some((b) => b === 0)) {
+    return { format: null, officeEncrypted: false, unsupported: 'This file is not text, so it cannot be opened as source code.' };
+  }
   if (byExt && byExt !== 'pdf' && byExt !== 'docx' && byExt !== 'odt') return { format: byExt, officeEncrypted: false };
   if (byExt) {
     return { format: null, officeEncrypted: false, unsupported: `This file has a .${extensionOf(name)} extension but its content is not a valid ${FORMATS[byExt].label}.` };
@@ -124,7 +132,8 @@ export async function sniffFormat(name: string, bytes: Uint8Array): Promise<Snif
 
 export type OpenResult =
   | { kind: 'flow'; format: FlowFormat; doc: RichDocument; wasProtected: boolean }
-  | { kind: 'code'; format: CodeLanguage; language: CodeLanguage; text: string; wasProtected: boolean }
+  /** language: what to call it ("TypeScript", "HTML"); highlighting is chosen from the file name */
+  | { kind: 'code'; format: CodeFormat; language: string; text: string; wasProtected: boolean }
   | { kind: 'pdf'; bytes: Uint8Array; wasProtected: boolean };
 
 async function importFlow(format: FlowFormat, bytes: Uint8Array): Promise<RichDocument> {
@@ -144,6 +153,7 @@ async function importFlow(format: FlowFormat, bytes: Uint8Array): Promise<RichDo
     case 'txt':
     case 'css':
     case 'js':
+    case 'code':
       return (await import('./formats/text')).importText(bytes);
   }
 }
@@ -188,7 +198,7 @@ export async function openDocument(name: string, bytes: Uint8Array, password?: s
   // HTML / CSS / JS open as raw source so scripts and styles are not stripped.
   if (isCodeFormat(format)) {
     const { decodeText } = await import('./dom');
-    return { kind: 'code', format, language: format, text: decodeText(bytes), wasProtected: false };
+    return { kind: 'code', format, language: languageLabel(format === 'code' ? name : `x.${format}`), text: decodeText(bytes), wasProtected: false };
   }
   let doc: RichDocument;
   try {
@@ -236,6 +246,7 @@ export async function exportFlow(doc: RichDocument, format: DocFormat, options: 
     case 'txt':
     case 'css':
     case 'js':
+    case 'code':
       return (await import('./formats/text')).exportText(doc);
   }
 }

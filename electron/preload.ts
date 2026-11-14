@@ -61,6 +61,21 @@ const bridge = {
     const path = webUtils.getPathForFile(file);
     return path ? ipcRenderer.invoke('open-dropped', path) : null;
   },
+  folder: {
+    pick: (): Promise<{ id: string; name: string } | null> => ipcRenderer.invoke('folder-pick'),
+    list: (id: string, path: string): Promise<{ name: string; kind: 'file' | 'dir' }[]> => ipcRenderer.invoke('folder-list', id, path),
+    open: (id: string, path: string): Promise<FilePayload> => ipcRenderer.invoke('folder-open', id, path),
+    read: (id: string, path: string): Promise<Uint8Array | null> => ipcRenderer.invoke('folder-read', id, path),
+    createFile: (id: string, path: string, bytes: Uint8Array): Promise<void> => ipcRenderer.invoke('folder-create-file', id, path, bytes),
+    createDir: (id: string, path: string): Promise<void> => ipcRenderer.invoke('folder-create-dir', id, path),
+    rename: (id: string, path: string, newName: string): Promise<string> => ipcRenderer.invoke('folder-rename', id, path, newName),
+    remove: (id: string, path: string): Promise<void> => ipcRenderer.invoke('folder-remove', id, path),
+  },
+  readSibling: (token: string, path: string): Promise<Uint8Array | null> => ipcRenderer.invoke('sibling-read', token, path),
+  preview: {
+    set: (id: string, html: string): Promise<string> => ipcRenderer.invoke('preview-set', id, html),
+    clear: (id: string) => ipcRenderer.send('preview-clear', id),
+  },
   license: {
     get: () => ipcRenderer.invoke('license-get'),
     activate: (key: string) => ipcRenderer.invoke('license-activate', key),

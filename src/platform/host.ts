@@ -5,6 +5,9 @@
  */
 
 import { saveNameProblem, type DocKind } from '../core/conversions';
+import { desktopFolder, pickWebFolder, type OpenedFolder } from './folders';
+
+export type { FolderEntry, OpenedFolder } from './folders';
 
 export interface OpenedFile {
   name: string;
@@ -12,6 +15,8 @@ export interface OpenedFile {
   blob: Blob;
   /** Opaque token that lets the host write back to the same file. */
   handle?: unknown;
+  /** Set when the file was opened from an opened folder: the folder and the file's path in it. */
+  folder?: { folder: OpenedFolder; path: string };
 }
 
 export interface SaveRequest {
@@ -63,6 +68,14 @@ export interface FileHost {
   canSaveInPlace: boolean;
   openFiles(options: { extensions: string[]; multiple?: boolean; description?: string }): Promise<OpenedFile[]>;
   save(request: SaveRequest): Promise<SaveResult | null>;
+  /** Asks for a folder to work in. Resolves to null when the picker was cancelled. */
+  openFolder(): Promise<OpenedFolder | null>;
+  /**
+   * A reader for the files beside an opened file (desktop: its own directory, read-only), so a
+   * web page opened on its own can still be previewed with its stylesheets and scripts. Null
+   * where the platform can't (browsers only ever get the one file).
+   */
+  siblingReader(handle: unknown): ((path: string) => Promise<Blob | null>) | null;
   /** Files handed to the app by the OS (double-click, "Open with", drag onto the dock icon). */
   onOpenRequest(callback: (file: OpenedFile) => void): () => void;
   /** Commands from the native application menu (desktop only). */
@@ -122,6 +135,24 @@ export interface DesktopBridge {
   backupFile?(token: string): Promise<string | null>;
   /** Resolves a file dropped on the window to a token so Save writes back to it. */
   openDropped?(file: File): Promise<{ name: string; bytes: Uint8Array; token: string } | null>;
+  /** Opened folders: the main process keeps each root; the renderer names an id and a relative path. */
+  folder?: {
+    pick(): Promise<{ id: string; name: string } | null>;
+    list(id: string, path: string): Promise<{ name: string; kind: 'file' | 'dir' }[]>;
+    open(id: string, path: string): Promise<{ name: string; bytes: Uint8Array; token: string }>;
+    read(id: string, path: string): Promise<Uint8Array | null>;
+    createFile(id: string, path: string, bytes: Uint8Array): Promise<void>;
+    createDir(id: string, path: string): Promise<void>;
+    rename(id: string, path: string, newName: string): Promise<string>;
+    remove(id: string, path: string): Promise<void>;
+  };
+  /** Reads a file beside a granted file (same directory or below), for the web preview. */
+  readSibling?(token: string, path: string): Promise<Uint8Array | null>;
+  /** Web preview documents, served to a sandboxed frame from their own scheme (see electron/main.ts). */
+  preview?: {
+    set(id: string, html: string): Promise<string>;
+    clear(id: string): void;
+  };
   /** Desktop license activation (see electron/license.ts). */
   license: {
     get(): Promise<LicenseState>;
@@ -403,6 +434,8 @@ function createWebHost(): FileHost {
       download(req.bytes, req.suggestedName, req.mime);
       return { name: req.suggestedName };
     },
+    openFolder: () => pickWebFolder(),
+    siblingReader: () => null,
     onOpenRequest() {
       return () => {};
     },
@@ -449,6 +482,18 @@ function createDesktopHost(bridge: DesktopBridge): FileHost {
         ? await bridge.saveFile(req.handle, req.bytes)
         : await bridge.saveFileAs({ suggestedName: req.suggestedName, ext: req.ext, extensions: [...new Set([req.ext, ...(req.extensions ?? [])])], description: req.description }, req.bytes);
       return res ? { name: res.name, handle: res.token } : null;
+    },
+    async openFolder() {
+      if (!bridge.folder) throw new Error('This version of the desktop app cannot open folders.');
+      const picked = await bridge.folder.pick();
+      return picked ? desktopFolder(bridge.folder, picked.id, picked.name) : null;
+    },
+    siblingReader(handle) {
+      if (typeof handle !== 'string' || !bridge.readSibling) return null;
+      return async (path) => {
+        const bytes = await bridge.readSibling!(handle, path).catch(() => null);
+        return bytes ? new Blob([bytes as BlobPart]) : null;
+      };
     },
     onOpenRequest(callback) {
       return bridge.onOpenFile((f) => callback({ name: f.name, blob: new Blob([f.bytes as BlobPart]), handle: f.token }));
