@@ -48,4 +48,54 @@ describe('sqlite', () => {
     expect(cellDisplay(3)).toBe('3');
     expect(cellDisplay(new Uint8Array([1, 2, 3]))).toBe('[BLOB 3 B]');
   });
+
+  it('reads a large SQL result a page at a time', async () => {
+    const db = await SqliteDatabase.open();
+    db.exec('CREATE TABLE t ("Patient Name" TEXT, n INTEGER)');
+    db.exec("WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 20000) INSERT INTO t SELECT CASE WHEN i % 2 THEN 'P' || i END, i FROM c");
+
+    const res = db.query('SELECT * FROM t WHERE "Patient Name" IS NOT NULL ORDER BY n DESC; -- newest first\n', 200)!;
+    expect(res.columns).toEqual(['Patient Name', 'n']);
+    expect(res.total).toBe(10000);
+    expect(res.rows).toHaveLength(200);
+    expect(res.rows[0]).toEqual(['P19999', 19999]);
+    expect(res.query).not.toBeNull();
+    const last = db.queryPage(res.query!, 200, 9800);
+    expect(last).toHaveLength(200);
+    expect(last[199]).toEqual(['P1', 1]);
+    expect(db.queryPage(res.query!, 200, 10000)).toEqual([]);
+
+    // duplicate column names survive, and a query's own LIMIT is respected
+    const dup = db.query('SELECT n, n FROM t LIMIT 3')!;
+    expect(dup.columns).toEqual(['n', 'n']);
+    expect(dup.total).toBe(3);
+    expect(dup.rows).toEqual([[1, 1], [2, 2], [3, 3]]);
+    db.close();
+  });
+
+  it('runs scripts and statements that are not plain queries', async () => {
+    const db = await SqliteDatabase.open();
+    expect(db.query('CREATE TABLE t (a); INSERT INTO t VALUES (1), (2);')).toBeNull();
+    expect(db.query('  ')).toBeNull();
+
+    // a statement that writes runs exactly once and to the end, keeping only its first rows
+    const ret = db.query('WITH RECURSIVE c(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM c WHERE i < 6000) INSERT INTO t SELECT i FROM c RETURNING a')!;
+    expect(ret.query).toBeNull();
+    expect(ret.total).toBe(6000);
+    expect(ret.rows).toHaveLength(5000);
+    expect(db.query('SELECT COUNT(*) FROM t')!.rows).toEqual([[6002]]);
+
+    const pragma = db.query('PRAGMA table_info(t)')!;
+    expect(pragma.query).toBeNull();
+    expect(pragma.rows).toHaveLength(1);
+
+    // the result is the last statement that returns rows, even when a write follows it
+    const mixed = db.query('SELECT a FROM t WHERE a = 2; DELETE FROM t WHERE a > 2;')!;
+    expect(mixed.rows).toEqual([[2], [2]]);
+    expect(mixed.query).toBeNull();
+    expect(db.query('SELECT COUNT(*) FROM t')!.rows).toEqual([[4]]);
+
+    expect(() => db.query('SELECT * FROM missing')).toThrow(/missing/);
+    db.close();
+  });
 });

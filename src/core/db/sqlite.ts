@@ -52,6 +52,25 @@ export interface DbPage {
   total: number;
 }
 
+/** What SqliteDatabase.query returns: one page of a statement's rows, and how many there are. */
+export interface SqlResult {
+  columns: string[];
+  /** The first rows only: a page for a query, at most SQL_HELD_ROWS otherwise. */
+  rows: DbCell[][];
+  /** Every row the statement returned, including those not in `rows`. */
+  total: number;
+  /** A plain query: further pages come from queryPage(query, …). Null when `rows` is all there is to show. */
+  query: string | null;
+}
+
+/** Rows kept from a statement that cannot be read again a page at a time (PRAGMA, RETURNING…). */
+export const SQL_HELD_ROWS = 5000;
+
+/** True when nothing but whitespace, semicolons and comments is left of a script. */
+function isBlankSql(sql: string): boolean {
+  return /^(?:\s|;|--[^\n]*(?:\n|$)|\/\*[\s\S]*?(?:\*\/|$))*$/.test(sql);
+}
+
 /** See SqliteDatabase.bulkInsert. */
 export interface BulkInsert {
   /** Number of columns the table has now. */
@@ -379,6 +398,69 @@ export class SqliteDatabase {
     if (!rs.length) return null;
     const last = rs[rs.length - 1];
     return { columns: last.columns, rows: last.values.map((r) => r.map(fromSql)) };
+  }
+
+  /**
+   * Runs arbitrary SQL for display, without ever building the whole result in memory (a query
+   * over a large table returns hundreds of thousands of rows; turning them all into arrays
+   * and grid cells freezes the app). The result is that of the last statement that returns
+   * rows, or null if none does.
+   *
+   * When that statement is a plain query and the last one in the script, only its first
+   * `limit` rows are read; the rest come from queryPage. Any other statement that returns
+   * rows runs to the end (it may be writing, as INSERT … RETURNING does) but only its first
+   * SQL_HELD_ROWS rows are kept.
+   */
+  query(sql: string, limit = 200): SqlResult | null {
+    if (!sql.trim()) return null;
+    let result: SqlResult | null = null;
+    const it = this.db.iterateStatements(sql);
+    for (const stmt of it) {
+      const columns = stmt.getColumnNames();
+      if (!columns.length) {
+        stmt.step();
+        continue;
+      }
+      if (isBlankSql(it.getRemainingSQL())) {
+        const query = this.pageableQuery(stmt.getSQL());
+        if (query) {
+          const total = Number(this.db.exec(`SELECT COUNT(*) FROM (\n${query}\n)`)[0]?.values[0]?.[0] ?? 0);
+          result = { columns, rows: this.queryPage(query, limit, 0), total, query };
+          continue;
+        }
+      }
+      const rows: DbCell[][] = [];
+      let total = 0;
+      while (stmt.step()) {
+        if (total < SQL_HELD_ROWS) rows.push(stmt.get().map(fromSql));
+        total++;
+      }
+      result = { columns, rows, total, query: null };
+    }
+    return result;
+  }
+
+  /** A page of a query that query() reported as readable a page at a time. */
+  queryPage(query: string, limit = 200, offset = 0): DbCell[][] {
+    const stmt = this.db.prepare(`SELECT * FROM (\n${query}\n) LIMIT ${limit | 0} OFFSET ${offset | 0}`);
+    const rows: DbCell[][] = [];
+    try {
+      while (stmt.step()) rows.push(stmt.get().map(fromSql));
+    } finally {
+      stmt.free();
+    }
+    return rows;
+  }
+
+  /** The statement's text if it can be used as a subquery (so it only reads), else null. */
+  private pageableQuery(statement: string): string | null {
+    const query = statement.trim().replace(/[;\s]+$/, '');
+    try {
+      this.db.prepare(`SELECT * FROM (\n${query}\n) LIMIT 0`).free();
+      return query;
+    } catch {
+      return null;
+    }
   }
 
   export(): Uint8Array {

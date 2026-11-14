@@ -16,6 +16,7 @@ import {
   type DbObject,
   type DbPage,
   type SqliteDatabase,
+  type SqlResult,
 } from '../../core/db/sqlite';
 import { BusyPill, Field, Modal, cx, useBusy } from '../components';
 import { ColumnSizes, HeaderCells, fitWidth, textWidth, useColumnLayout } from './columns';
@@ -70,7 +71,7 @@ export const DbEditor = forwardRef<DbEditorHandle, Props>(function DbEditor({ db
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
   const [sql, setSql] = useState('SELECT name, type FROM sqlite_master ORDER BY type, name;');
   const [sqlOpen, setSqlOpen] = useState(false);
-  const [sqlResult, setSqlResult] = useState<{ id: number; columns: string[]; rows: DbCell[][] } | null>(null);
+  const [sqlResult, setSqlResult] = useState<{ id: number; result: SqlResult; offset: number; rows: DbCell[][] } | null>(null);
   const [newTable, setNewTable] = useState(false);
   const [newColumn, setNewColumn] = useState(false);
   const busy = useBusy();
@@ -202,12 +203,12 @@ export const DbEditor = forwardRef<DbEditorHandle, Props>(function DbEditor({ db
   const runSql = () =>
     busy.run('Running SQL…', () => {
       try {
-        const result = db.exec(sql);
+        const result = db.query(sql, PAGE_SIZE);
         markChanged();
         totals.current.clear();
         refreshObjects();
         if (result) {
-          setSqlResult({ id: ++resultSeq.current, ...result });
+          setSqlResult({ id: ++resultSeq.current, result, offset: 0, rows: result.rows.slice(0, PAGE_SIZE) });
           setPage(null);
         } else if (activeObj) {
           void loadPage(activeObj.name, activeObj.kind, offset);
@@ -216,6 +217,25 @@ export const DbEditor = forwardRef<DbEditorHandle, Props>(function DbEditor({ db
         onError(err instanceof Error ? err.message : 'SQL error.');
       }
     });
+
+  /** Another page of the SQL result: read from the database for a query, else from the rows kept. */
+  const loadSqlPage = (off: number) => {
+    if (!sqlResult) return;
+    gridRef.current?.scrollTo({ top: 0 });
+    const { id, result } = sqlResult;
+    const query = result.query;
+    if (query === null) {
+      setSqlResult({ id, result, offset: off, rows: result.rows.slice(off, off + PAGE_SIZE) });
+      return;
+    }
+    void busy.run('Reading rows…', () => {
+      try {
+        setSqlResult({ id, result, offset: off, rows: db.queryPage(query, PAGE_SIZE, off) });
+      } catch (err) {
+        onError(err instanceof Error ? err.message : 'Could not read those rows.');
+      }
+    });
+  };
 
   const createTable = (name: string, columns: { name: string; type: string }[], withId: boolean) => {
     try {
@@ -282,6 +302,8 @@ export const DbEditor = forwardRef<DbEditorHandle, Props>(function DbEditor({ db
   const canPrev = offset > 0;
   const canNext = offset + PAGE_SIZE < total;
   const isTable = activeObj?.kind === 'table';
+  /** Rows of the SQL result that can be paged to (a statement that is not a query keeps only its first rows). */
+  const sqlShown = !sqlResult ? 0 : sqlResult.result.query === null ? sqlResult.result.rows.length : sqlResult.result.total;
 
   return (
     <div className="db-editor">
@@ -352,6 +374,21 @@ export const DbEditor = forwardRef<DbEditorHandle, Props>(function DbEditor({ db
               </button>
             </div>
           )}
+          {sqlResult && sqlResult.result.columns.length > 0 && (
+            <div className="db-pager">
+              <button type="button" className="btn btn-icon" disabled={sqlResult.offset <= 0} aria-label="Previous page" onClick={() => loadSqlPage(Math.max(0, sqlResult.offset - PAGE_SIZE))}>
+                <ChevronLeft size={16} />
+              </button>
+              <span className="db-meta" title={sqlShown < sqlResult.result.total ? `Only the first ${sqlShown.toLocaleString()} rows of this result can be shown` : undefined}>
+                {sqlResult.result.total === 0
+                  ? 'No rows'
+                  : `${(sqlResult.offset + 1).toLocaleString()}–${(sqlResult.offset + sqlResult.rows.length).toLocaleString()} of ${sqlResult.result.total.toLocaleString()}`}
+              </span>
+              <button type="button" className="btn btn-icon" disabled={sqlResult.offset + PAGE_SIZE >= sqlShown} aria-label="Next page" onClick={() => loadSqlPage(sqlResult.offset + PAGE_SIZE)}>
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          )}
           {activeObj && !sqlResult && (
             <span className="db-meta" title={activeObj.columns.map((c) => `${c.name} ${c.type}`).join(', ')}>
               {activeObj.kind === 'view' ? <Database size={12} /> : <Table2 size={12} />} {activeObj.columns.length} columns
@@ -363,7 +400,7 @@ export const DbEditor = forwardRef<DbEditorHandle, Props>(function DbEditor({ db
         <div className="db-grid-wrap" ref={gridRef}>
           <BusyPill label={busy.label} delayed />
           {sqlResult ? (
-            <ResultGrid key={sqlResult.id} columns={sqlResult.columns} rows={sqlResult.rows} />
+            <ResultGrid key={sqlResult.id} columns={sqlResult.result.columns} rows={sqlResult.rows} />
           ) : !activeObj ? (
             <div className="db-empty">
               <p>This database is empty. Make its first table to start adding rows.</p>
