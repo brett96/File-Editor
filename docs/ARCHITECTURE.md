@@ -128,6 +128,19 @@ through `applyAdjust`; per-pixel ones live in `adjust.ts`, neighbourhood and tab
 shadow) and the Patch tool (copy with a harmonic colour correction). Adjustments Photoshop
 has no layer for are baked to pixel layers on `.psd` export (`ops.bakeForPsd`).
 
+### Presentations
+
+A deck (`core/slides/model.ts`) is plain data: slides of elements (text/shape, picture, table,
+line) in slide pixels, text as paragraphs of runs. `pptx-read.ts` resolves what PowerPoint
+leaves implicit down the slide → layout → master → theme chain (placeholder positions, font
+sizes, colours, bullets) and copies master/layout artwork onto each slide, locked;
+`pptx-write.ts` builds a complete package (theme, master, four layouts, notes, media) in
+which every shape states its own geometry and formatting. `render.ts` draws a slide as
+self-contained HTML (inline styles and SVG, all text escaped); the editor stage, thumbnails,
+slide show and the PNG / PDF export (`ui/slides/export.ts`, via an SVG `foreignObject`) all
+use it. Text is edited in a `contentEditable` seeded from that HTML and read back by
+`ui/slides/text-edit.ts`, which keeps only text and the formatting the model knows.
+
 ### Spreadsheets, databases and large files
 
 Spreadsheets are edited as a Univer snapshot (`core/sheet/workbook.ts`); databases as a SQLite

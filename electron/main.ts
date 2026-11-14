@@ -327,6 +327,7 @@ function buildMenu() {
       submenu: [
         { label: 'New', accelerator: 'CmdOrCtrl+N', click: () => send('new') },
         { label: 'New Spreadsheet', accelerator: 'CmdOrCtrl+Shift+N', click: () => send('new-spreadsheet') },
+        { label: 'New Presentation', click: () => send('new-presentation') },
         { label: 'New Database', click: () => send('new-database') },
         { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: () => send('open') },
         {

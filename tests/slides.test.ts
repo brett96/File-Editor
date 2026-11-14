@@ -256,3 +256,42 @@ describe('PowerPoint files', () => {
     expect(colorParts('rgba(255, 0, 0, 0.5)')).toEqual({ hex: 'FF0000', alpha: 0.5 });
   });
 });
+
+describe('reading text back from the editable box', () => {
+  const style = { size: 24, color: '#262626', font: 'Arial', bullets: true };
+  const box = (html: string) => {
+    const el = document.createElement('div');
+    el.innerHTML = html;
+    document.body.appendChild(el);
+    return el;
+  };
+  it('round-trips what the renderer wrote', async () => {
+    const { readEditable } = await import('../src/ui/slides/text-edit');
+    const text = [
+      para('Plain'),
+      { runs: [{ text: 'Bold ', bold: true }, { text: 'red', color: '#ff0000', size: 30, italic: true }, { text: ' link', link: 'https://example.com', underline: true }], align: 'center' as const, level: 2, bullet: 'number' as const, lineSpacing: 1.8 },
+      para('', { bullet: 'none' }),
+    ];
+    const back = readEditable(box(paragraphsHtml(text, style)), style);
+    expect(back[0]).toEqual({ runs: [{ text: 'Plain' }], bullet: 'bullet' });
+    expect(back[1]).toMatchObject({ align: 'center', level: 2, bullet: 'number', lineSpacing: 1.8 });
+    expect(back[1].runs).toEqual([{ text: 'Bold ', bold: true }, { text: 'red', color: '#ff0000', size: 30, italic: true }, { text: ' link', link: 'https://example.com', underline: true }]);
+    expect(back[2]).toEqual({ runs: [{ text: '' }], bullet: 'none' });
+  });
+  it('understands browser formatting tags and drops everything else', async () => {
+    const { readEditable } = await import('../src/ui/slides/text-edit');
+    const back = readEditable(
+      box('<div data-p="1" data-bullet="none"><b>B</b><i>I</i><u>U</u><strike>S</strike><span style="font-weight:700;color:rgb(0, 128, 0)">G</span><script>alert(1)</script><img src=x onerror=alert(1)><a href="javascript:alert(1)">bad</a></div><p>second<br>line</p>'),
+      style,
+    );
+    expect(back).toHaveLength(2);
+    expect(back[0].runs.slice(0, 5)).toEqual([{ text: 'B', bold: true }, { text: 'I', italic: true }, { text: 'U', underline: true }, { text: 'S', strike: true }, { text: 'G', bold: true, color: '#008000' }]);
+    // a javascript: link is just text
+    expect(back[0].runs.some((r) => r.link)).toBe(false);
+    expect(back[1].runs.map((r) => r.text).join('')).toBe('second\nline');
+    // formatting equal to the box's defaults is not stored on the run
+    const same = readEditable(box('<div data-p="1"><span style="font-size:32px;color:#262626">x</span></div>'), style);
+    expect(same[0].runs).toEqual([{ text: 'x' }]);
+    expect(readEditable(box(''), style)).toEqual([{ runs: [{ text: '' }] }]);
+  });
+});

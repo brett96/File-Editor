@@ -107,4 +107,14 @@ describe('spreadsheet column auto-fit', () => {
     expect(cellFont({ bl: 1, it: 1, fs: 14, ff: 'Georgia' })).toBe('italic bold 14pt "Georgia", Arial, sans-serif');
     expect(cellFont(null)).toBe('11pt Arial, sans-serif');
   });
+
+  it('saves presentations as PowerPoint, PDF or a ZIP of pictures only', () => {
+    expect(canSaveAs('slides', 'pptx')).toBe(true);
+    expect(canSaveAs('slides', 'ppsx')).toBe(true);
+    expect(canSaveAs('slides', 'pdf')).toBe(true);
+    expect(canSaveAs('slides', 'zip')).toBe(true);
+    expect(canSaveAs('slides', 'docx')).toBe(false);
+    expect(canSaveAs('flow', 'pptx')).toBe(false);
+    expect(familiesOfExtension('pptx')).toEqual(['presentation']);
+  });
 });
