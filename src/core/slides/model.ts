@@ -135,13 +135,31 @@ export interface TableElement extends ElementBase {
   banded: boolean;
 }
 
+export const CHART_TYPES = ['column', 'bar', 'line', 'pie'] as const;
+export type ChartType = (typeof CHART_TYPES)[number];
+
+export interface ChartSeries {
+  name: string;
+  /** one value per category; a missing value is a gap */
+  values: (number | null)[];
+}
+
+export interface ChartElement extends ElementBase {
+  kind: 'chart';
+  chart: ChartType;
+  title?: string;
+  categories: string[];
+  series: ChartSeries[];
+  legend: boolean;
+}
+
 /** Something a file contained that the editor cannot draw or keep (chart, SmartArt, video…). */
 export interface UnsupportedElement extends ElementBase {
   kind: 'unsupported';
   label: string;
 }
 
-export type SlideElement = ShapeElement | LineElement | ImageElement | TableElement | UnsupportedElement;
+export type SlideElement = ShapeElement | LineElement | ImageElement | TableElement | ChartElement | UnsupportedElement;
 
 export type Background = { type: 'color'; color: string } | { type: 'gradient'; from: string; to: string; angle: number } | { type: 'image'; src: string };
 
@@ -239,6 +257,68 @@ export function table(x: number, y: number, w: number, h: number, rows: number, 
     header: true,
     banded: true,
   };
+}
+
+export function chart(type: ChartType, x: number, y: number, w: number, h: number): ChartElement {
+  return {
+    id: uid('e'),
+    kind: 'chart',
+    chart: type,
+    x,
+    y,
+    w,
+    h,
+    rotation: 0,
+    categories: ['Q1', 'Q2', 'Q3', 'Q4'],
+    series: type === 'pie' ? [{ name: 'Sales', values: [8.2, 3.2, 1.4, 1.2] }] : [{ name: 'Series 1', values: [4.3, 2.5, 3.5, 4.5] }, { name: 'Series 2', values: [2.4, 4.4, 1.8, 2.8] }],
+    legend: true,
+  };
+}
+
+/**
+ * Chart data as text a person can edit: one row per line, cells separated by tabs or commas.
+ * The first row holds the series names (after an empty corner cell), the first column the categories.
+ */
+export function chartToText(c: Pick<ChartElement, 'categories' | 'series'>): string {
+  const cell = (v: string) => (/[",\t\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+  const rows = [['', ...c.series.map((s) => s.name)], ...c.categories.map((cat, i) => [cat, ...c.series.map((s) => (s.values[i] === null || s.values[i] === undefined ? '' : String(s.values[i])))])];
+  return rows.map((r) => r.map(cell).join('\t')).join('\n');
+}
+
+export function chartFromText(text: string): Pick<ChartElement, 'categories' | 'series'> {
+  const lines = text.split(/\r?\n/).filter((l) => l.trim() !== '');
+  if (lines.length < 2) throw new Error('Chart data needs a first row of series names and at least one row of values.');
+  const delim = lines[0].includes('\t') ? '\t' : lines[0].includes(';') && !lines[0].includes(',') ? ';' : ',';
+  const split = (l: string) => {
+    const out: string[] = [];
+    let cur = '';
+    let quoted = false;
+    for (let i = 0; i < l.length; i++) {
+      const ch = l[i];
+      if (quoted) {
+        if (ch === '"' && l[i + 1] === '"') (cur += '"'), i++;
+        else if (ch === '"') quoted = false;
+        else cur += ch;
+      } else if (ch === '"') quoted = true;
+      else if (ch === delim) (out.push(cur.trim()), (cur = ''));
+      else cur += ch;
+    }
+    out.push(cur.trim());
+    return out;
+  };
+  const rows = lines.map(split);
+  const names = rows[0].slice(1).filter((_, i, a) => i < a.length);
+  if (!names.length) throw new Error('The first row needs at least one series name after the empty first cell.');
+  const body = rows.slice(1);
+  const series = names.map((name, si) => ({
+    name: name || `Series ${si + 1}`,
+    values: body.map((r) => {
+      const raw = (r[si + 1] ?? '').replace(/\s/g, '').replace(/,(?=\d{1,2}$)/, '.');
+      const v = raw === '' ? NaN : Number(raw);
+      return Number.isFinite(v) ? v : null;
+    }),
+  }));
+  return { categories: body.map((r, i) => r[0] || `${i + 1}`), series };
 }
 
 export type LayoutId = 'title' | 'titleContent' | 'section' | 'twoContent' | 'titleOnly' | 'blank';

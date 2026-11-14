@@ -18,6 +18,8 @@ import {
   uid,
   type Align,
   type Background,
+  type ChartElement,
+  type ChartSeries,
   type Deck,
   type Paragraph,
   type PlaceholderType,
@@ -285,6 +287,7 @@ interface SlideCtx {
   minorFont: string;
   warnings: Set<string>;
   images: Map<string, string>;
+  load: (path: string) => Promise<Part | null>;
 }
 
 const PH_KINDS: Record<string, PlaceholderType> = { title: 'title', ctrTitle: 'ctrTitle', subTitle: 'subTitle', body: 'body', obj: 'body' };
@@ -475,6 +478,55 @@ function readTable(frame: Element, tbl: Element, ctx: SlideCtx, part: Part, b: X
   return { id: uid('e'), kind: 'table', x: b.x, y: b.y, w: width, h: height, rotation: 0, cols, rows, cells, border: border ?? (styled ? null : '#bfbfbf'), borderWidth, header: flag('firstRow'), banded: flag('bandRow'), ...(name ? { name } : {}), ...(locked ? { locked: true } : {}) };
 }
 
+/** The points of a chart data source (cached values of a reference, or literal values), by index. */
+function chartPoints(src: Element | null): { count: number; at: Map<number, string> } {
+  const holder = kids(src).find((c) => /Lit$|Ref$/.test(c.localName)) ?? null;
+  const cache = holder && /Ref$/.test(holder.localName) ? kids(holder).find((c) => /Cache$/.test(c.localName)) ?? null : holder;
+  const at = new Map<number, string>();
+  // multi-level category labels: the innermost level
+  const level = kid(cache, 'lvl') ?? cache;
+  for (const pt of kids(level, 'pt')) at.set(num(pt, 'idx'), kid(pt, 'v')?.textContent ?? '');
+  return { count: Math.max(num(kid(cache, 'ptCount'), 'val'), at.size ? Math.max(...at.keys()) + 1 : 0), at };
+}
+
+/** Reads a chart part into a chart the editor can draw, or null for kinds it cannot (scatter, radar, 3D surfaces…). */
+function readChart(root: Element, b: Xfrm, name: string | undefined, locked: boolean): ChartElement | null {
+  const chartEl = kid(root, 'chart');
+  const plot = kid(chartEl, 'plotArea');
+  const groups = kids(plot).filter((c) => /Chart$/.test(c.localName));
+  if (!groups.length) return null;
+  const first = groups[0].localName;
+  let type: ChartElement['chart'];
+  if (/^bar(3D)?Chart$/.test(first)) type = kid(groups[0], 'barDir')?.getAttribute('val') === 'bar' ? 'bar' : 'column';
+  else if (/^(line|area)(3D)?Chart$/.test(first)) type = 'line';
+  else if (/^(pie|doughnut|ofPie)(3D)?Chart$/.test(first)) type = 'pie';
+  else return null;
+  let categories: string[] = [];
+  const series: ChartSeries[] = [];
+  for (const g of groups) {
+    for (const ser of kids(g, 'ser')) {
+      const cat = chartPoints(kid(ser, 'cat'));
+      const val = chartPoints(kid(ser, 'val'));
+      const tx = kid(ser, 'tx');
+      const label = kid(tx, 'v')?.textContent ?? chartPoints(tx).at.get(0) ?? `Series ${series.length + 1}`;
+      const count = Math.max(cat.count, val.count);
+      if (count > categories.length) categories = Array.from({ length: count }, (_, i) => cat.at.get(i) ?? categories[i] ?? String(i + 1));
+      series.push({
+        name: label,
+        values: Array.from({ length: count }, (_, i) => {
+          const v = val.at.get(i);
+          return v === undefined || v === '' || !Number.isFinite(Number(v)) ? null : Number(v);
+        }),
+      });
+    }
+  }
+  if (!series.length) return null;
+  for (const sr of series) while (sr.values.length < categories.length) sr.values.push(null);
+  const titleEl = kid(chartEl, 'title');
+  const title = titleEl ? Array.from(titleEl.getElementsByTagName('*')).filter((e) => e.localName === 't').map((e) => e.textContent ?? '').join('').trim() : '';
+  return { id: uid('e'), kind: 'chart', chart: type, x: b.x, y: b.y, w: b.w, h: b.h, rotation: 0, categories, series, legend: !!kid(chartEl, 'legend'), ...(title ? { title } : {}), ...(name ? { name } : {}), ...(locked ? { locked: true } : {}) };
+}
+
 async function readTree(tree: Element | null, ctx: SlideCtx, part: Part, place: Place, locked: boolean, out: SlideElement[]): Promise<void> {
   for (const node of kids(tree)) {
     switch (node.localName) {
@@ -517,8 +569,18 @@ async function readTree(tree: Element | null, ctx: SlideCtx, part: Part, place: 
           break;
         }
         const uri = data?.getAttribute('uri') ?? '';
-        const what = /chart/.test(uri) ? 'Chart' : /diagram/.test(uri) ? 'SmartArt diagram' : /ole/.test(uri) ? 'Embedded object' : 'Object';
-        ctx.warnings.add(`${what.toLowerCase()}s`);
+        if (/chart$/.test(uri)) {
+          const rel = part.rels.get(kids(data)[0]?.getAttributeNS(R_NS, 'id') ?? '');
+          const chartPart = rel && !rel.external ? await ctx.load(rel.target) : null;
+          const drawn = chartPart ? readChart(chartPart.xml, place(b), path(node, 'nvGraphicFramePr', 'cNvPr')?.getAttribute('name') ?? undefined, locked) : null;
+          if (drawn) {
+            if (kids(path(chartPart!.xml, 'chart', 'plotArea')).filter((c) => /Chart$/.test(c.localName)).length > 1) ctx.warnings.add('combination charts (drawn as one type)');
+            out.push(drawn);
+            break;
+          }
+        }
+        const what = /chart/.test(uri) ? 'Chart of a kind that cannot be drawn here' : /diagram/.test(uri) ? 'SmartArt diagram' : /ole/.test(uri) ? 'Embedded object' : 'Object';
+        ctx.warnings.add(/chart/.test(uri) ? 'scatter, radar and other special charts' : `${what.toLowerCase()}s`);
         const pb = place(b);
         out.push({ id: uid('e'), kind: 'unsupported', label: `${what} (not shown or saved by File Editor)`, x: pb.x, y: pb.y, w: pb.w, h: pb.h, rotation: 0, ...(locked ? { locked: true } : {}) });
         break;
@@ -626,7 +688,7 @@ export async function readPptx(bytes: Uint8Array): Promise<PptxReadResult> {
       const f = path(fonts, which, 'latin')?.getAttribute('typeface');
       return f && /^[\w\s.-]+$/.test(f) ? `"${f}", ${fallback}` : fallback;
     };
-    const ctx: SlideCtx = { zip, part, layout, master, colors: { scheme, map }, majorFont: face('majorFont', 'Calibri, Arial, sans-serif'), minorFont: face('minorFont', 'Calibri, Arial, sans-serif'), warnings, images };
+    const ctx: SlideCtx = { zip, part, layout, master, colors: { scheme, map }, majorFont: face('majorFont', 'Calibri, Arial, sans-serif'), minorFont: face('minorFont', 'Calibri, Arial, sans-serif'), warnings, images, load };
 
     if (!theme) {
       const hex = (k: string, fallback: string) => (scheme[map[k] ?? k] && /^[0-9a-f]{6}$/i.test(scheme[map[k] ?? k]) ? `#${scheme[map[k] ?? k].toLowerCase()}` : fallback);

@@ -478,3 +478,10 @@
   max-width: none;
   flex-wrap: nowrap;
 }
+
+.sl-chart-data {
+  width: 100%;
+  font: 13px ui-monospace, Consolas, monospace;
+  tab-size: 14;
+  white-space: pre;
+}

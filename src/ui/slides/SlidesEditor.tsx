@@ -13,6 +13,7 @@ import {
   ArrowDownToLine,
   ArrowUpToLine,
   Bold,
+  ChartColumn,
   ChevronDown,
   ChevronUp,
   CircleHelp,
@@ -47,6 +48,10 @@ import {
   SHAPE_LABELS,
   THEMES,
   TRANSITIONS,
+  CHART_TYPES,
+  chart,
+  chartFromText,
+  chartToText,
   cloneElement,
   cloneSlide,
   findInSlide,
@@ -66,6 +71,8 @@ import {
   uid,
   type Align,
   type Background,
+  type ChartElement,
+  type ChartType,
   type Deck,
   type LayoutId,
   type Paragraph,
@@ -242,6 +249,7 @@ export const SlidesEditor = forwardRef<SlidesHandle, Props>(function SlidesEdito
   const [sorter, setSorter] = useState(false);
   const [linkOpen, setLinkOpen] = useState<string | null>(null);
   const [findOpen, setFindOpen] = useState(false);
+  const [chartData, setChartData] = useState<{ id: string; text: string; error: string | null } | null>(null);
   const [find, setFind] = useState({ text: '', replace: '', matchCase: false, note: '' });
   const slideIndex = Math.min(index, deck.slides.length - 1);
   const slide = deck.slides[slideIndex];
@@ -545,6 +553,25 @@ export const SlidesEditor = forwardRef<SlidesHandle, Props>(function SlidesEdito
     const { x, y } = centre(w, h);
     addElement(table(x, y, w, h, rows, cols));
   };
+  const CHART_LABELS: Record<ChartType, string> = { column: 'Column', bar: 'Bar', line: 'Line', pie: 'Pie' };
+  const addChart = (type: ChartType) => {
+    const d = deckRef.current;
+    const w = Math.round(d.width * 0.6);
+    const h = Math.round(d.height * 0.55);
+    const { x, y } = centre(w, h);
+    addElement(chart(type, x, y, w, h));
+  };
+  const openChartData = (c: ChartElement) => setChartData({ id: c.id, text: chartToText(c), error: null });
+  const applyChartData = () => {
+    if (!chartData) return;
+    try {
+      const data = chartFromText(chartData.text);
+      setElements((els) => els.map((e) => (e.id === chartData.id && e.kind === 'chart' ? { ...e, ...data } : e)));
+      setChartData(null);
+    } catch (err) {
+      setChartData({ ...chartData, error: err instanceof Error ? err.message : String(err) });
+    }
+  };
   const fileInput = useRef<HTMLInputElement>(null);
   const bgInput = useRef<HTMLInputElement>(null);
   const addPicture = async (file: Blob | undefined) => {
@@ -741,7 +768,7 @@ export const SlidesEditor = forwardRef<SlidesHandle, Props>(function SlidesEdito
     } else if (el.kind === 'table') {
       pendingCaret.current = 'all';
       beginEdit(el.id, cellAt(el, e));
-    }
+    } else if (el.kind === 'chart') openChartData(el);
   };
   const onStageDown = (e: RPointerEvent) => {
     if (e.button !== 0) return;
@@ -1172,6 +1199,16 @@ export const SlidesEditor = forwardRef<SlidesHandle, Props>(function SlidesEdito
           <label><input type="checkbox" checked={one.banded} onChange={(e) => patchSelected((el) => (el.kind === 'table' ? { ...el, banded: e.target.checked } : el))} /> Banded rows</label>
         </Group>
       )}
+      {one?.kind === 'chart' && (
+        <Group label="Chart">
+          <select className="tb-select" aria-label="Chart type" value={one.chart} onChange={(e) => patchSelected((el) => (el.kind === 'chart' ? { ...el, chart: e.target.value as ChartType } : el))}>
+            {CHART_TYPES.map((t) => <option key={t} value={t}>{CHART_LABELS[t]}</option>)}
+          </select>
+          <button type="button" className="btn" onClick={() => openChartData(one)}>Edit data…</button>
+          <label>Title <input type="text" aria-label="Chart title" style={{ width: 130, height: 24 }} className="input" value={one.title ?? ''} onChange={(e) => patchSelected((el) => (el.kind === 'chart' ? { ...el, title: e.target.value || undefined } : el), 'chart-title')} /></label>
+          <label><input type="checkbox" checked={one.legend} onChange={(e) => patchSelected((el) => (el.kind === 'chart' ? { ...el, legend: e.target.checked } : el))} /> Legend</label>
+        </Group>
+      )}
       <Group label="Arrange">
         <button type="button" className="btn btn-icon" disabled={!selEls.length} title="Bring to front" aria-label="Bring to front" onClick={() => reorder('front')}><ArrowUpToLine size={14} /></button>
         <button type="button" className="btn btn-icon" disabled={!selEls.length} title="Bring forward" aria-label="Bring forward" onClick={() => reorder('up')}><ChevronUp size={14} /></button>
@@ -1231,6 +1268,15 @@ export const SlidesEditor = forwardRef<SlidesHandle, Props>(function SlidesEdito
           {(close) => (
             <div className="format-menu">
               {([[2, 2], [3, 3], [4, 3], [4, 4], [5, 4], [6, 5]] as const).map(([r, c]) => <button key={`${r}x${c}`} type="button" className="menu-item" onClick={() => { close(); addTable(r, c); }}>{r} rows × {c} columns</button>)}
+            </div>
+          )}
+        </Popover>
+      </Group>
+      <Group label="Charts">
+        <Popover label="Chart" button={<span className="sl-swatch"><ChartColumn size={14} /> Chart</span>}>
+          {(close) => (
+            <div className="format-menu">
+              {CHART_TYPES.map((t) => <button key={t} type="button" className="menu-item" onClick={() => { close(); addChart(t); }}>{CHART_LABELS[t]} chart</button>)}
             </div>
           )}
         </Popover>
@@ -1440,6 +1486,24 @@ export const SlidesEditor = forwardRef<SlidesHandle, Props>(function SlidesEdito
             <label>Replace with<input className="input" value={find.replace} onChange={(e) => setFind({ ...find, replace: e.target.value, note: '' })} /></label>
             <label className="check"><input type="checkbox" checked={find.matchCase} onChange={(e) => setFind({ ...find, matchCase: e.target.checked })} /> Match case</label>
           </form>
+        </Modal>
+      )}
+      {chartData && (
+        <Modal
+          title="Chart data"
+          width={520}
+          onClose={() => setChartData(null)}
+          footer={
+            <>
+              {chartData.error && <span className="dialog-error" role="alert">{chartData.error}</span>}
+              <span className="spacer" />
+              <button type="button" className="btn btn-text" onClick={() => setChartData(null)}>Cancel</button>
+              <button type="button" className="btn btn-primary" onClick={applyChartData}>Apply</button>
+            </>
+          }
+        >
+          <p className="dialog-hint">One row per line, cells separated by tabs or commas. The first row holds the series names (after an empty first cell); the first column holds the categories. You can paste a range straight from a spreadsheet. A pie chart uses the first series.</p>
+          <textarea className="input sl-chart-data" rows={10} spellCheck={false} aria-label="Chart data" data-autofocus value={chartData.text} onChange={(e) => setChartData({ ...chartData, text: e.target.value, error: null })} onKeyDown={(e) => { if (e.key === 'Tab') { e.preventDefault(); const ta = e.currentTarget; const at = ta.selectionStart; ta.setRangeText('\t', at, ta.selectionEnd, 'end'); setChartData({ ...chartData, text: ta.value, error: null }); } }} />
         </Modal>
       )}
       {show !== null && <SlideShow deck={deck} start={show} onExit={(at) => { setShow(null); setIndex(at); }} />}

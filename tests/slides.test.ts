@@ -4,12 +4,12 @@ import { readFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 import JSZip from 'jszip';
 import {
-  THEMES, cloneSlide, findInSlide, image, isEmptyText, layoutElements, line, newDeck, newSlide, normalizeParagraph, para, plainText, replaceInDeck, resizeDeck, shape, styleAll, table, textBox,
+  THEMES, chart, chartFromText, chartToText, cloneSlide, findInSlide, image, isEmptyText, layoutElements, line, newDeck, newSlide, normalizeParagraph, para, plainText, replaceInDeck, resizeDeck, shape, styleAll, table, textBox,
   type ImageElement, type LineElement, type ShapeElement, type TableElement,
 } from '../src/core/slides/model';
 import { isPptx, readPptx } from '../src/core/slides/pptx-read';
 import { colorParts, writePptx } from '../src/core/slides/pptx-write';
-import { paragraphsHtml, shapePath, slideHtml, slideSvg } from '../src/core/slides/render';
+import { niceScale, paragraphsHtml, shapePath, slideHtml, slideSvg } from '../src/core/slides/render';
 
 function crc32(bytes: Uint8Array): number {
   let c = ~0;
@@ -64,6 +64,7 @@ function sampleDeck() {
   const pic = { ...image(pngUrl(), 720, 80, 320, 180), crop: [0.1, 0, 0.2, 0] as [number, number, number, number], radius: 0.1, alt: 'A red square' };
   const ln = { ...line(720, 320, 300, 120, '#e11d48', true), flipV: true, lineDash: 'dot' as const, startArrow: true };
   s3.elements.push(star, grad, pic, ln, tb, textBox(720, 470, 400, 80, [para('Plain', { italic: true })]), { ...image(pngUrl(), 10, 10, 20, 20) });
+  s3.elements.push({ ...chart('line', 700, 560, 400, 150), title: 'Sales & <costs>', series: [{ name: 'A', values: [1, null, 3.5, -2] }, { name: 'B', values: [2, 4, 6, 8] }] });
   s3.background = { type: 'gradient', from: '#f0f9ff', to: '#bae6fd', angle: 180 };
   deck.slides.push(s2, s3);
   return deck;
@@ -99,6 +100,34 @@ describe('presentation model', () => {
     expect(t1.cols.reduce((a, b) => a + b, 0)).toBeCloseTo(t1.w, 6);
     // 4:3 is taller than 16:9 scaled down: content is centred vertically
     expect(t1.y).toBeCloseTo(t0.y * 0.75 + 90, 6);
+  });
+});
+
+describe('charts', () => {
+  it('turns chart data into editable text and back', () => {
+    const c = chart('column', 0, 0, 400, 300);
+    const text = chartToText(c);
+    expect(text.split('\n')[0]).toBe('\tSeries 1\tSeries 2');
+    expect(chartFromText(text)).toEqual({ categories: c.categories, series: c.series });
+    const typed = chartFromText('Month, "Sales, net", Costs\nJan, 1 200, 3\nFeb, , 4.5\n\n');
+    expect(typed.categories).toEqual(['Jan', 'Feb']);
+    expect(typed.series).toEqual([{ name: 'Sales, net', values: [1200, null] }, { name: 'Costs', values: [3, 4.5] }]);
+    // pasted from a spreadsheet: tabs, and a decimal comma
+    expect(chartFromText('\tA\nx\t4,5').series[0].values).toEqual([4.5]);
+    expect(() => chartFromText('only one row')).toThrow(/first row/);
+  });
+  it('picks round axis steps and draws every chart type', () => {
+    expect(niceScale(0, 4.5)).toEqual({ lo: 0, hi: 5, step: 1 });
+    expect(niceScale(-30, 120)).toMatchObject({ lo: -50, hi: 150, step: 50 });
+    expect(niceScale(0, 0).hi).toBeGreaterThan(0);
+    const deck = newDeck();
+    for (const type of ['column', 'bar', 'line', 'pie'] as const) {
+      deck.slides[0].elements = [{ ...chart(type, 10, 10, 500, 300), title: '<b>T</b>' }];
+      const html = slideHtml(deck, deck.slides[0]);
+      expect(html).toContain('&lt;b&gt;T&lt;/b&gt;');
+      expect(html).toMatch(type === 'pie' ? /<path d="M\d/ : type === 'line' ? /stroke-linejoin="round"/ : /<rect x=/);
+      expect(new DOMParser().parseFromString(slideSvg(deck, deck.slides[0]), 'image/svg+xml').getElementsByTagName('parsererror').length).toBe(0);
+    }
   });
 });
 
@@ -205,7 +234,9 @@ describe('PowerPoint files', () => {
 
     const s3 = back.slides[2];
     expect(s3.background).toEqual({ type: 'gradient', from: '#f0f9ff', to: '#bae6fd', angle: 180 });
-    expect(s3.elements.map((e) => e.kind)).toEqual(['shape', 'shape', 'image', 'line', 'table', 'shape', 'image']);
+    expect(s3.elements.map((e) => e.kind)).toEqual(['shape', 'shape', 'image', 'line', 'table', 'shape', 'image', 'chart']);
+    expect(s3.elements[7]).toMatchObject({ chart: 'line', title: 'Sales & <costs>', legend: true, categories: ['Q1', 'Q2', 'Q3', 'Q4'], series: [{ name: 'A', values: [1, null, 3.5, -2] }, { name: 'B', values: [2, 4, 6, 8] }], x: 700, w: 400 });
+    expect(zip.file('ppt/charts/chart1.xml')).not.toBeNull();
     const star = s3.elements[0] as ShapeElement;
     expect(star).toMatchObject({ shape: 'star5', fill: '#f59e0b', line: '#92400e', lineDash: 'dash', x: 80, y: 80, w: 200, h: 200 });
     expect(s3.elements[1]).toMatchObject({ shape: 'roundRect', fill: '#0284c7', fill2: '#0d9488', shadow: true, rotation: 30, flipH: true, valign: 'bottom' });
@@ -257,16 +288,18 @@ describe('PowerPoint files', () => {
     expect(body.text[1].runs[0].size).toBe(28);
     expect(body.text[2].runs[0]).toMatchObject({ text: 'Red bold', bold: true, color: '#ff0000', size: 30 });
     const kinds = deck.slides[2].elements.map((e) => e.kind);
-    expect(kinds).toEqual(['image', 'shape', 'table', 'unsupported']);
+    expect(kinds).toEqual(['image', 'shape', 'table', 'chart']);
+    expect(deck.slides[2].elements[3]).toMatchObject({ chart: 'column', categories: ['a', 'b'], series: [{ name: 's', values: [1, 2] }] });
     const rounded = deck.slides[2].elements[1] as ShapeElement;
     expect(rounded.shape).toBe('roundRect');
     // the fill and white text of an accent-styled shape come from its style and the theme
     expect(rounded.fill).toMatch(/^#[0-9a-f]{6}$/);
     expect(rounded.text[0].runs[0].color).toBe('#ffffff');
-    expect(warnings).toEqual(['charts']);
+    expect(warnings).toEqual([]);
     // and it can be written back out and read again
     const again = await readPptx(await writePptx(deck));
-    expect(again.deck.slides.map((s) => s.elements.length)).toEqual([2, 2, 3]);
+    expect(again.deck.slides.map((s) => s.elements.length)).toEqual([2, 2, 4]);
+    expect(again.deck.slides[2].elements[3]).toMatchObject({ kind: 'chart', categories: ['a', 'b'], series: [{ name: 's', values: [1, 2] }] });
   });
 
   it('rejects files that are not presentations', async () => {

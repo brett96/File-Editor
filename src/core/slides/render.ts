@@ -9,6 +9,7 @@ import {
   isEmptyText,
   textDefaults,
   type Background,
+  type ChartElement,
   type Deck,
   type ImageElement,
   type LineElement,
@@ -258,6 +259,131 @@ function tableHtml(el: TableElement, deck: Deck): string {
   return `<table style="position:absolute;left:0;top:0;width:${n(el.w)}px;height:${n(el.h)}px;border-collapse:collapse;table-layout:fixed;border-spacing:0"><colgroup>${cols}</colgroup><tbody>${rows}</tbody></table>`;
 }
 
+/** A round axis maximum and step for values up to `max` (and down to `min`, for negative values). */
+export function niceScale(min: number, max: number): { lo: number; hi: number; step: number } {
+  const lo0 = Math.min(0, min);
+  const hi0 = Math.max(0, max);
+  const span = hi0 - lo0 || 1;
+  const raw = span / 5;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((m) => m * mag).find((s) => s >= raw) ?? raw;
+  const lo = Math.floor(lo0 / step) * step;
+  const hi = Math.ceil(hi0 / step) * step;
+  // all zeros (or no data): still an axis with some height
+  return { lo, hi: hi > lo ? hi : lo + step * 5, step };
+}
+
+const fmtNum = (v: number) => (Math.abs(v) >= 1000 ? v.toLocaleString('en-US', { maximumFractionDigits: 0 }) : String(Math.round(v * 100) / 100));
+
+function chartHtml(el: ChartElement, deck: Deck): string {
+  const { w, h } = el;
+  const t = deck.theme;
+  const colors = t.accents;
+  const k = deck.height / 720;
+  const fs = Math.max(8, Math.min(16 * k, h / 14));
+  const text = safeColor(t.text, '#333');
+  const grid = luminance(t.background) < 0.5 ? 'rgba(255,255,255,0.18)' : 'rgba(0,0,0,0.14)';
+  const parts: string[] = [];
+  let top = fs * 0.6;
+  if (el.title) {
+    parts.push(`<text x="${n(w / 2)}" y="${n(fs * 1.5)}" text-anchor="middle" font-size="${n(fs * 1.25)}" font-weight="600" fill="${text}">${esc(el.title)}</text>`);
+    top = fs * 2.4;
+  }
+  const pie = el.chart === 'pie';
+  const legendItems = pie ? el.categories : el.series.map((s) => s.name);
+  let bottom = h - fs * 0.6;
+  if (el.legend && legendItems.length) {
+    // one centred row; names are shortened rather than wrapped
+    const item = (name: string) => Math.min(name.length, 18) * fs * 0.56 + fs * 2.2;
+    const total = legendItems.reduce((a, name) => a + item(name), 0);
+    let x = Math.max(4, (w - total) / 2);
+    const y = h - fs * 0.9;
+    legendItems.forEach((name, i) => {
+      parts.push(`<rect x="${n(x)}" y="${n(y - fs * 0.75)}" width="${n(fs * 0.8)}" height="${n(fs * 0.8)}" fill="${safeColor(colors[i % colors.length], '#888')}"/><text x="${n(x + fs * 1.15)}" y="${n(y)}" font-size="${n(fs * 0.9)}" fill="${text}">${esc(name.length > 18 ? `${name.slice(0, 17)}…` : name)}</text>`);
+      x += item(name);
+    });
+    bottom = h - fs * 2.4;
+  }
+  const values = el.series.flatMap((s) => s.values.filter((v): v is number => v !== null && Number.isFinite(v)));
+  if (pie) {
+    const vals = (el.series[0]?.values ?? []).map((v) => Math.max(0, v ?? 0));
+    const sum = vals.reduce((a, b) => a + b, 0) || 1;
+    const r = Math.max(4, Math.min(w / 2 - fs, (bottom - top) / 2));
+    const cx = w / 2;
+    const cy = (top + bottom) / 2;
+    let a0 = -Math.PI / 2;
+    vals.forEach((v, i) => {
+      const a1 = a0 + (v / sum) * Math.PI * 2;
+      const color = safeColor(colors[i % colors.length], '#888');
+      if (v / sum > 0.9999) parts.push(`<circle cx="${n(cx)}" cy="${n(cy)}" r="${n(r)}" fill="${color}"/>`);
+      else if (v > 0) parts.push(`<path d="M${n(cx)} ${n(cy)} L${n(cx + r * Math.cos(a0))} ${n(cy + r * Math.sin(a0))} A${n(r)} ${n(r)} 0 ${a1 - a0 > Math.PI ? 1 : 0} 1 ${n(cx + r * Math.cos(a1))} ${n(cy + r * Math.sin(a1))} Z" fill="${color}" stroke="${safeColor(t.background, '#fff')}" stroke-width="1"/>`);
+      a0 = a1;
+    });
+  } else {
+    const sc = niceScale(Math.min(0, ...values), Math.max(0, ...values));
+    const horizontal = el.chart === 'bar';
+    const cats = Math.max(1, el.categories.length);
+    const labelW = horizontal ? Math.min(w * 0.3, Math.max(...el.categories.map((c) => c.length), 2) * fs * 0.55 + fs) : fmtNum(sc.hi).length * fs * 0.6 + fs;
+    const x0 = labelW;
+    const x1 = w - fs;
+    const y0 = top + fs * 0.4;
+    const y1 = bottom - fs * 1.5;
+    const span = sc.hi - sc.lo || 1;
+    // value → position along the value axis
+    const vpos = (v: number) => (horizontal ? x0 + ((v - sc.lo) / span) * (x1 - x0) : y1 - ((v - sc.lo) / span) * (y1 - y0));
+    for (let v = sc.lo; v <= sc.hi + sc.step / 1000; v += sc.step) {
+      const p = vpos(v);
+      if (horizontal) parts.push(`<line x1="${n(p)}" y1="${n(y0)}" x2="${n(p)}" y2="${n(y1)}" stroke="${grid}" stroke-width="1"/><text x="${n(p)}" y="${n(y1 + fs * 1.1)}" text-anchor="middle" font-size="${n(fs * 0.85)}" fill="${text}">${fmtNum(v)}</text>`);
+      else parts.push(`<line x1="${n(x0)}" y1="${n(p)}" x2="${n(x1)}" y2="${n(p)}" stroke="${grid}" stroke-width="1"/><text x="${n(x0 - fs * 0.4)}" y="${n(p + fs * 0.3)}" text-anchor="end" font-size="${n(fs * 0.85)}" fill="${text}">${fmtNum(v)}</text>`);
+    }
+    const band = (horizontal ? y1 - y0 : x1 - x0) / cats;
+    el.categories.forEach((c, i) => {
+      const label = esc(c.length > 14 ? `${c.slice(0, 13)}…` : c);
+      // Office draws a bar chart's first category at the bottom
+      if (horizontal) parts.push(`<text x="${n(x0 - fs * 0.4)}" y="${n(y0 + band * (cats - 1 - i + 0.5) + fs * 0.3)}" text-anchor="end" font-size="${n(fs * 0.85)}" fill="${text}">${label}</text>`);
+      else parts.push(`<text x="${n(x0 + band * (i + 0.5))}" y="${n(y1 + fs * 1.1)}" text-anchor="middle" font-size="${n(fs * 0.85)}" fill="${text}">${label}</text>`);
+    });
+    const zero = vpos(0);
+    if (el.chart === 'line') {
+      el.series.forEach((s, si) => {
+        const color = safeColor(colors[si % colors.length], '#888');
+        let d = '';
+        let pen = false;
+        const dots: string[] = [];
+        s.values.slice(0, cats).forEach((v, i) => {
+          if (v === null || !Number.isFinite(v)) {
+            pen = false;
+            return;
+          }
+          const px = x0 + band * (i + 0.5);
+          const py = vpos(v);
+          d += `${pen ? 'L' : 'M'}${n(px)} ${n(py)} `;
+          pen = true;
+          dots.push(`<circle cx="${n(px)}" cy="${n(py)}" r="${n(Math.max(2, fs * 0.22))}" fill="${color}"/>`);
+        });
+        parts.push(`<path d="${d.trim()}" fill="none" stroke="${color}" stroke-width="${n(Math.max(1.5, fs * 0.16))}" stroke-linejoin="round" stroke-linecap="round"/>${dots.join('')}`);
+      });
+    } else {
+      const ns = Math.max(1, el.series.length);
+      const bar = (band * 0.72) / ns;
+      el.series.forEach((s, si) => {
+        const color = safeColor(colors[si % colors.length], '#888');
+        s.values.slice(0, cats).forEach((v, i) => {
+          if (v === null || !Number.isFinite(v)) return;
+          const at = horizontal ? band * (cats - 1 - i) + band * 0.14 + bar * (ns - 1 - si) : band * i + band * 0.14 + bar * si;
+          const p = vpos(v);
+          if (horizontal) parts.push(`<rect x="${n(Math.min(zero, p))}" y="${n(y0 + at)}" width="${n(Math.abs(p - zero))}" height="${n(bar * 0.94)}" fill="${color}"/>`);
+          else parts.push(`<rect x="${n(x0 + at)}" y="${n(Math.min(zero, p))}" width="${n(bar * 0.94)}" height="${n(Math.abs(p - zero))}" fill="${color}"/>`);
+        });
+      });
+    }
+    // the axis line at zero, on top of the bars
+    if (horizontal) parts.push(`<line x1="${n(zero)}" y1="${n(y0)}" x2="${n(zero)}" y2="${n(y1)}" stroke="${text}" stroke-width="1" opacity="0.6"/>`);
+    else parts.push(`<line x1="${n(x0)}" y1="${n(zero)}" x2="${n(x1)}" y2="${n(zero)}" stroke="${text}" stroke-width="1" opacity="0.6"/>`);
+  }
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${n(w)}" height="${n(h)}" viewBox="0 0 ${n(w)} ${n(h)}" style="position:absolute;left:0;top:0;font-family:${safeFont(t.bodyFont)}">${parts.join('')}</svg>`;
+}
+
 export interface RenderOptions {
   /** show "Click to add title" in empty placeholders (editor only) */
   prompts?: boolean;
@@ -276,6 +402,8 @@ export function elementInner(el: SlideElement, deck: Deck, prompts = false): str
       return imageHtml(el);
     case 'table':
       return tableHtml(el, deck);
+    case 'chart':
+      return chartHtml(el, deck);
     case 'unsupported':
       return `<div style="position:absolute;left:0;top:0;width:${n(el.w)}px;height:${n(el.h)}px;box-sizing:border-box;border:1px dashed #9ca3af;background:rgba(156,163,175,0.15);color:#6b7280;display:flex;align-items:center;justify-content:center;text-align:center;font:13px sans-serif;padding:6px">${esc(el.label)}</div>`;
   }

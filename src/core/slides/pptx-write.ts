@@ -9,6 +9,7 @@ import JSZip from 'jszip';
 import {
   EMU_PER_PX,
   isEmptyText,
+  type ChartElement,
   type Deck,
   type ImageElement,
   type LineElement,
@@ -76,6 +77,8 @@ const SHADOW = '<a:effectLst><a:outerShdw blurRad="76200" dist="38100" dir="5400
 interface SlideParts {
   rels: string[];
   media: Map<string, { name: string; bytes: Uint8Array }>;
+  /** chart parts of the whole file, in order (ppt/charts/chart1.xml …) */
+  charts: string[];
   nextId: number;
 }
 
@@ -217,6 +220,56 @@ function tableXml(el: TableElement, deck: Deck, parts: SlideParts): string {
   return `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="${id}" name="${x(el.name ?? `Table ${id}`)}"/><p:cNvGraphicFramePr><a:graphicFrameLocks noGrp="1"/></p:cNvGraphicFramePr><p:nvPr/></p:nvGraphicFramePr>${xfrm(el, 'p:xfrm')}<a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/table"><a:tbl><a:tblPr firstRow="${el.header ? 1 : 0}" bandRow="${el.banded ? 1 : 0}"/><a:tblGrid>${grid}</a:tblGrid>${rows}</a:tbl></a:graphicData></a:graphic></p:graphicFrame>`;
 }
 
+const C_NS = 'http://schemas.openxmlformats.org/drawingml/2006/chart';
+
+/**
+ * A chart part. The numbers are written into the chart itself (literal data) rather than
+ * pointing at an embedded workbook, so every program draws it; PowerPoint's own "Edit Data"
+ * needs a workbook and is not available for it.
+ */
+function chartPartXml(el: ChartElement, deck: Deck): string {
+  const t = deck.theme;
+  const textFill = solidFill(t.text);
+  const txPr = (sz: number, bold = false) => `<c:txPr><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="${sz}" b="${bold ? 1 : 0}">${textFill}</a:defRPr></a:pPr><a:endParaRPr lang="en-US"/></a:p></c:txPr>`;
+  const cats = `<c:cat><c:strLit><c:ptCount val="${el.categories.length}"/>${el.categories.map((c, i) => `<c:pt idx="${i}"><c:v>${x(c)}</c:v></c:pt>`).join('')}</c:strLit></c:cat>`;
+  const vals = (values: (number | null)[]) => `<c:val><c:numLit><c:formatCode>General</c:formatCode><c:ptCount val="${el.categories.length}"/>${el.categories.map((_, i) => (values[i] === null || values[i] === undefined || !Number.isFinite(values[i]) ? '' : `<c:pt idx="${i}"><c:v>${values[i]}</c:v></c:pt>`)).join('')}</c:numLit></c:val>`;
+  const pie = el.chart === 'pie';
+  const ser = (el.series.length ? (pie ? el.series.slice(0, 1) : el.series) : [{ name: 'Series 1', values: [] }])
+    .map((s, i) => {
+      const color = colorParts(t.accents[i % t.accents.length]).hex;
+      const look = pie
+        ? el.categories.map((_, k) => `<c:dPt><c:idx val="${k}"/><c:bubble3D val="0"/><c:spPr><a:solidFill><a:srgbClr val="${colorParts(t.accents[k % t.accents.length]).hex}"/></a:solidFill></c:spPr></c:dPt>`).join('')
+        : el.chart === 'line'
+          ? `<c:spPr><a:ln w="28575" cap="rnd"><a:solidFill><a:srgbClr val="${color}"/></a:solidFill><a:round/></a:ln></c:spPr><c:marker><c:symbol val="circle"/><c:size val="5"/><c:spPr><a:solidFill><a:srgbClr val="${color}"/></a:solidFill></c:spPr></c:marker>`
+          : `<c:spPr><a:solidFill><a:srgbClr val="${color}"/></a:solidFill></c:spPr><c:invertIfNegative val="0"/>`;
+      return `<c:ser><c:idx val="${i}"/><c:order val="${i}"/><c:tx><c:v>${x(s.name)}</c:v></c:tx>${look}${cats}${vals(s.values)}${el.chart === 'line' ? '<c:smooth val="0"/>' : ''}</c:ser>`;
+    })
+    .join('');
+  const axes = '<c:axId val="111111111"/><c:axId val="222222222"/>';
+  const plot = pie
+    ? `<c:pieChart><c:varyColors val="1"/>${ser}<c:firstSliceAng val="0"/></c:pieChart>`
+    : el.chart === 'line'
+      ? `<c:lineChart><c:grouping val="standard"/><c:varyColors val="0"/>${ser}<c:marker val="1"/>${axes}</c:lineChart>`
+      : `<c:barChart><c:barDir val="${el.chart === 'bar' ? 'bar' : 'col'}"/><c:grouping val="clustered"/><c:varyColors val="0"/>${ser}<c:gapWidth val="80"/>${axes}</c:barChart>`;
+  const horizontal = el.chart === 'bar';
+  const axisLine = `<c:spPr><a:ln w="9525">${textFill}</a:ln></c:spPr>`;
+  const axesXml = pie
+    ? ''
+    : `<c:catAx><c:axId val="111111111"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${horizontal ? 'l' : 'b'}"/><c:numFmt formatCode="General" sourceLinked="0"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/>${axisLine}${txPr(1200)}<c:crossAx val="222222222"/><c:crosses val="autoZero"/><c:auto val="1"/><c:lblAlgn val="ctr"/><c:lblOffset val="100"/><c:noMultiLvlLbl val="0"/></c:catAx><c:valAx><c:axId val="222222222"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="${horizontal ? 'b' : 'l'}"/><c:majorGridlines><c:spPr><a:ln w="9525"><a:solidFill><a:srgbClr val="${flatten('rgba(128,128,128,0.35)', t.background)}"/></a:solidFill></a:ln></c:spPr></c:majorGridlines><c:numFmt formatCode="General" sourceLinked="0"/><c:majorTickMark val="none"/><c:minorTickMark val="none"/><c:tickLblPos val="nextTo"/><c:spPr><a:ln><a:noFill/></a:ln></c:spPr>${txPr(1200)}<c:crossAx val="111111111"/><c:crosses val="autoZero"/><c:crossBetween val="between"/></c:valAx>`;
+  const title = el.title
+    ? `<c:title><c:tx><c:rich><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr sz="1600" b="1">${textFill}</a:defRPr></a:pPr><a:r><a:rPr lang="en-US" sz="1600" b="1">${textFill}</a:rPr><a:t>${x(el.title)}</a:t></a:r></a:p></c:rich></c:tx><c:overlay val="0"/></c:title><c:autoTitleDeleted val="0"/>`
+    : '<c:autoTitleDeleted val="1"/>';
+  const legend = el.legend ? `<c:legend><c:legendPos val="b"/><c:overlay val="0"/>${txPr(1200)}</c:legend>` : '';
+  return `${HEAD}<c:chartSpace xmlns:c="${C_NS}" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="${REL}"><c:date1904 val="0"/><c:roundedCorners val="0"/><c:chart>${title}<c:plotArea><c:layout/>${plot}${axesXml}</c:plotArea>${legend}<c:plotVisOnly val="1"/><c:dispBlanksAs val="gap"/></c:chart><c:spPr><a:noFill/><a:ln><a:noFill/></a:ln></c:spPr></c:chartSpace>`;
+}
+
+function chartFrameXml(el: ChartElement, deck: Deck, parts: SlideParts): string {
+  const id = parts.nextId++;
+  parts.charts.push(chartPartXml(el, deck));
+  const rid = addRel(parts, 'chart', `../charts/chart${parts.charts.length}.xml`);
+  return `<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="${id}" name="${x(el.name ?? `Chart ${id}`)}"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>${xfrm({ ...el, rotation: 0 }, 'p:xfrm')}<a:graphic><a:graphicData uri="${C_NS}"><c:chart xmlns:c="${C_NS}" r:id="${rid}"/></a:graphicData></a:graphic></p:graphicFrame>`;
+}
+
 function elementXml(el: SlideElement, deck: Deck, parts: SlideParts): string {
   switch (el.kind) {
     case 'shape':
@@ -227,6 +280,8 @@ function elementXml(el: SlideElement, deck: Deck, parts: SlideParts): string {
       return pictureXml(el, parts);
     case 'table':
       return tableXml(el, deck, parts);
+    case 'chart':
+      return chartFrameXml(el, deck, parts);
     default:
       return '';
   }
@@ -318,6 +373,7 @@ export interface PptxWriteOptions {
 export async function writePptx(deck: Deck, o: PptxWriteOptions = {}): Promise<Uint8Array> {
   const zip = new JSZip();
   const media = new Map<string, { name: string; bytes: Uint8Array }>();
+  const charts: string[] = [];
   const slides = deck.slides.length ? deck.slides : [{ id: 's', elements: [], background: null, notes: '', transition: { type: 'none' as const, duration: 0.6 } }];
   const withNotes = slides.some((s) => s.notes.trim());
   const P = 'application/vnd.openxmlformats-officedocument.presentationml';
@@ -332,7 +388,7 @@ export async function writePptx(deck: Deck, o: PptxWriteOptions = {}): Promise<U
 
   slides.forEach((slide, i) => {
     const num = i + 1;
-    const parts: SlideParts = { rels: [], media, nextId: 2 };
+    const parts: SlideParts = { rels: [], media, charts, nextId: 2 };
     addRel(parts, 'slideLayout', `../slideLayouts/slideLayout${layoutFor(slide)}.xml`);
     const bg = backgroundXml(slide, parts);
     // empty placeholders are an editing aid, not content: they are left out of the file
@@ -349,6 +405,10 @@ export async function writePptx(deck: Deck, o: PptxWriteOptions = {}): Promise<U
   });
 
   for (const m of media.values()) zip.file(`ppt/media/${m.name}`, m.bytes);
+  charts.forEach((xml, i) => {
+    zip.file(`ppt/charts/chart${i + 1}.xml`, xml);
+    overrides.push(`<Override PartName="/ppt/charts/chart${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.drawingml.chart+xml"/>`);
+  });
   const name = o.title ?? 'Presentation';
   zip.file('ppt/theme/theme1.xml', themeXml(deck.theme, deck.theme.name));
   zip.file('ppt/slideMasters/slideMaster1.xml', masterXml(deck));

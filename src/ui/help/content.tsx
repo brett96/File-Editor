@@ -345,7 +345,7 @@ export const SECTIONS: GuideSection[] = [
         </ul>
         <h3>Shapes, pictures, lines and tables</h3>
         <ul>
-          <li><Ui>Insert</Ui> adds a text box, a picture (or paste one), one of 24 shapes, a line or arrow, or a table.</li>
+          <li><Ui>Insert</Ui> adds a text box, a picture (or paste one), one of 24 shapes, a line or arrow, a table, or a chart.</li>
           <li>Drag to move; red guides appear when an edge or centre lines up with the slide or another object (hold <K>Alt</K> to move freely, <K>Shift</K> to keep to a straight line). Arrow keys nudge by 1 px, with <K>Shift</K> by 10.</li>
           <li>Drag a round handle to resize (<K>Shift</K> keeps the proportions) and the handle above the object to rotate (<K>Shift</K> snaps to 15°).</li>
           <li><K>Shift</K>-click or drag a box around several objects to select them together; <Ui>Align</Ui> lines them up or spaces them evenly. One object alone is aligned to the slide.</li>
@@ -353,6 +353,18 @@ export const SECTIONS: GuideSection[] = [
           <li>In a table, double-click a cell to type; <K>Tab</K> moves to the next cell and adds a row after the last one. With the table selected, the <Ui>Table</Ui> group adds or removes rows and columns and switches the header row and banding. <Ui>Fill</Ui> colours the cell being edited.</li>
           <li><K>Ctrl</K>+<K>C</K>, <K>X</K>, <K>V</K> and <K>D</K> copy, cut, paste and duplicate objects; <K>Del</K> removes them.</li>
         </ul>
+        <h3>Charts</h3>
+        <p>
+          <Ui>Insert ▸ Chart</Ui> adds a column, bar, line or pie chart with sample numbers. Select it (or double-click it) and choose{' '}
+          <Ui>Edit data…</Ui>: the data is a small table as text, one row per line, with the series names in the first row and the categories
+          in the first column. Type it, or paste a range copied from a spreadsheet. The <Ui>Chart</Ui> group also changes the chart type, its
+          title and whether the legend shows; the colours follow the theme. Charts in files from PowerPoint or Google Slides (column, bar,
+          line, area and pie) open as editable charts too.
+        </p>
+        <Note title="Charts in PowerPoint.">
+          A chart saved here carries its numbers inside the chart, so PowerPoint, Google Slides and LibreOffice all draw it, but PowerPoint's
+          own <i>Edit Data</i> button (which needs an embedded Excel sheet) is not available for it. Change the numbers here instead.
+        </Note>
         <h3>Design</h3>
         <p>
           <Ui>Design</Ui> has seven themes (colours and fonts for the whole deck), the slide size (16:9, 4:3, 16:10, A4, portrait), and the
@@ -384,8 +396,9 @@ export const SECTIONS: GuideSection[] = [
           slide show), a PDF with one page per slide, or every slide as a PNG picture in a ZIP.
         </p>
         <Warn title="What is not carried over from other programs.">
-          Charts, SmartArt, video and audio, animations of individual objects, and slide masters are not edited here. When a file contains a
-          chart or SmartArt, a grey box marks its place and a message says so on opening: saving would leave it out, so keep the original.
+          SmartArt, video and audio, animations of individual objects, slide masters, and special charts (scatter, radar, stock, combined
+          types) are not edited here. A grey box marks the place of such an object and a message says so on opening: saving would leave it
+          out, so keep the original. Charts that are drawn keep their type, title, legend and numbers, but not custom colours or axis settings.
           Artwork from the file's slide master (logos, bands) is copied onto each slide. Freeform shapes are shown as rectangles, and fonts
           that are not on this computer are replaced by similar ones.
         </Warn>
