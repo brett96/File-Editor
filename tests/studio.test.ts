@@ -22,7 +22,7 @@ const sine = (freq: number, amp: number, seconds: number, sr = 48000, ch = 2): A
 describe('motion tracking', () => {
   const frame = (ox: number, oy: number): Gray => {
     const g = { data: new Float32Array(120 * 80).fill(40), width: 120, height: 80 };
-    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) g.data[(oy + y) * 120 + ox + x] = 60 + ((x * 7 + y * 13) % 11) * 15;
+    for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) g.data[(oy + y) * 120 + ox + x] = 60 + ((Math.imul(x * 31 + y * 17 + 7, 2654435761) >>> 24) % 160);
     return g;
   };
   it('follows a patch between frames', () => {

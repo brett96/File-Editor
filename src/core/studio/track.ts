@@ -40,8 +40,7 @@ function patchError(a: Gray, b: Gray, ax: number, ay: number, bx: number, by: nu
 }
 
 /**
- * Where the w×h region of `prev` centred on (cx, cy) is in `next`: searches ±radius pixels,
- * coarsely first and then around the best coarse match. `error` is the mean difference per
+ * Where the w×h region of `prev` centred on (cx, cy) is in `next`, searching ±radius pixels. `error` is the mean difference per
  * pixel (0–255) at the match; a large value means the subject was lost.
  */
 export function trackPatch(prev: Gray, next: Gray, cx: number, cy: number, w: number, h: number, radius: number): { x: number; y: number; error: number } {
@@ -56,12 +55,8 @@ export function trackPatch(prev: Gray, next: Gray, cx: number, cy: number, w: nu
     const e = patchError(prev, next, ax, ay, ax + dx, ay + dy, pw, ph, stride, best.e);
     if (e < best.e - 1e-6) best = { dx, dy, e };
   };
-  const coarse = radius > 6 ? 2 : 1;
-  for (let dy = -radius; dy <= radius; dy += coarse) for (let dx = -radius; dx <= radius; dx += coarse) tryAt(dx, dy);
-  if (coarse > 1) {
-    const { dx: bx, dy: by } = best;
-    for (let dy = by - 1; dy <= by + 1; dy++) for (let dx = bx - 1; dx <= bx + 1; dx++) tryAt(dx, dy);
-  }
+  // every offset is tried: skipping some loses fine texture, and the sampling stride keeps this cheap
+  for (let dy = -radius; dy <= radius; dy++) for (let dx = -radius; dx <= radius; dx++) tryAt(dx, dy);
   return { x: cx + best.dx, y: cy + best.dy, error: best.e };
 }
 
