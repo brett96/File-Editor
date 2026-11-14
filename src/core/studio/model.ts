@@ -50,6 +50,16 @@ export interface Transform {
   opacity: Animatable;
 }
 
+/** Optional 3D placement: the layer becomes a plane seen through the project's camera. */
+export interface Transform3D {
+  /** degrees: tips the top of the layer away from the viewer */
+  rotX: Animatable;
+  /** degrees: swings the right edge away from the viewer */
+  rotY: Animatable;
+  /** output pixels: positive is further from the camera */
+  z: Animatable;
+}
+
 export interface ChromaKey {
   enabled: boolean;
   color: string;
@@ -98,7 +108,12 @@ interface ClipBase {
   linkId: string | null;
 }
 
-export interface MediaClip extends ClipBase {
+/** Extras every visual clip can have. All optional, so projects from older versions still open. */
+interface VisualExtras {
+  three?: Transform3D;
+}
+
+export interface MediaClip extends ClipBase, VisualExtras {
   kind: 'video' | 'image';
   sourceId: string;
   /** source time at the clip start */
@@ -107,7 +122,7 @@ export interface MediaClip extends ClipBase {
   effects: VisualEffects;
 }
 
-export interface TextClip extends ClipBase {
+export interface TextClip extends ClipBase, VisualExtras {
   kind: 'text';
   text: string;
   font: string;
@@ -125,7 +140,7 @@ export interface TextClip extends ClipBase {
   effects: VisualEffects;
 }
 
-export interface SolidClip extends ClipBase {
+export interface SolidClip extends ClipBase, VisualExtras {
   kind: 'solid';
   color: string;
   /** optional second colour: a vertical gradient */
@@ -229,6 +244,30 @@ export interface Project {
   tracks: Track[];
   master: MasterBus;
   sources: Record<string, SourceMeta>;
+  /** camera lens for 3D layers, as a 35 mm-equivalent focal length (default 50) */
+  lens?: number;
+}
+
+export const DEFAULT_LENS = 50;
+
+/** Distance from the camera to the frame plane, in output pixels (a longer lens flattens perspective). */
+export const cameraDistance = (p: Pick<Project, 'width' | 'lens'>) => (p.width * Math.max(8, p.lens ?? DEFAULT_LENS)) / 36;
+
+export const defaultThree = (): Transform3D => ({ rotX: anim(0), rotY: anim(0), z: anim(0) });
+
+/** True when the clip is actually turned or moved in depth at some point. */
+export function is3D(c: VisualExtras): boolean {
+  const t = c.three;
+  if (!t) return false;
+  return [t.rotX, t.rotY, t.z].some((a) => a.value !== 0 || a.keys.some((k) => k.v !== 0));
+}
+
+/** Applies `fn` to every animatable of a visual clip (transform and the optional extras). */
+export function mapAnimatables<T extends VisualClip>(c: T, fn: (a: Animatable) => Animatable): T {
+  const out = { ...c, transform: { ...c.transform } } as T;
+  for (const k of ['x', 'y', 'scale', 'rotation', 'opacity'] as TransformProp[]) out.transform[k] = fn(c.transform[k]);
+  if (c.three) out.three = { rotX: fn(c.three.rotX), rotY: fn(c.three.rotY), z: fn(c.three.z) };
+  return out;
 }
 
 let n = 0;
@@ -397,20 +436,20 @@ export const gainToDb = (g: number) => (g <= 0 ? -Infinity : 20 * Math.log10(g))
 export function splitClip(c: Clip, t: number): [Clip, Clip] | null {
   if (t <= c.start + 1e-3 || t >= clipEnd(c) - 1e-3) return null;
   const local = t - c.start;
-  const left = { ...structuredClone(c), duration: local } as Clip;
-  const right = { ...structuredClone(c), id: sid('C'), start: t, duration: c.duration - local } as Clip;
-  if ('in' in right) (right as MediaClip | AudioClip).in = (c as MediaClip | AudioClip).in + local;
   const shiftAnim = (a: Animatable, keepLeft: boolean): Animatable => {
     if (!a.keys.length) return a;
     const v = valueAt(a, local);
     if (keepLeft) return { value: a.value, keys: [...a.keys.filter((k) => k.t < local), { t: local, v, ease: 'linear' }] };
     return { value: a.value, keys: [{ t: 0, v, ease: 'linear' }, ...a.keys.filter((k) => k.t > local).map((k) => ({ ...k, t: k.t - local }))] };
   };
-  if ('transform' in left && 'transform' in right) {
-    for (const prop of ['x', 'y', 'scale', 'rotation', 'opacity'] as TransformProp[]) {
-      left.transform[prop] = shiftAnim((c as VisualClip).transform[prop], true);
-      right.transform[prop] = shiftAnim((c as VisualClip).transform[prop], false);
-    }
+  const half = (keepLeft: boolean): Clip => {
+    const copy = structuredClone(c);
+    return copy.kind === 'audio' ? copy : mapAnimatables(copy, (a) => shiftAnim(a, keepLeft));
+  };
+  const left = { ...half(true), duration: local } as Clip;
+  const right = { ...half(false), id: sid('C'), start: t, duration: c.duration - local } as Clip;
+  if ('in' in right) (right as MediaClip | AudioClip).in = (c as MediaClip | AudioClip).in + local;
+  if (left.kind !== 'audio' && right.kind !== 'audio') {
     left.effects.fadeOut = 0;
     right.effects.fadeIn = 0;
   }

@@ -6,7 +6,7 @@
 import { applyAdjustments, applyFilter, isIdentity } from '../media/image-ops';
 import { BLEND_MODES } from '../pro-image/document';
 import { chromaKey } from './dsp';
-import { clipEnd, valueAt, type MediaClip, type Project, type TextClip, type VisualClip } from './model';
+import { cameraDistance, clipEnd, is3D, valueAt, type MediaClip, type Project, type TextClip, type VisualClip } from './model';
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 type AnyCanvas = HTMLCanvasElement | OffscreenCanvas;
@@ -154,6 +154,19 @@ function drawClip(ctx: Ctx2D, p: Project, c: VisualClip, local: number, frameFor
     img = tmp;
   }
 
+  const x = valueAt(tr.x, local);
+  const y = valueAt(tr.y, local);
+  const rot = valueAt(tr.rotation, local);
+  let quad: Quad | null = null;
+  if (is3D(c)) {
+    quad = projectQuad(p, x, y, dw / scale, dh / scale, rot, valueAt(c.three!.rotX, local), valueAt(c.three!.rotY, local), valueAt(c.three!.z, local));
+    if (!quad) return; // behind the camera
+    // the perspective view is drawn on its own frame, so opacity, blend, blur and shadow apply to it as a whole
+    const frame = makeCanvas(p.width * scale, p.height * scale);
+    drawQuad(frame.getContext('2d') as Ctx2D, img, quad, scale);
+    img = frame;
+  }
+
   ctx.save();
   ctx.globalAlpha = opacity;
   ctx.globalCompositeOperation = BLEND_MODES.find((b) => b.id === fx.blend)?.canvas ?? 'source-over';
@@ -163,10 +176,119 @@ function drawClip(ctx: Ctx2D, p: Project, c: VisualClip, local: number, frameFor
     ctx.shadowBlur = 18 * scale;
     ctx.shadowOffsetX = ctx.shadowOffsetY = 6 * scale;
   }
-  ctx.translate(valueAt(tr.x, local) * scale, valueAt(tr.y, local) * scale);
-  const rot = valueAt(tr.rotation, local);
-  if (rot) ctx.rotate((rot * Math.PI) / 180);
-  ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+  if (quad) ctx.drawImage(img, 0, 0);
+  else {
+    ctx.translate(x * scale, y * scale);
+    if (rot) ctx.rotate((rot * Math.PI) / 180);
+    ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+  }
+  ctx.restore();
+}
+
+// ── 3D layers ─────────────────────────────────────────────────────────────
+
+/** Corners of a layer on screen (output px): top-left, top-right, bottom-right, bottom-left. */
+export type Quad = [[number, number], [number, number], [number, number], [number, number]];
+
+/** One point of the layer plane (lx, ly from its centre) as the camera sees it, or null behind the camera. */
+function project3D(p: Project, cx: number, cy: number, cz: number, lx: number, ly: number, rz: number, rx: number, ry: number): [number, number] | null {
+  const x1 = lx * Math.cos(rz) - ly * Math.sin(rz);
+  const y1 = lx * Math.sin(rz) + ly * Math.cos(rz);
+  // tilt about the horizontal axis, then swivel about the vertical one
+  const y2 = y1 * Math.cos(rx);
+  const z2 = -y1 * Math.sin(rx);
+  const x3 = x1 * Math.cos(ry) - z2 * Math.sin(ry);
+  const z3 = x1 * Math.sin(ry) + z2 * Math.cos(ry);
+  const f = cameraDistance(p);
+  const depth = f + cz + z3;
+  if (depth < f * 0.02) return null;
+  const k = f / depth;
+  return [p.width / 2 + (cx + x3 - p.width / 2) * k, p.height / 2 + (cy + y2 - p.height / 2) * k];
+}
+
+const rad = (deg: number) => (deg * Math.PI) / 180;
+
+/** Where the four corners of a w×h layer centred at (x, y, z) land on screen; null if any is behind the camera. */
+export function projectQuad(p: Project, x: number, y: number, w: number, h: number, rotation: number, rotX: number, rotY: number, z: number): Quad | null {
+  const pts = ([[-1, -1], [1, -1], [1, 1], [-1, 1]] as const).map(([sx, sy]) => project3D(p, x, y, z, (sx * w) / 2, (sy * h) / 2, rad(rotation), rad(rotX), rad(rotY)));
+  return pts.every(Boolean) ? (pts as Quad) : null;
+}
+
+const MESH = 12;
+
+/**
+ * Draws `img` into the quad. A 2D canvas can only draw affine (parallelogram) images, so the
+ * layer is cut into a grid of small triangles; the grid points are spaced the way perspective
+ * spaces them (by the homography of the quad), which keeps straight lines straight.
+ */
+function drawQuad(ctx: Ctx2D, img: CanvasImageSource, q: Quad, scale: number): void {
+  const [sw, sh] = sourceSize(img);
+  const H = homography(q);
+  const at = (u: number, v: number): [number, number] => {
+    const d = H[6] * u + H[7] * v + 1;
+    return [((H[0] * u + H[1] * v + H[2]) / d) * scale, ((H[3] * u + H[4] * v + H[5]) / d) * scale];
+  };
+  const pts: [number, number][][] = [];
+  for (let j = 0; j <= MESH; j++) {
+    pts.push([]);
+    for (let i = 0; i <= MESH; i++) pts[j].push(at(i / MESH, j / MESH));
+  }
+  for (let j = 0; j < MESH; j++) {
+    for (let i = 0; i < MESH; i++) {
+      const u0 = (i / MESH) * sw;
+      const u1 = ((i + 1) / MESH) * sw;
+      const v0 = (j / MESH) * sh;
+      const v1 = ((j + 1) / MESH) * sh;
+      triangle(ctx, img, [u0, v0], [u1, v0], [u0, v1], pts[j][i], pts[j][i + 1], pts[j + 1][i]);
+      triangle(ctx, img, [u1, v1], [u0, v1], [u1, v0], pts[j + 1][i + 1], pts[j + 1][i], pts[j][i + 1]);
+    }
+  }
+}
+
+/** The projective map of the unit square onto a quad (8 coefficients, the ninth is 1). */
+export function homography(q: Quad): number[] {
+  const [[x0, y0], [x1, y1], [x2, y2], [x3, y3]] = q;
+  const dx1 = x1 - x2;
+  const dx2 = x3 - x2;
+  const sx = x0 - x1 + x2 - x3;
+  const dy1 = y1 - y2;
+  const dy2 = y3 - y2;
+  const sy = y0 - y1 + y2 - y3;
+  const den = dx1 * dy2 - dx2 * dy1 || 1e-9;
+  const g = (sx * dy2 - dx2 * sy) / den;
+  const h = (dx1 * sy - sx * dy1) / den;
+  return [x1 - x0 + g * x1, x3 - x0 + h * x3, x0, y1 - y0 + g * y1, y3 - y0 + h * y3, y0, g, h];
+}
+
+type Pt = readonly [number, number];
+
+/** Draws the source triangle (s0 s1 s2, image px) onto the destination triangle (d0 d1 d2). */
+function triangle(ctx: Ctx2D, img: CanvasImageSource, s0: Pt, s1: Pt, s2: Pt, d0: Pt, d1: Pt, d2: Pt): void {
+  const den = (s1[0] - s0[0]) * (s2[1] - s0[1]) - (s2[0] - s0[0]) * (s1[1] - s0[1]);
+  if (!den) return;
+  const a = ((d1[0] - d0[0]) * (s2[1] - s0[1]) - (d2[0] - d0[0]) * (s1[1] - s0[1])) / den;
+  const b = ((d1[1] - d0[1]) * (s2[1] - s0[1]) - (d2[1] - d0[1]) * (s1[1] - s0[1])) / den;
+  const c2 = ((d2[0] - d0[0]) * (s1[0] - s0[0]) - (d1[0] - d0[0]) * (s2[0] - s0[0])) / den;
+  const d = ((d2[1] - d0[1]) * (s1[0] - s0[0]) - (d1[1] - d0[1]) * (s2[0] - s0[0])) / den;
+  // grow the clip a little from its centre so neighbouring triangles leave no hairline gaps
+  const mx = (d0[0] + d1[0] + d2[0]) / 3;
+  const my = (d0[1] + d1[1] + d2[1]) / 3;
+  const grow = (pt: Pt): [number, number] => {
+    const vx = pt[0] - mx;
+    const vy = pt[1] - my;
+    const len = Math.hypot(vx, vy) || 1;
+    return [pt[0] + (vx / len) * 0.7, pt[1] + (vy / len) * 0.7];
+  };
+  const [g0, g1, g2] = [grow(d0), grow(d1), grow(d2)];
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(g0[0], g0[1]);
+  ctx.lineTo(g1[0], g1[1]);
+  ctx.lineTo(g2[0], g2[1]);
+  ctx.closePath();
+  ctx.clip();
+  ctx.transform(a, b, c2, d, d0[0] - a * s0[0] - c2 * s0[1], d0[1] - b * s0[0] - d * s0[1]);
+  ctx.drawImage(img, 0, 0);
   ctx.restore();
 }
 
@@ -194,4 +316,12 @@ export function clipBox(p: Project, c: VisualClip, local: number, sourceSizeOf: 
   const x = valueAt(c.transform.x, local);
   const y = valueAt(c.transform.y, local);
   return { x: x - w / 2, y: y - h / 2, w, h };
+}
+
+/** The clip's outline on screen (output px), following its rotation and 3D placement. */
+export function clipQuad(p: Project, c: VisualClip, local: number, sourceSizeOf: (c: MediaClip) => [number, number] | null): Quad | null {
+  const b = clipBox(p, c, local, sourceSizeOf);
+  if (!b) return null;
+  const t3 = is3D(c) ? c.three! : null;
+  return projectQuad(p, b.x + b.w / 2, b.y + b.h / 2, b.w, b.h, valueAt(c.transform.rotation, local), t3 ? valueAt(t3.rotX, local) : 0, t3 ? valueAt(t3.rotY, local) : 0, t3 ? valueAt(t3.z, local) : 0);
 }

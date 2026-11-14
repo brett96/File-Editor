@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import { addMediaClips, deleteClips, findClip, linkedIds, placeClip, replaceClip, solidClip, splitAt, textClip, unlink } from '../../core/studio/build';
 import { bufferToData, buildMix, dataToBuffer, decodeAudio, meterDb, renderMix, type Mix } from '../../core/studio/audio';
-import { clipBox, drawFrame } from '../../core/studio/compose';
+import { clipBox, clipQuad, drawFrame } from '../../core/studio/compose';
 import { encodeWav, frames, sliceAudio, waveformPeaks, type AudioData } from '../../core/studio/dsp';
 import {
   clipEnd,
@@ -309,20 +309,21 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
     drawFrame(ctx, p, t, frameFor, scale);
     const c = findClip(p, selectedRef.current);
     if (c && c.kind !== 'audio' && t >= c.start && t < clipEnd(c) && !playingRef.current) {
-      const b = clipBox(p, c, t - c.start, sizeOf);
-      if (b) {
+      const q = clipQuad(p, c, t - c.start, sizeOf);
+      if (q) {
         ctx.save();
         ctx.strokeStyle = '#4ea1ff';
         ctx.lineWidth = 1.5;
         ctx.setLineDash([5, 4]);
-        const cx0 = valueAt(c.transform.x, t - c.start) * scale;
-        const cy0 = valueAt(c.transform.y, t - c.start) * scale;
-        ctx.translate(cx0, cy0);
-        ctx.rotate((valueAt(c.transform.rotation, t - c.start) * Math.PI) / 180);
-        ctx.strokeRect((b.x * scale) - cx0, (b.y * scale) - cy0, b.w * scale, b.h * scale);
+        ctx.beginPath();
+        q.forEach(([qx, qy], i) => (i ? ctx.lineTo(qx * scale, qy * scale) : ctx.moveTo(qx * scale, qy * scale)));
+        ctx.closePath();
+        ctx.stroke();
         ctx.setLineDash([]);
         ctx.fillStyle = '#4ea1ff';
-        ctx.fillRect(-3, -3, 6, 6);
+        const mx = (q[0][0] + q[1][0] + q[2][0] + q[3][0]) / 4;
+        const my = (q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4;
+        ctx.fillRect(mx * scale - 3, my * scale - 3, 6, 6);
         ctx.restore();
       }
     }
@@ -728,6 +729,7 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
           easing={easing}
           onEasing={setEasing}
           onChange={updateClip}
+          onProject={(np) => commit(np, 'project')}
           onSeek={seek}
           onEditAudio={openAudioEditor}
         />

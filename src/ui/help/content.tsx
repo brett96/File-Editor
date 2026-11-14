@@ -765,6 +765,14 @@ export const SECTIONS: GuideSection[] = [
             [<>Custom curve</>, <>A curve you shape yourself in the graph editor, including overshoot and bounce-back.</>],
           ]}
         />
+        <h3>3D layers</h3>
+        <p>
+          The <Ui>3D</Ui> section of the inspector turns any layer (video, picture, title or colour) into a flat card in space, drawn in
+          perspective. <Ui>Tilt X</Ui> tips the top away from you, <Ui>Swivel Y</Ui> swings the right edge away, and <Ui>Depth Z</Ui> pushes the
+          layer back (or pulls it forward with a negative value). All three can be keyframed, so a title can swing in like a door or a photo
+          can fall back into the distance. <Ui>Camera lens</Ui> applies to the whole project: a short lens (24 mm) exaggerates the perspective,
+          a long one (135 mm) flattens it. Layers still stack in track order; they do not pass through each other.
+        </p>
         <h3>The graph editor</h3>
         <p>
           <Ui>Graph</Ui> (next to <Ui>Timeline</Ui> and <Ui>Mixer</Ui>) shows the selected clip's animation as curves: time runs left to right, the

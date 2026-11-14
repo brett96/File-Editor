@@ -2,12 +2,12 @@
  * The animatable properties of a visual clip, as one list: the inspector, the graph editor
  * and the command palette all work from it, so a property added here appears in each.
  */
-import { anim, type Animatable, type Project, type TransformProp, type VisualClip } from './model';
+import { anim, defaultThree, type Animatable, type Project, type Transform3D, type TransformProp, type VisualClip } from './model';
 
 export interface AnimProp {
   id: string;
   label: string;
-  group: 'Transform';
+  group: 'Transform' | '3D';
   /** slider range in view units */
   min: number;
   max: number;
@@ -35,6 +35,20 @@ function transformProp(key: TransformProp, label: string, min: number, max: numb
   };
 }
 
+function threeProp(key: keyof Transform3D, label: string, min: number, max: number, step: number): Omit<AnimProp, 'color'> {
+  return {
+    id: key,
+    label,
+    group: '3D',
+    min,
+    max,
+    step,
+    view: 1,
+    get: (c) => c.three?.[key] ?? anim(0),
+    set: (c, a) => ({ ...c, three: { ...(c.three ?? defaultThree()), [key]: a } }) as VisualClip,
+  };
+}
+
 /** Every property of `c` that can hold keyframes. */
 export function animProps(p: Pick<Project, 'width' | 'height'>, c: VisualClip): AnimProp[] {
   const list: Omit<AnimProp, 'color'>[] = [
@@ -43,6 +57,9 @@ export function animProps(p: Pick<Project, 'width' | 'height'>, c: VisualClip): 
     transformProp('scale', 'Scale %', 1, 500, 1, 100),
     transformProp('rotation', 'Rotation °', -360, 360, 0.5),
     transformProp('opacity', 'Opacity %', 0, 100, 1, 100),
+    threeProp('rotX', 'Tilt X °', -180, 180, 0.5),
+    threeProp('rotY', 'Swivel Y °', -180, 180, 0.5),
+    threeProp('z', 'Depth Z', -p.width * 2, p.width * 4, 1),
   ];
   void c;
   return list.map((pr, i) => ({ ...pr, color: COLORS[i % COLORS.length] }));

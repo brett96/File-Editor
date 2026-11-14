@@ -4,8 +4,9 @@ import {
   chromaKey, deleteRange, gateRange, encodeWav, fadeRange, fft, frames, gainRange, insertAudio, integratedLoudness, limit, loudnessGainDb,
   noiseProfile, normalizeRange, peak, reduceNoise, reverseRange, silenceRange, sliceAudio, waveformPeaks, type AudioData,
 } from '../src/core/studio/dsp';
+import { homography, projectQuad, type Quad } from '../src/core/studio/compose';
 import {
-  addKey, anim, audibleTracks, bezierAt, envelopeDb, hasKeyAt, newProject, newTrack, projectDuration, removeKey, setValueAt, snap, splitClip, valueAt,
+  addKey, anim, audibleTracks, bezierAt, cameraDistance, defaultThree, is3D, envelopeDb, hasKeyAt, newProject, newTrack, projectDuration, removeKey, setValueAt, snap, splitClip, valueAt,
   defaultEffects, defaultTransform, type AudioClip, type MediaClip,
 } from '../src/core/studio/model';
 
@@ -15,6 +16,45 @@ const sine = (freq: number, amp: number, seconds: number, sr = 48000, ch = 2): A
   for (let i = 0; i < n; i++) c[i] = amp * Math.sin((2 * Math.PI * freq * i) / sr);
   return { sampleRate: sr, channels: Array.from({ length: ch }, () => c.slice()) };
 };
+
+describe('3D layers', () => {
+  const p = newProject(1000, 500, 30);
+  const edge = (q: Quad, a: number, b: number) => Math.hypot(q[a][0] - q[b][0], q[a][1] - q[b][1]);
+  it('leaves a flat layer where it was and shrinks it with depth', () => {
+    expect(projectQuad(p, 500, 250, 400, 200, 0, 0, 0, 0)).toEqual([[300, 150], [700, 150], [700, 350], [300, 350]]);
+    const far = projectQuad(p, 500, 250, 400, 200, 0, 0, 0, cameraDistance(p))!;
+    expect(edge(far, 0, 1)).toBeCloseTo(200, 6);
+    expect(projectQuad(p, 500, 250, 400, 200, 0, 0, 0, -cameraDistance(p))).toBeNull();
+  });
+  it('foreshortens the edge that turns away', () => {
+    const swivel = projectQuad(p, 500, 250, 400, 200, 0, 0, 40, 0)!;
+    expect(edge(swivel, 1, 2)).toBeLessThan(edge(swivel, 0, 3));
+    const tilt = projectQuad(p, 500, 250, 400, 200, 0, 40, 0, 0)!;
+    expect(edge(tilt, 0, 1)).toBeLessThan(edge(tilt, 3, 2));
+    // a longer lens flattens the perspective
+    const tele = projectQuad({ ...p, lens: 200 }, 500, 250, 400, 200, 0, 0, 40, 0)!;
+    expect(edge(tele, 0, 3) - edge(tele, 1, 2)).toBeLessThan(edge(swivel, 0, 3) - edge(swivel, 1, 2));
+  });
+  it('maps the unit square onto the quad', () => {
+    const q = projectQuad(p, 500, 250, 400, 200, 10, 30, -25, 80)!;
+    const H = homography(q);
+    const at = (u: number, v: number) => [(H[0] * u + H[1] * v + H[2]) / (H[6] * u + H[7] * v + 1), (H[3] * u + H[4] * v + H[5]) / (H[6] * u + H[7] * v + 1)];
+    ([[0, 0], [1, 0], [1, 1], [0, 1]] as const).forEach(([u, v], i) => {
+      expect(at(u, v)[0]).toBeCloseTo(q[i][0], 6);
+      expect(at(u, v)[1]).toBeCloseTo(q[i][1], 6);
+    });
+  });
+  it('splits 3D animation between the halves', () => {
+    const base: MediaClip = { id: 'c', kind: 'video', sourceId: 's', name: 'c', start: 0, duration: 4, in: 0, linkId: null, transform: defaultTransform(p), effects: defaultEffects() };
+    const clip = { ...base, three: { ...defaultThree(), rotY: addKey(addKey(anim(0), 0, 0), 4, 80) } };
+    expect(is3D(base)).toBe(false);
+    expect(is3D(clip)).toBe(true);
+    const [l, r] = splitClip(clip, 1) as [MediaClip, MediaClip];
+    expect(valueAt(l.three!.rotY, 1)).toBe(20);
+    expect(valueAt(r.three!.rotY, 0)).toBe(20);
+    expect(valueAt(r.three!.rotY, 3)).toBe(80);
+  });
+});
 
 describe('keyframes', () => {
   it('follows a custom bezier curve, with overshoot', () => {

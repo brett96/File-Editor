@@ -14,9 +14,10 @@ import {
   type Clip,
   type Easing,
   type Project,
-  type TransformProp,
+  DEFAULT_LENS,
   type VisualClip,
 } from '../../core/studio/model';
+import { animProps, keyTimes, type AnimProp } from '../../core/studio/anim';
 import { cx } from '../components';
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -46,14 +47,6 @@ function Num({ value, min, max, step = 1, onChange, slider = true }: { value: nu
   );
 }
 
-const PROPS: { key: TransformProp; label: string; min: number; max: number; step: number; toView?: (v: number) => number; fromView?: (v: number) => number }[] = [
-  { key: 'x', label: 'Position X', min: -2000, max: 6000, step: 1 },
-  { key: 'y', label: 'Position Y', min: -2000, max: 4000, step: 1 },
-  { key: 'scale', label: 'Scale %', min: 1, max: 500, step: 1, toView: (v) => v * 100, fromView: (v) => v / 100 },
-  { key: 'rotation', label: 'Rotation °', min: -360, max: 360, step: 0.5 },
-  { key: 'opacity', label: 'Opacity %', min: 0, max: 100, step: 1, toView: (v) => v * 100, fromView: (v) => v / 100 },
-];
-
 const LOOK: { key: keyof Adjustments; label: string; min: number; max: number }[] = [
   { key: 'exposure', label: 'Exposure', min: -100, max: 100 },
   { key: 'contrast', label: 'Contrast', min: -100, max: 100 },
@@ -73,6 +66,7 @@ export function Inspector({
   easing,
   onEasing,
   onChange,
+  onProject,
   onSeek,
   onEditAudio,
 }: {
@@ -82,6 +76,7 @@ export function Inspector({
   easing: Easing;
   onEasing: (e: Easing) => void;
   onChange: (c: Clip) => void;
+  onProject: (p: Project) => void;
   onSeek: (t: number) => void;
   onEditAudio: (c: AudioClip) => void;
 }) {
@@ -148,15 +143,30 @@ export function Inspector({
   }
 
   const c = clip as VisualClip;
-  const keyTimes = [...new Set(Object.values(c.transform).flatMap((a) => a.keys.map((k: { t: number }) => k.t)))].sort((a, b) => a - b);
-  const prevKey = [...keyTimes].reverse().find((t) => t < local - 1e-3);
-  const nextKey = keyTimes.find((t) => t > local + 1e-3);
-  const setTransform = (prop: TransformProp, v: number) => onChange({ ...c, transform: { ...c.transform, [prop]: setValueAt(c.transform[prop], local, v) } } as Clip);
-  const toggleKey = (prop: TransformProp) => {
-    const a = c.transform[prop];
-    const next = hasKeyAt(a, local) ? removeKey(a, local) : addKey(a, local, valueAt(a, local), easing);
-    onChange({ ...c, transform: { ...c.transform, [prop]: next } } as Clip);
+  const times = keyTimes(project, c);
+  const prevKey = [...times].reverse().find((t) => t < local - 1e-3);
+  const nextKey = times.find((t) => t > local + 1e-3);
+  const props = animProps(project, c);
+  const setProp = (pr: AnimProp, v: number) => onChange(pr.set(c, setValueAt(pr.get(c), local, v)));
+  const toggleKey = (pr: AnimProp) => {
+    const a = pr.get(c);
+    onChange(pr.set(c, hasKeyAt(a, local) ? removeKey(a, local) : addKey(a, local, valueAt(a, local), easing)));
   };
+  /** Slider, number box and keyframe diamond for every property of a group. */
+  const propRows = (group: AnimProp['group']) =>
+    props.filter((pr) => pr.group === group).map((pr) => {
+      const a = pr.get(c);
+      const keyed = hasKeyAt(a, local);
+      return (
+        <div key={pr.id} className="st-row">
+          <span>{pr.label}</span>
+          <Num value={valueAt(a, local) * pr.view} min={pr.min} max={pr.max} step={pr.step} onChange={(nv) => setProp(pr, nv / pr.view)} />
+          <button type="button" className={cx('st-diamond', keyed && 'is-key', a.keys.length > 0 && 'is-anim')} disabled={!inClip} title={keyed ? 'Remove keyframe' : 'Add keyframe at the playhead'} aria-label={`${keyed ? 'Remove' : 'Add'} ${pr.label} keyframe`} onClick={() => toggleKey(pr)}>
+            <Diamond size={12} />
+          </button>
+        </div>
+      );
+    });
   const fx = c.effects;
   const setFx = (patch: Partial<VisualClip['effects']>) => onChange({ ...c, effects: { ...fx, ...patch } } as Clip);
 
@@ -216,21 +226,13 @@ export function Inspector({
           </span>
         </h4>
         {!inClip && <p className="st-hint">Move the playhead over the clip to edit and keyframe it.</p>}
-        {PROPS.map((pr) => {
-          const a = c.transform[pr.key];
-          const v = valueAt(a, local);
-          const shown = pr.toView ? pr.toView(v) : v;
-          const keyed = hasKeyAt(a, local);
-          return (
-            <div key={pr.key} className="st-row">
-              <span>{pr.label}</span>
-              <Num value={shown} min={pr.key === 'x' ? -project.width : pr.key === 'y' ? -project.height : pr.min} max={pr.key === 'x' ? project.width * 2 : pr.key === 'y' ? project.height * 2 : pr.max} step={pr.step} onChange={(nv) => setTransform(pr.key, pr.fromView ? pr.fromView(nv) : nv)} />
-              <button type="button" className={cx('st-diamond', keyed && 'is-key', a.keys.length > 0 && 'is-anim')} disabled={!inClip} title={keyed ? 'Remove keyframe' : 'Add keyframe at the playhead'} aria-label={`${keyed ? 'Remove' : 'Add'} ${pr.label} keyframe`} onClick={() => toggleKey(pr.key)}>
-                <Diamond size={12} />
-              </button>
-            </div>
-          );
-        })}
+        {propRows('Transform')}
+      </section>
+      <section>
+        <h4>3D</h4>
+        <p className="st-hint">Turn the layer in space or push it back; it is drawn in perspective through the project camera.</p>
+        {propRows('3D')}
+        <Row label="Camera lens (mm)"><Num value={project.lens ?? DEFAULT_LENS} min={12} max={200} onChange={(v) => onProject({ ...project, lens: Math.min(400, Math.max(8, v)) })} /></Row>
       </section>
       <section>
         <h4>Compositing</h4>
