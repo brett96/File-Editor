@@ -5,7 +5,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { Trash2 } from 'lucide-react';
-import { animProps, type AnimProp } from '../../core/studio/anim';
+import { animProps, propValue, type AnimProp } from '../../core/studio/anim';
 import { addKey, DEFAULT_BEZIER, valueAt, type Animatable, type Bezier, type Clip, type Easing, type Keyframe, type Project, type VisualClip } from '../../core/studio/model';
 import { cx } from '../components';
 
@@ -234,8 +234,18 @@ export function GraphEditor({ project, clip, playhead, onChange, onSeek }: { pro
                 path += `${i ? 'L' : 'M'}${X(t).toFixed(1)},${Y(valueAt(a, t), r).toFixed(1)}`;
               }
               const active = activeProp === pr.id;
+              // with an expression, the dotted line is what is actually drawn (the solid line is the keyframes it starts from)
+              let result = '';
+              if (c.expressions?.[pr.id]) {
+                for (let i = 0; i <= n; i++) {
+                  const t = (i / n) * dur;
+                  const y = Math.min(H, Math.max(0, Y(propValue(project, c, pr.id, a, t), r)));
+                  result += `${i ? 'L' : 'M'}${X(t).toFixed(1)},${y.toFixed(1)}`;
+                }
+              }
               return (
                 <g key={pr.id} opacity={active ? 1 : 0.55}>
+                  {result && <path d={result} fill="none" stroke={pr.color} strokeWidth={1.25} strokeDasharray="1.5 3" />}
                   <path d={path} fill="none" stroke={pr.color} strokeWidth={active ? 2 : 1.25} strokeDasharray={a.keys.length ? undefined : '4 4'} />
                   {a.keys.map((k, i) => {
                     const isSel = sel?.prop === pr.id && sel.index === i;

@@ -6,8 +6,9 @@
 import { applyAdjustments, applyFilter, isIdentity } from '../media/image-ops';
 import { BLEND_MODES } from '../pro-image/document';
 import { chromaKey } from './dsp';
+import { propValue } from './anim';
 import { applyStyle } from './fx';
-import { cameraDistance, clipEnd, is3D, valueAt, type ClipMask, type MediaClip, type Project, type TextClip, type VisualClip } from './model';
+import { cameraDistance, clipEnd, is3D, type Animatable, type ClipMask, type MediaClip, type Project, type TextClip, type VisualClip } from './model';
 
 type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 type AnyCanvas = HTMLCanvasElement | OffscreenCanvas;
@@ -102,12 +103,13 @@ export function drawFrame(ctx: Ctx2D, p: Project, t: number, frameFor: FrameFor,
 
 function drawClip(ctx: Ctx2D, p: Project, c: VisualClip, local: number, frameFor: FrameFor, scale: number): void {
   const tr = c.transform;
-  const opacity = valueAt(tr.opacity, local) * fadeAt(c, local);
+  const val = (id: string, a: Animatable) => propValue(p, c, id, a, local);
+  const opacity = val('opacity', tr.opacity) * fadeAt(c, local);
   if (opacity <= 0.001) return;
   let img: CanvasImageSource | null = null;
   let dw = 0;
   let dh = 0;
-  const s = valueAt(tr.scale, local);
+  const s = val('scale', tr.scale);
   if (c.kind === 'video' || c.kind === 'image') {
     img = frameFor(c, c.in + local);
     if (!img) return;
@@ -161,16 +163,16 @@ function drawClip(ctx: Ctx2D, p: Project, c: VisualClip, local: number, frameFor
       for (const e of styles) applyStyle(px, e, local, scale * (tmp.width / dw));
       tctx.putImageData(data, 0, 0);
     }
-    if (mask) applyMask(tctx, tmp.width, tmp.height, mask, local);
+    if (mask) applyMask(tctx, tmp.width, tmp.height, mask, val);
     img = tmp;
   }
 
-  const x = valueAt(tr.x, local);
-  const y = valueAt(tr.y, local);
-  const rot = valueAt(tr.rotation, local);
+  const x = val('x', tr.x);
+  const y = val('y', tr.y);
+  const rot = val('rotation', tr.rotation);
   let quad: Quad | null = null;
   if (is3D(c)) {
-    quad = projectQuad(p, x, y, dw / scale, dh / scale, rot, valueAt(c.three!.rotX, local), valueAt(c.three!.rotY, local), valueAt(c.three!.z, local));
+    quad = projectQuad(p, x, y, dw / scale, dh / scale, rot, val('rotX', c.three!.rotX), val('rotY', c.three!.rotY), val('z', c.three!.z));
     if (!quad) return; // behind the camera
     // the perspective view is drawn on its own frame, so opacity, blend, blur and shadow apply to it as a whole
     const frame = makeCanvas(p.width * scale, p.height * scale);
@@ -199,13 +201,13 @@ function drawClip(ctx: Ctx2D, p: Project, c: VisualClip, local: number, frameFor
 // ── masks ─────────────────────────────────────────────────────────────────
 
 /** Keeps (or, inverted, removes) the mask shape from a layer canvas, with a soft edge. */
-function applyMask(ctx: Ctx2D, w: number, h: number, m: ClipMask, local: number): void {
+function applyMask(ctx: Ctx2D, w: number, h: number, m: ClipMask, val: (id: string, a: Animatable) => number): void {
   const shape = makeCanvas(w, h);
   const sctx = shape.getContext('2d') as Ctx2D;
-  const mw = Math.max(0, valueAt(m.w, local)) * w;
-  const mh = Math.max(0, valueAt(m.h, local)) * h;
-  const cx = valueAt(m.x, local) * w;
-  const cy = valueAt(m.y, local) * h;
+  const mw = Math.max(0, val('mask.w', m.w)) * w;
+  const mh = Math.max(0, val('mask.h', m.h)) * h;
+  const cx = val('mask.x', m.x) * w;
+  const cy = val('mask.y', m.y) * h;
   const feather = (Math.max(0, m.feather) / 100) * (Math.min(w, h) / 2);
   if (feather > 0.3) sctx.filter = `blur(${feather / 2}px)`;
   sctx.fillStyle = '#fff';
@@ -330,7 +332,7 @@ const W = (p: Project, scale: number) => p.width * scale;
 
 /** Bounding box (output px, unrotated) of a visual clip at `local`, for on-canvas handles. */
 export function clipBox(p: Project, c: VisualClip, local: number, sourceSizeOf: (c: MediaClip) => [number, number] | null): { x: number; y: number; w: number; h: number } | null {
-  const s = valueAt(c.transform.scale, local);
+  const s = propValue(p, c, 'scale', c.transform.scale, local);
   let w = 0;
   let h = 0;
   if (c.kind === 'video' || c.kind === 'image') {
@@ -347,8 +349,8 @@ export function clipBox(p: Project, c: VisualClip, local: number, sourceSizeOf: 
     w = p.width * s;
     h = p.height * s;
   }
-  const x = valueAt(c.transform.x, local);
-  const y = valueAt(c.transform.y, local);
+  const x = propValue(p, c, 'x', c.transform.x, local);
+  const y = propValue(p, c, 'y', c.transform.y, local);
   return { x: x - w / 2, y: y - h / 2, w, h };
 }
 
@@ -357,5 +359,6 @@ export function clipQuad(p: Project, c: VisualClip, local: number, sourceSizeOf:
   const b = clipBox(p, c, local, sourceSizeOf);
   if (!b) return null;
   const t3 = is3D(c) ? c.three! : null;
-  return projectQuad(p, b.x + b.w / 2, b.y + b.h / 2, b.w, b.h, valueAt(c.transform.rotation, local), t3 ? valueAt(t3.rotX, local) : 0, t3 ? valueAt(t3.rotY, local) : 0, t3 ? valueAt(t3.z, local) : 0);
+  const v = (id: string, a: Animatable) => propValue(p, c, id, a, local);
+  return projectQuad(p, b.x + b.w / 2, b.y + b.h / 2, b.w, b.h, v('rotation', c.transform.rotation), t3 ? v('rotX', t3.rotX) : 0, t3 ? v('rotY', t3.rotY) : 0, t3 ? v('z', t3.z) : 0);
 }

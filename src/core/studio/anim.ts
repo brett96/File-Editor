@@ -2,7 +2,8 @@
  * The animatable properties of a visual clip, as one list: the inspector, the graph editor
  * and the command palette all work from it, so a property added here appears in each.
  */
-import { anim, defaultThree, type Animatable, type Project, type Transform3D, type TransformProp, type VisualClip } from './model';
+import { PURE_FNS, dataValue, evalExpression, noise1, seedOf, type ExprContext } from './expr';
+import { anim, defaultThree, valueAt, type Animatable, type Project, type Transform3D, type TransformProp, type VisualClip } from './model';
 
 export interface AnimProp {
   id: string;
@@ -89,3 +90,62 @@ export function keyTimes(p: Pick<Project, 'width' | 'height'>, c: VisualClip): n
 }
 
 export { anim };
+
+// ── values, with expressions ──────────────────────────────────────────────
+
+/** Properties shown as percentages: expressions see (and return) the shown value, not the stored 0–1. */
+const VIEW: Record<string, number> = { scale: 100, opacity: 100, 'mask.x': 100, 'mask.y': 100, 'mask.w': 100, 'mask.h': 100 };
+
+/** Repeats the keyframed stretch of `a` after (and before) its keys. */
+function loop(a: Animatable, t: number, pingPong: boolean): number {
+  const k = a.keys;
+  if (k.length < 2) return valueAt(a, t);
+  const first = k[0].t;
+  const span = k[k.length - 1].t - first;
+  if (span <= 0) return valueAt(a, t);
+  const n = Math.floor((t - first) / span);
+  let u = t - first - n * span;
+  if (pingPong && Math.abs(n) % 2 === 1) u = span - u;
+  return valueAt(a, first + u);
+}
+
+/**
+ * The value of property `id` of clip `c` at `local` seconds from its start: its keyframes,
+ * passed through the property's expression when it has one. `a` is the property's animatable.
+ */
+export function propValue(p: Project, c: VisualClip, id: string, a: Animatable, local: number): number {
+  const base = valueAt(a, local);
+  const src = c.expressions?.[id];
+  if (!src || !src.trim()) return base;
+  const view = VIEW[id] ?? 1;
+  const seed = seedOf(c.id + id);
+  const frame = Math.round((c.start + local) * p.fps);
+  const ctx: ExprContext = {
+    vars: {
+      time: local,
+      t: local,
+      value: base * view,
+      frame,
+      fps: p.fps,
+      duration: c.duration,
+      start: c.start,
+      playhead: c.start + local,
+      width: p.width,
+      height: p.height,
+      index: p.tracks.findIndex((tr) => tr.clips.some((x) => x.id === c.id)),
+      PI: Math.PI,
+      E: Math.E,
+    },
+    fns: {
+      ...PURE_FNS,
+      wiggle: (freq, amp) => (noise1(local * Number(freq), seed) * 2 - 1) * Number(amp),
+      noise: (x) => noise1(Number(x), seed),
+      random: (s = 0) => noise1(Number(s) * 7919 + 0.5, seed ^ 0x5bd1e995) % 1,
+      loopOut: () => loop(a, local, false) * view,
+      pingPong: () => loop(a, local, true) * view,
+      valueAtTime: (t) => valueAt(a, Number(t)) * view,
+      data: (col, row) => dataValue(p.data, col, row === undefined ? frame : Number(row)),
+    },
+  };
+  return evalExpression(src, ctx, base * view) / view;
+}

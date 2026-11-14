@@ -28,14 +28,22 @@ import {
   Unlink,
   Rows3,
   Spline,
+  Command as CommandIcon,
 } from 'lucide-react';
 import { addMediaClips, deleteClips, findClip, linkedIds, placeClip, replaceClip, solidClip, splitAt, textClip, unlink } from '../../core/studio/build';
 import { bufferToData, buildMix, dataToBuffer, decodeAudio, meterDb, renderMix, type Mix } from '../../core/studio/audio';
 import { clipBox, clipQuad, drawFrame, homography } from '../../core/studio/compose';
+import { animProps } from '../../core/studio/anim';
+import { parseDataCsv } from '../../core/studio/expr';
+import { STYLE_DEFS, newStyle, type StyleType } from '../../core/studio/fx';
 import { simplifyKeys, toGray, trackPatch, type Gray } from '../../core/studio/track';
 import { encodeWav, frames, sliceAudio, waveformPeaks, type AudioData } from '../../core/studio/dsp';
 import {
+  addKey,
   clipEnd,
+  defaultMask,
+  defaultThree,
+  defaultTransform,
   newTrack,
   projectDuration,
   setValueAt,
@@ -53,6 +61,7 @@ import {
 } from '../../core/studio/model';
 import { cx } from '../components';
 import { AudioClipEditor } from './AudioClipEditor';
+import { CommandPalette, type Command } from './CommandPalette';
 import { GraphEditor } from './GraphEditor';
 import { Inspector } from './Inspector';
 import { Mixer } from './Mixer';
@@ -751,15 +760,100 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
     endDrag();
   };
 
+  // ── command palette ─────────────────────────────────────────────────────
+  const [palette, setPalette] = useState(false);
+  const dataInput = useRef<HTMLInputElement>(null);
+  const importData = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const data = parseDataCsv(await file.text(), file.name);
+      commit({ ...projectRef.current, data });
+      setStatus(`Data loaded: ${data.rows.length} rows · ${data.columns.join(', ')}`);
+      setTimeout(() => setStatus(null), 6000);
+    } catch (err) {
+      onError(err instanceof Error ? err.message : String(err));
+    }
+  };
+  const buildCommands = (): Command[] => {
+    const p = projectRef.current;
+    const t = playheadRef.current;
+    const sel = findClip(p, selectedRef.current);
+    const vis = sel && sel.kind !== 'audio' ? (sel as VisualClip) : null;
+    const local = vis ? Math.max(0, Math.min(vis.duration, t - vis.start)) : 0;
+    const set = (c: VisualClip) => commit(replaceClip(projectRef.current, c as Clip));
+    const expr = (c: VisualClip, entries: Record<string, string>) => set({ ...c, expressions: { ...(c.expressions ?? {}), ...entries } } as VisualClip);
+    const list: Command[] = [
+      { id: 'add-media', group: 'Add', label: 'Add media files…', run: () => fileInput.current?.click() },
+      { id: 'add-text', group: 'Add', label: 'Add text (title)', run: () => addVisual(textClip(projectRef.current, playheadRef.current)) },
+      { id: 'add-solid', group: 'Add', label: 'Add colour / gradient layer', run: () => addVisual(solidClip(projectRef.current, playheadRef.current)) },
+      { id: 'add-vtrack', group: 'Add', label: 'Add video track', run: () => addTrack('video') },
+      { id: 'add-atrack', group: 'Add', label: 'Add audio track', run: () => addTrack('audio') },
+      { id: 'split', group: 'Edit', label: 'Split clip at playhead', hint: 'S', disabled: !sel, run: split },
+      { id: 'delete', group: 'Edit', label: 'Delete clip', hint: 'Del', disabled: !sel, run: remove },
+      { id: 'unlink', group: 'Edit', label: 'Unlink picture and sound', disabled: !sel?.linkId, run: () => selectedRef.current && commit(unlink(projectRef.current, selectedRef.current)) },
+      { id: 'undo', group: 'Edit', label: 'Undo', hint: 'Ctrl+Z', run: undo },
+      { id: 'redo', group: 'Edit', label: 'Redo', hint: 'Ctrl+Shift+Z', run: redo },
+      { id: 'play', group: 'Transport', label: 'Play / pause', hint: 'Space', run: togglePlay },
+      { id: 'home', group: 'Transport', label: 'Go to start', hint: 'Home', run: () => seek(0) },
+      { id: 'end', group: 'Transport', label: 'Go to end', hint: 'End', run: () => seek(projectDuration(projectRef.current)) },
+      { id: 'view-timeline', group: 'View', label: 'Show timeline', run: () => setView('timeline') },
+      { id: 'view-graph', group: 'View', label: 'Show graph editor', run: () => setView('graph') },
+      { id: 'view-mixer', group: 'View', label: 'Show mixer', run: () => setView('mixer') },
+      { id: 'fit', group: 'View', label: 'Fit the whole timeline', run: fit },
+      { id: 'snap', group: 'View', label: snapOn ? 'Turn snapping off' : 'Turn snapping on', run: () => setSnapOn(!snapOn) },
+      { id: 'data-import', group: 'Data', label: 'Import data for expressions (CSV)…', run: () => dataInput.current?.click() },
+      { id: 'data-clear', group: 'Data', label: `Remove imported data${p.data ? ` (${p.data.name})` : ''}`, disabled: !p.data, run: () => commit({ ...projectRef.current, data: undefined }) },
+    ];
+    if (vis) {
+      const props = animProps(p, vis);
+      for (const pr of props) {
+        list.push({ id: `key-${pr.id}`, group: 'Keyframe', label: `Add keyframe: ${pr.label}`, run: () => set(pr.set(vis, addKey(pr.get(vis), local, valueAt(pr.get(vis), local), easing))) });
+      }
+      list.push(
+        { id: 'key-clear', group: 'Keyframe', label: 'Remove all keyframes from this clip', run: () => set(props.reduce((cl, pr) => pr.set(cl, { value: valueAt(pr.get(cl), local), keys: [] }), vis)) },
+        { id: 'tf-reset', group: 'Layer', label: 'Reset transform', run: () => set({ ...vis, transform: defaultTransform(p), three: undefined } as VisualClip) },
+        { id: 'tf-center', group: 'Layer', label: 'Centre layer in the frame', run: () => set({ ...vis, transform: { ...vis.transform, x: setValueAt(vis.transform.x, local, p.width / 2), y: setValueAt(vis.transform.y, local, p.height / 2) } } as VisualClip) },
+        { id: 'fade-in', group: 'Layer', label: 'Fade in (0.5 s)', run: () => set({ ...vis, effects: { ...vis.effects, fadeIn: Math.min(0.5, vis.duration / 2) } } as VisualClip) },
+        { id: 'fade-out', group: 'Layer', label: 'Fade out (0.5 s)', run: () => set({ ...vis, effects: { ...vis.effects, fadeOut: Math.min(0.5, vis.duration / 2) } } as VisualClip) },
+        { id: 'mask-add', group: 'Layer', label: vis.mask?.enabled ? 'Remove mask' : 'Add mask', run: () => set({ ...vis, mask: vis.mask?.enabled ? { ...vis.mask, enabled: false } : { ...(vis.mask ?? defaultMask()), enabled: true } } as VisualClip) },
+        { id: '3d-spin', group: 'Layer', label: '3D: swivel in from the side (1 s)', run: () => set({ ...vis, three: { ...(vis.three ?? defaultThree()), rotY: { value: 0, keys: [{ t: 0, v: -80, ease: 'easeOut' }, { t: Math.min(1, vis.duration), v: 0, ease: 'linear' }] } }, effects: { ...vis.effects, fadeIn: Math.min(0.4, vis.duration / 2) } } as VisualClip) },
+        { id: 'x-wiggle', group: 'Expression', label: 'Wiggle position (hand-held shake)', run: () => expr(vis, { x: 'value + wiggle(2, 12)', y: 'value + wiggle(2.3, 12)' }) },
+        { id: 'x-wiggle-rot', group: 'Expression', label: 'Wiggle rotation', run: () => expr(vis, { rotation: 'value + wiggle(1.5, 4)' }) },
+        { id: 'x-spin', group: 'Expression', label: 'Spin continuously (90° per second)', run: () => expr(vis, { rotation: 'value + time * 90' }) },
+        { id: 'x-pulse', group: 'Expression', label: 'Pulse scale (heartbeat)', run: () => expr(vis, { scale: 'value * (1 + 0.06 * sin(time * 2 * PI * 1.2))' }) },
+        { id: 'x-flicker', group: 'Expression', label: 'Flicker opacity', run: () => expr(vis, { opacity: 'value * (0.7 + 0.3 * noise(time * 14))' }) },
+        { id: 'x-loop', group: 'Expression', label: 'Loop the keyframes of every animated property', run: () => expr(vis, Object.fromEntries(props.filter((pr) => pr.get(vis).keys.length > 1).map((pr) => [pr.id, 'loopOut()']))) },
+        { id: 'x-clear', group: 'Expression', label: 'Remove all expressions from this clip', disabled: !vis.expressions || !Object.keys(vis.expressions).length, run: () => set({ ...vis, expressions: {} } as VisualClip) },
+      );
+      for (const type of Object.keys(STYLE_DEFS) as StyleType[]) {
+        list.push({ id: `fx-${type}`, group: 'Effect', label: `Add effect: ${STYLE_DEFS[type].label}`, run: () => set({ ...vis, effects: { ...vis.effects, stylize: [...(vis.effects.stylize ?? []), newStyle(type)] } } as VisualClip) });
+      }
+      if (p.data) {
+        for (const col of p.data.columns) {
+          list.push({ id: `data-${col}`, group: 'Data', label: `Drive Position Y from data column “${col}”`, run: () => expr(vis, { y: `data("${col.replace(/"/g, '')}")` }) });
+        }
+      }
+    }
+    return list;
+  };
+
   // ── keyboard ────────────────────────────────────────────────────────────
   const keyHandler = useRef<(e: KeyboardEvent) => void>(() => undefined);
   keyHandler.current = (e: KeyboardEvent) => {
     if (editAudio) return;
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k' && !document.querySelector('.modal-backdrop')) {
+      e.preventDefault();
+      setPalette(true);
+      return;
+    }
     const el = e.target as HTMLElement | null;
     if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
     if (document.querySelector('.modal-backdrop')) return;
     const mod = e.ctrlKey || e.metaKey;
-    if (mod && e.key.toLowerCase() === 'z') {
+    if (mod && (e.key.toLowerCase() === 'k' || (e.shiftKey && e.key.toLowerCase() === 'p'))) {
+      e.preventDefault();
+      setPalette(true);
+    } else if (mod && e.key.toLowerCase() === 'z') {
       e.preventDefault();
       if (e.shiftKey) redo();
       else undo();
@@ -831,6 +925,10 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
           <button type="button" role="radio" aria-checked={view === 'graph'} className={view === 'graph' ? 'is-active' : ''} onClick={() => setView('graph')} title="Animation curves of the selected clip"><Spline size={13} /> Graph</button>
           <button type="button" role="radio" aria-checked={view === 'mixer'} className={view === 'mixer' ? 'is-active' : ''} onClick={() => setView('mixer')}><SlidersHorizontal size={13} /> Mixer</button>
         </div>
+        <button type="button" className="btn btn-icon" title="Command palette: find any action (Ctrl+K)" aria-label="Command palette" onClick={() => setPalette(true)}>
+          <CommandIcon size={15} />
+        </button>
+        <input ref={dataInput} type="file" hidden accept=".csv,.tsv,.txt,text/csv" onChange={(e) => { void importData(e.target.files?.[0]); e.target.value = ''; }} />
         <button type="button" className="btn btn-icon" title="Studio guide" aria-label="Studio guide" onClick={() => openGuide(view === 'mixer' ? 'studio-mixer' : 'studio')}>
           <CircleHelp size={15} />
         </button>
@@ -902,6 +1000,7 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
         )}
       </div>
 
+      {palette && <CommandPalette commands={buildCommands()} onClose={() => setPalette(false)} />}
       {editAudio && editing && (
         <AudioClipEditor name={editing.name} data={editAudio.data} onApply={applyAudioEdit} onClose={() => setEditAudio(null)} />
       )}

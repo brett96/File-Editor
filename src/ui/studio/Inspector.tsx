@@ -1,5 +1,5 @@
 /** Studio inspector: properties of the selected clip, with keyframes for the transform. */
-import type { ReactNode } from 'react';
+import { Fragment, useState, type ReactNode } from 'react';
 import { ChevronLeft, ChevronRight, Crosshair, Diamond, AudioWaveform } from 'lucide-react';
 import { FILTER_LABELS, type Adjustments, type FilterPreset } from '../../core/media/image-ops';
 import { BLEND_MODES, type BlendMode } from '../../core/pro-image/document';
@@ -20,6 +20,7 @@ import {
 } from '../../core/studio/model';
 import { STYLE_DEFS, newStyle, type StyleEffect, type StyleType } from '../../core/studio/fx';
 import { animProps, keyTimes, type AnimProp } from '../../core/studio/anim';
+import { expressionError } from '../../core/studio/expr';
 import { cx } from '../components';
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
@@ -88,12 +89,14 @@ export function Inspector({
   /** start (or, while tracking, stop) following the picture under the mask */
   onTrack: (c: VisualClip) => void;
 }) {
+  /** properties whose expression box is open although still empty */
+  const [exprOpen, setExprOpen] = useState<Set<string>>(() => new Set());
   if (!clip) {
     return (
       <aside className="st-inspector">
         <h3>Inspector</h3>
         <p className="st-hint">Select a clip on the timeline. Add media, text or a colour layer from the toolbar.</p>
-        <p className="st-hint">Keys: Space play/pause · S split · Del delete · ← → step a frame · Ctrl+Z undo</p>
+        <p className="st-hint">Keys: Space play/pause · S split · Del delete · ← → step a frame · Ctrl+Z undo · Ctrl+K command palette</p>
       </aside>
     );
   }
@@ -165,14 +168,48 @@ export function Inspector({
     props.filter((pr) => pr.group === group).map((pr) => {
       const a = pr.get(c);
       const keyed = hasKeyAt(a, local);
+      const expr = c.expressions?.[pr.id] ?? '';
+      const open = !!expr || exprOpen.has(pr.id);
+      const bad = expr ? expressionError(expr) : null;
+      const setExpr = (text: string) => {
+        const next = { ...(c.expressions ?? {}) };
+        if (text) next[pr.id] = text;
+        else delete next[pr.id];
+        onChange({ ...c, expressions: next } as Clip);
+      };
       return (
-        <div key={pr.id} className="st-row">
-          <span>{pr.label}</span>
-          <Num value={valueAt(a, local) * pr.view} min={pr.min} max={pr.max} step={pr.step} onChange={(nv) => setProp(pr, nv / pr.view)} />
-          <button type="button" className={cx('st-diamond', keyed && 'is-key', a.keys.length > 0 && 'is-anim')} disabled={!inClip} title={keyed ? 'Remove keyframe' : 'Add keyframe at the playhead'} aria-label={`${keyed ? 'Remove' : 'Add'} ${pr.label} keyframe`} onClick={() => toggleKey(pr)}>
-            <Diamond size={12} />
-          </button>
-        </div>
+        <Fragment key={pr.id}>
+          <div className="st-row">
+            <span>{pr.label}</span>
+            <Num value={valueAt(a, local) * pr.view} min={pr.min} max={pr.max} step={pr.step} onChange={(nv) => setProp(pr, nv / pr.view)} />
+            <button
+              type="button"
+              className={cx('st-fn', expr && 'is-on')}
+              title={expr ? 'Edit or remove the expression' : 'Drive this property with an expression, e.g. value + wiggle(2, 30)'}
+              aria-label={`${pr.label} expression`}
+              aria-pressed={open}
+              onClick={() => {
+                const next = new Set(exprOpen);
+                if (open) {
+                  next.delete(pr.id);
+                  if (expr) setExpr('');
+                } else next.add(pr.id);
+                setExprOpen(next);
+              }}
+            >
+              ƒ
+            </button>
+            <button type="button" className={cx('st-diamond', keyed && 'is-key', a.keys.length > 0 && 'is-anim')} disabled={!inClip} title={keyed ? 'Remove keyframe' : 'Add keyframe at the playhead'} aria-label={`${keyed ? 'Remove' : 'Add'} ${pr.label} keyframe`} onClick={() => toggleKey(pr)}>
+              <Diamond size={12} />
+            </button>
+          </div>
+          {open && (
+            <div className={cx('st-expr', bad && 'is-bad')}>
+              <input value={expr} spellCheck={false} placeholder="value + wiggle(2, 30)" aria-label={`${pr.label} expression text`} onChange={(e) => setExpr(e.target.value)} />
+              {bad && <small role="alert">{bad}</small>}
+            </div>
+          )}
+        </Fragment>
       );
     });
   const fx = c.effects;

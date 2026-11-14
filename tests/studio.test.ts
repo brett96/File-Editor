@@ -4,7 +4,9 @@ import {
   chromaKey, deleteRange, gateRange, encodeWav, fadeRange, fft, frames, gainRange, insertAudio, integratedLoudness, limit, loudnessGainDb,
   noiseProfile, normalizeRange, peak, reduceNoise, reverseRange, silenceRange, sliceAudio, waveformPeaks, type AudioData,
 } from '../src/core/studio/dsp';
-import { animProps, keyTimes } from '../src/core/studio/anim';
+import { animProps, keyTimes, propValue } from '../src/core/studio/anim';
+import { PURE_FNS, evalExpression, expressionError, parseDataCsv } from '../src/core/studio/expr';
+import { fuzzyScore } from '../src/ui/studio/CommandPalette';
 import { simplifyKeys, toGray, trackPatch, type Gray } from '../src/core/studio/track';
 import { applyStyle, curlField, newStyle, noise3, type StyleEffect } from '../src/core/studio/fx';
 import { homography, projectQuad, type Quad } from '../src/core/studio/compose';
@@ -19,6 +21,68 @@ const sine = (freq: number, amp: number, seconds: number, sr = 48000, ch = 2): A
   for (let i = 0; i < n; i++) c[i] = amp * Math.sin((2 * Math.PI * freq * i) / sr);
   return { sampleRate: sr, channels: Array.from({ length: ch }, () => c.slice()) };
 };
+
+describe('expressions', () => {
+  const ctx = (vars: Record<string, number> = {}) => ({ vars: { time: 2, value: 10, PI: Math.PI, ...vars }, fns: { ...PURE_FNS, wiggle: () => 0, data: () => 0 } });
+  const run = (src: string, vars?: Record<string, number>) => evalExpression(src, ctx(vars), -999);
+  it('evaluates arithmetic with the usual precedence', () => {
+    expect(run('1 + 2 * 3')).toBe(7);
+    expect(run('(1 + 2) * 3')).toBe(9);
+    expect(run('-2 ^ 2')).toBe(-4);
+    expect(run('2 ** 3 ** 2')).toBe(512);
+    expect(run('7 % 3 + -7 % 3')).toBe(3);
+    expect(run('value + time * 5')).toBe(20);
+    expect(run('time > 1 && value == 10 ? 1 : 2')).toBe(1);
+    expect(run('!0 + (3 <= 2)')).toBe(1);
+    expect(run('clamp(linear(time, 0, 4, 0, 100), 0, 40) + max(1, 2, 3)')).toBe(43);
+    expect(run('ease(1, 0, 2, 0, 10)')).toBe(5);
+    expect(run('.5e1 + sin(PI / 2)')).toBe(6);
+  });
+  it('reports mistakes and falls back instead of throwing', () => {
+    expect(expressionError('value + wiggle(2, 30)')).toBeNull();
+    expect(expressionError('  ')).toBeNull();
+    expect(expressionError('valeu + 1')).toMatch(/valeu/);
+    expect(expressionError('sin')).toMatch(/function/);
+    expect(expressionError('nope(1)')).toMatch(/no function/);
+    expect(expressionError('1 +')).toMatch(/incomplete/);
+    expect(expressionError('(1 + 2')).toMatch(/Expected/);
+    expect(expressionError('1 2')).toMatch(/Unexpected/);
+    expect(expressionError('1 # 2')).toMatch(/Unexpected character/);
+    expect(run('valeu + 1')).toBe(-999);
+    expect(run('1 / 0')).toBe(-999);
+    // nothing outside the listed names is reachable
+    expect(expressionError('constructor("return 1")()')).not.toBeNull();
+    expect(expressionError('window.alert(1)')).not.toBeNull();
+  });
+  it('drives a property: percentages, wiggle, loops and data', () => {
+    const p = { ...newProject(1000, 500, 10), data: parseDataCsv('frame;height\n0;10\n1;20\n2;40\n', 'd.csv') };
+    const base: MediaClip = { id: 'c', kind: 'video', sourceId: 's', name: 'c', start: 0, duration: 10, in: 0, linkId: null, transform: defaultTransform(p), effects: defaultEffects() };
+    const withExpr = (id: string, src: string, c: MediaClip = base) => ({ ...c, expressions: { [id]: src } });
+    // scale is stored 0–1 but written as a percentage
+    expect(propValue(p, withExpr('scale', 'value / 2'), 'scale', base.transform.scale, 0)).toBeCloseTo(0.5, 9);
+    expect(propValue(p, withExpr('x', 'value + time * 10'), 'x', base.transform.x, 3)).toBe(530);
+    expect(propValue(p, withExpr('x', 'value +'), 'x', base.transform.x, 3)).toBe(500);
+    const w = (t: number) => propValue(p, withExpr('x', 'wiggle(2, 30)'), 'x', base.transform.x, t);
+    expect(w(1.234)).toBe(w(1.234));
+    expect(Math.abs(w(1.234))).toBeLessThanOrEqual(30);
+    expect(new Set([0.1, 0.9, 1.7, 2.6, 3.3].map(w)).size).toBeGreaterThan(3);
+    const keyed = addKey(addKey(anim(0), 0, 0), 2, 100);
+    const looping = { ...withExpr('rotation', 'loopOut()'), transform: { ...base.transform, rotation: keyed } };
+    expect(propValue(p, looping, 'rotation', keyed, 5)).toBeCloseTo(50, 6);
+    const pp = { ...looping, expressions: { rotation: 'pingPong()' } };
+    expect(propValue(p, pp, 'rotation', keyed, 2.5)).toBeCloseTo(75, 6);
+    // one data row per frame (10 fps), interpolated, held at the last row
+    expect(propValue(p, withExpr('y', 'data("height")'), 'y', base.transform.y, 0.1)).toBe(20);
+    expect(propValue(p, withExpr('y', 'data("HEIGHT", 0.5)'), 'y', base.transform.y, 0)).toBe(15);
+    expect(propValue(p, withExpr('y', 'data(2)'), 'y', base.transform.y, 9)).toBe(40);
+    expect(parseDataCsv('1,2\n3,4', 'n.csv')).toMatchObject({ columns: ['col1', 'col2'], rows: [[1, 2], [3, 4]] });
+  });
+  it('ranks command palette matches', () => {
+    expect(fuzzyScore('wig', 'Wiggle position')).toBeGreaterThan(fuzzyScore('wig', 'Show mixer'));
+    expect(fuzzyScore('xyz', 'Wiggle position')).toBe(-1);
+    expect(fuzzyScore('adtx', 'Add text (title)')).toBeGreaterThan(0);
+  });
+});
 
 describe('stylize effects', () => {
   const grad = () => {

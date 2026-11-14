@@ -721,7 +721,7 @@ export const SECTIONS: GuideSection[] = [
     group: 'Studio (video & audio)',
     title: 'Studio: animating with keyframes',
     desktop: true,
-    keywords: 'keyframe animate animation motion diamond easing ease position scale rotation opacity zoom ken burns graph editor curve bezier',
+    keywords: 'keyframe animate animation motion diamond easing ease position scale rotation opacity zoom ken burns graph editor curve bezier expression wiggle loop formula data csv command palette mask track tracking 3d perspective',
     body: (
       <>
         <p>
@@ -765,6 +765,36 @@ export const SECTIONS: GuideSection[] = [
             [<>Custom curve</>, <>A curve you shape yourself in the graph editor, including overshoot and bounce-back.</>],
           ]}
         />
+        <h3>Expressions</h3>
+        <p>
+          The <Ui>ƒ</Ui> button beside every property opens a box for a formula that drives the property instead of (or on top of) its
+          keyframes. <code>value</code> is what the property would be without the formula, and <code>time</code> is seconds from the start of
+          the clip, so <code>value + wiggle(2, 30)</code> shakes a layer and <code>value + time * 90</code> spins it. The graph editor draws
+          the result as a dotted line. A formula with a mistake is outlined in red with the reason, and the property falls back to its
+          keyframes. Click <Ui>ƒ</Ui> again to remove the formula.
+        </p>
+        <Defs
+          rows={[
+            [<><code>time</code>, <code>value</code>, <code>frame</code>, <code>duration</code></>, <>Seconds into the clip; the keyframed value; the timeline frame number; the clip length. Also <code>fps</code>, <code>start</code>, <code>playhead</code>, <code>width</code>, <code>height</code>, <code>PI</code>.</>],
+            [<><code>wiggle(perSecond, amount)</code></>, <>Smooth random movement: how often and how far. Each property of each clip wiggles differently.</>],
+            [<><code>linear(time, t0, t1, a, b)</code>, <code>ease(…)</code></>, <>Goes from <code>a</code> to <code>b</code> between two times, at constant speed or eased.</>],
+            [<><code>loopOut()</code>, <code>pingPong()</code></>, <>Repeats the property's keyframes for the rest of the clip, forwards or back and forth.</>],
+            [<><code>sin cos abs min max clamp lerp floor round noise random</code></>, <>Ordinary maths. <code>a ? b : c</code>, comparisons and <code>&amp;&amp;</code> / <code>||</code> also work.</>],
+            [<><code>data("column")</code></>, <>A number from an imported CSV file: one row per frame, or <code>data("column", row)</code> for a row you choose.</>],
+          ]}
+        />
+        <p>
+          <b>Data-driven animation.</b> Open the command palette and choose <Ui>Import data for expressions (CSV)</Ui>: a table with a row of
+          column names followed by rows of numbers. <code>data("height")</code> then reads that column, moving one row per frame and
+          gliding between rows, so a bar can grow with measurements or a marker can follow recorded positions. The data is saved in the
+          project.
+        </p>
+        <h3>The command palette</h3>
+        <p>
+          Press <K>Ctrl</K>+<K>K</K> (or the <Ui>⌘</Ui> button in the toolbar) and type a few letters of what you want: “wig” finds
+          <Ui>Wiggle position</Ui>, “glow” adds the Glow effect, “key sc” adds a Scale keyframe. <K>↑</K> <K>↓</K> choose, <K>Enter</K> runs,
+          <K>Esc</K> closes. With a clip selected it also lists ready-made expressions, every effect, mask and fade shortcuts.
+        </p>
         <h3>Masks and motion tracking</h3>
         <p>
           <Ui>Mask</Ui> → <Ui>Show only part of this layer</Ui> keeps an ellipse or rectangle of the layer and hides the rest (a yellow outline

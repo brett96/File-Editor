@@ -12,6 +12,7 @@
  */
 import { NO_ADJUSTMENTS, type Adjustments, type FilterPreset } from '../media/image-ops';
 import type { BlendMode } from '../pro-image/document';
+import type { ExprData } from './expr';
 import type { StyleEffect } from './fx';
 
 export type Easing = 'linear' | 'easeIn' | 'easeOut' | 'easeInOut' | 'hold' | 'bezier';
@@ -130,6 +131,8 @@ interface ClipBase {
 interface VisualExtras {
   three?: Transform3D;
   mask?: ClipMask;
+  /** formulas that drive a property, by property id (see core/studio/expr.ts) */
+  expressions?: Record<string, string>;
 }
 
 export interface MediaClip extends ClipBase, VisualExtras {
@@ -265,6 +268,8 @@ export interface Project {
   sources: Record<string, SourceMeta>;
   /** camera lens for 3D layers, as a 35 mm-equivalent focal length (default 50) */
   lens?: number;
+  /** numbers imported from a CSV file, read by expressions with data("column") */
+  data?: ExprData;
 }
 
 export const DEFAULT_LENS = 50;
