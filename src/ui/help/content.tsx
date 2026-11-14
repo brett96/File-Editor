@@ -409,7 +409,7 @@ export const SECTIONS: GuideSection[] = [
         <h3>Before / after, tool pop-outs and themes</h3>
         <ul>
           <li>
-            <b>Quick Compare.</b> The split-square button at the top right (or <K>\\</K>, or <Ui>View ▸ Compare side by side</Ui>) shows the
+            <b>Quick Compare.</b> The split-square button at the top right (or <K>\</K>, or <Ui>View ▸ Compare side by side</Ui>) shows the
             picture as it was opened on one side of a divider and your edit on the other. Click again for top and bottom, and once more to
             stop. Drag the divider's handle to sweep across the picture; zoom and pan work as usual, so you can inspect a detail at 400%.
             You can keep editing while comparing.

@@ -1531,7 +1531,7 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
           className={cx('pi-icon-btn', compare !== 'off' && 'is-on')}
           aria-label="Compare before and after"
           aria-pressed={compare !== 'off'}
-          title="Before / after: click for side by side, again for top and bottom, again to stop (\\). Drag the divider; zoom in to inspect."
+          title="Before / after: click for side by side, again for top and bottom, again to stop (\). Drag the divider; zoom in to inspect."
           onClick={() => setCompare((c) => (c === 'off' ? 'side' : c === 'side' ? 'stack' : 'off'))}
         >
           {compare === 'stack' ? <Rows2 size={16} /> : <Columns2 size={16} />}
