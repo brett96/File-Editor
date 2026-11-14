@@ -11,8 +11,10 @@ there is no server to run.
 | **Spreadsheets** | Open Excel (.xlsx, .xlsm, .xltx), CSV and TSV; start one from **Blank document** by picking Excel, CSV or TSV in the format menu (bottom left), which also converts documents ↔ spreadsheets (tables become sheets; a sheet becomes a table). Excel / Google Sheets-style editor: formula bar with 400+ functions, multiple sheets, cell formatting (fonts, colours, borders, alignment, wrap, rotation), number formats (currency, percent, dates…), merge, freeze panes, insert/delete/hide rows and columns, sort, filter, find & replace, fill handle, copy/paste, undo. Ribbon tabs: Home, Insert, Formulas (AutoSum), Data (sort, remove duplicates, text to columns), View (freeze / unfreeze panes). Large workbooks (150 MB, 1M+ rows, up to ~25M cells) are read and written as a stream. **Save as → SQLite database** turns each sheet into a table (asks for the heading row or column names when they aren't clear) |
 | **Databases** | Open SQLite files (`.sqlite`, `.sqlite3`, `.db`, `.db3`, up to 2 GB); browse tables and views, edit cells, add/delete rows, run SQL. The file is edited in memory on this device and written back on Save. LiteDB `.db` files open with collections as tables; LiteDB 3/4 files are saved back in place in LiteDB's own format (untouched documents byte for byte, field types kept, indexes rebuilt, `.bak` of the original on first save), LiteDB 5 files open as a copy saved as SQLite |
 | **PDF editing** | Edit existing text, add text, images, links, shapes, lines, freehand drawing/signature, highlights, white-out; insert blank pages or pages from another document at any position; delete, duplicate, reorder (drag) and rotate pages |
+| **Folders & code** | **Open ▸ Open folder** (Ctrl+Shift+O) opens a whole folder or code repository with a file tree beside the tabs: open, create, rename and delete files (the desktop app deletes to the recycle bin / Trash). Source and config files (TypeScript, Python, JSON, YAML, Go, Rust, Java, C/C++, C#, PHP, Ruby, SQL, shell, Dockerfile and many more) open in the code editor with syntax highlighting and are saved as text under their own extension. **Preview / Split** on an HTML, CSS or JS file runs the page with everything it references in the folder (stylesheets and their imports, scripts, ES modules, images, fonts, media), including unsaved changes in open tabs; stylesheets and scripts are previewed in the page they belong to, and links between pages work. The preview is sandboxed and offline |
 | **Photos** | Open JPEG, PNG, WebP, AVIF, HEIC/HEIF (iPhone), JPEG XL, GIF, TIFF, BMP, ICO and SVG. Crop (with aspect presets), rotate, flip, straighten, resize; exposure, contrast, highlights/shadows, saturation, warmth, hue, vignette, sharpen, blur; one-click filters; text, arrows, shapes, freehand drawing, stickers; redact faces, plates or text (pixelate / blur / black box) |
 | **Video & audio** | Open MP4, MOV, WebM, MKV, TS, MP3, M4A, WAV, FLAC, OGG/Opus, AAC, plus legacy AVI, WMV, FLV, MPEG, 3GP, OGV, WMA, AIFF, AMR. Trim, crop, rotate, flip, resize, change frame rate; colour look and filters; text overlays with timing; fade in/out; volume or mute; save a frame as a picture or edit it in the photo editor |
+| **Vector Studio** (desktop app only) | Illustrator-style editor for **.svg** and Adobe Illustrator **.ai** files: pen, curvature, pencil, blob brush, line and shape tools; direct selection of anchors and handles; pathfinder (unite, minus front/back, intersect, exclude, divide, trim, merge, crop, outline), shape builder, scissors, eraser, outline stroke, offset, simplify, join; clipping masks and compound paths; swatches, colour harmonies, linear and radial gradients, gradient mesh; point, area and on-a-path type with character and paragraph styles, text to outlines; image placing and tracing; layers; multiple artboards; saves SVG (fully re-editable), .ai, PDF, PNG, JPEG, WebP |
 | **Pro Photo** (desktop app only) | Photoshop-style workspace: layers (pixel, text, shape, fill) with 16 blend modes, opacity, masks and lock; non-destructive adjustment layers (Curves, Levels, Hue/Saturation, Color Balance, Black & White, Exposure, Brightness/Contrast, Vibrance, Photo Filter, Invert, Threshold, Posterize); marquee, lasso and magic-wand selections with add/subtract/intersect, feather and invert; brush, eraser, clone stamp, spot healing, dodge/burn, gradient and paint bucket; filters (Gaussian blur, unsharp mask, noise, median, motion blur, emboss, find edges); image/canvas size, rotate, crop; open and save layered **.psd** |
 | **Studio** (desktop app only) | After Effects / Premiere-style video and audio editing: multi-track timeline (move, trim, split, snap, linked picture + sound, lock/hide/mute/solo); titles and colour layers; keyframed position, scale, rotation and opacity with easing; blend modes, fades, blur, drop shadow, colour grading and looks, chroma key (green screen); mixing console per audio track (EQ with low/high cut, shelves and parametric mid, compressor, delay, reverb, pan, fader, meters), master limiter and loudness normalization to −14/−16/−23/−24 LUFS; clip gain, fades and volume automation; waveform editor (cut/copy/paste, silence, gain, normalize, fades, reverse, noise gate, noise-profile noise reduction); export to MP4, WebM, MOV, MKV, TS or audio formats |
 | **Saving** | **Save** writes back to the file you opened, in its own format (documents, spreadsheets, PDFs, photos, Photoshop files, video and audio, Studio projects); **Save as / Convert** makes a copy or changes the format. **Auto-save** (on by default; status bar or desktop File menu) saves every change to the file a moment after you stop. **Recent** (and the desktop File ▸ Open Recent menu and the start screen) reopens recently used files; the × beside a file (or File ▸ Open Recent ▸ Remove from List) takes it off the list |
@@ -216,6 +218,16 @@ Developer ID certificate.
 
 ## Format support and limitations
 
+- **Folders and the web preview** (`src/platform/folders.ts`, `src/core/web/`, `src/ui/workspace/`,
+  `src/ui/code/`): Chrome and Edge open a folder with write access (File System Access API);
+  other browsers get a read-only copy of its files, so Save downloads. One folder is open at a
+  time; its tree is not watched, so press Refresh after changing files elsewhere. The preview
+  bundles a page with the files it references into one sandboxed document
+  (`core/web/bundle.ts`); it never goes online, so CDN scripts, web fonts and `fetch()` calls
+  are not loaded, and it does not run build tools: TypeScript, JSX, Sass and package imports
+  (`import React from 'react'`) are listed under "not loaded" instead. Modules that import each
+  other in a circle are reported too. Syntax highlighting uses CodeMirror's language pack
+  (MIT), each grammar loaded on first use.
 - **Spreadsheets** (`src/core/sheet/`, editor `src/ui/sheet/`): the editor is
   [Univer](https://github.com/dream-num/univer) (Apache-2.0), loaded only when a spreadsheet is
   opened (≈6 MB); `.xlsx` is read and written with ExcelJS (MIT) and CSV/TSV with Papa Parse
@@ -289,6 +301,9 @@ Developer ID certificate.
   the desktop shell (the status bar shows **Quick edit | Pro** for photos and **Quick edit |
   Studio** for video/audio). Their code is split into separate chunks that the web build never
   loads, and opening a `.psd` on the web explains that it needs the desktop app.
+- **Vector Studio** (`src/core/vector/`, `src/ui/vector/`): see *Vector Studio* in
+  [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Path booleans and curve fitting use Paper.js headless;
+  `.ai` files are read through pdf.js (PDF-compatible Illustrator files only).
 - **Pro Photo** (`src/core/pro-image/`, `src/ui/pro-image/`): PSD files are read and written with
   ag-psd (MIT). Pixel layers, masks, blend modes, opacity, visibility and Curves / Levels /
   Hue-Saturation / Color Balance / Black & White / Exposure / Brightness-Contrast / Vibrance /
@@ -314,6 +329,8 @@ Developer ID certificate.
 |---|---|---|
 | Mediabunny (+ MP3/AAC/FLAC encoder add-ons) | Video/audio demux, edit, encode via WebCodecs | MPL-2.0 |
 | ag-psd | Photoshop (.psd) read/write in Pro Photo (desktop) | MIT |
+| Paper.js | Path booleans, curve fitting and cutting in Vector Studio (desktop) | MIT |
+| opentype.js | Glyph outlines for text → paths in Vector Studio (desktop) | MIT |
 | ffmpeg.wasm core | Legacy video/audio formats only, loaded on first use | **GPL-2.0-or-later** (includes x264) |
 | @jsquash/avif, @jsquash/jxl | AVIF and JPEG XL encode/decode | Apache-2.0 |
 | heic-to (libheif) | HEIC/HEIF decode | LGPL-3.0 (loaded as a separate module) |

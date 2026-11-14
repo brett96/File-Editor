@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { TabActiveContext } from './ui/tab-active';
 import {
   Database,
+  PenTool,
   FileCode,
   Plus,
   X,
@@ -87,9 +88,16 @@ import { columnsFromRow, type SheetTablePlan } from './core/sheet/to-database';
 import { DB_EXTENSIONS, dbFormatFromName, isSqliteFile, type DbFormat, type SqliteDatabase } from './core/db/sqlite';
 import { DbEditor, type DbEditorHandle } from './ui/db/DbEditor';
 import type { LiteWriteContext, WriteTable } from './core/db/litedb-write';
+import type { VectorEditorHandle } from './ui/vector/VectorEditor';
+import type { VectorExportChoice } from './ui/vector/VectorExport';
+import type { VectorDoc } from './core/vector/model';
 
 // Pro editors are desktop-only and loaded on demand, so the web build never downloads them.
 const ProImageEditor = lazy(() => import('./ui/pro-image/ProImageEditor').then((m) => ({ default: m.ProImageEditor })));
+const VectorEditor = lazy(() => import('./ui/vector/VectorEditor').then((m) => ({ default: m.VectorEditor })));
+const VectorExportModal = lazy(() => import('./ui/vector/VectorExport').then((m) => ({ default: m.VectorExportModal })));
+/** Vector Studio is a pro editor: the desktop app (and the dev server, so it can be worked on in a browser). */
+const vectorAvailable = () => getHost().kind === 'desktop' || import.meta.env.DEV;
 // the user guide is loaded the first time it is opened
 const HelpGuide = lazy(() => import('./ui/help/HelpGuide'));
 
@@ -102,6 +110,7 @@ const GUIDE_FOR_KIND: Record<string, string> = {
   database: 'databases',
   image: 'photo-quick',
   proimage: 'photo-pro',
+  vector: 'vector',
   media: 'video-quick',
   studio: 'studio',
 };
@@ -131,6 +140,8 @@ type OpenDoc =
   | { kind: 'image'; key: number; name: string; decoded: DecodedImage; format: ImageFormat; handle?: unknown; protection: ProtectionDraft }
   /** desktop pro photo editor: a layered document (format: what Save writes without asking) */
   | { kind: 'proimage'; key: number; name: string; doc: ProDocument; format: ImageFormat | 'psd'; handle?: unknown; protection: ProtectionDraft }
+  /** Vector Studio: an SVG / Illustrator drawing (always saved back as SVG) */
+  | { kind: 'vector'; key: number; name: string; doc: VectorDoc; handle?: unknown; protection: ProtectionDraft }
   | MediaDoc
   /** origin: the file Studio was opened from (null for a .fstudio project); handle: the project file */
   | { kind: 'studio'; key: number; name: string; project: StudioProject; blobs: Map<string, Blob>; origin: MediaDoc | null; protection: ProtectionDraft; handle?: unknown }
@@ -238,7 +249,7 @@ function errorText(err: unknown): string {
 
 // ── tabs ─────────────────────────────────────────────────────────────────
 /** What a new tab starts with. */
-type TabStart = { kind: 'open'; file: OpenedFile } | { kind: 'new' } | { kind: 'new-sheet' } | { kind: 'new-db' };
+type TabStart = { kind: 'open'; file: OpenedFile } | { kind: 'new' } | { kind: 'new-sheet' } | { kind: 'new-db' } | { kind: 'new-vector' };
 
 /** What the tab bar and window title show for a tab. */
 interface TabInfo {
@@ -301,6 +312,8 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   const proImageRef = useRef<ProImageEditorHandle>(null);
   const videoRef = useRef<VideoEditorHandle>(null);
   const studioRef = useRef<StudioHandle>(null);
+  const vectorRef = useRef<VectorEditorHandle>(null);
+  const [vectorStatus, setVectorStatus] = useState<{ artboards: number; objects: number } | null>(null);
   const sheetRef = useRef<SheetEditorHandle>(null);
   const dbRef = useRef<DbEditorHandle>(null);
   const docRef = useRef(doc);
@@ -393,6 +406,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     void (async () => {
       if (start.kind === 'new') return newDocument();
       if (start.kind === 'new-sheet') return newSpreadsheet();
+      if (start.kind === 'new-vector') return newVector();
       if (start.kind === 'new-db') await newDatabase();
       else await openFile(start.file);
       // let React apply the opened document before looking for it
@@ -781,9 +795,51 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
     return true;
   };
 
+  /** Drawings: SVG and Adobe Illustrator files open in Vector Studio. Returns false for anything else. */
+  const openVector = async (file: OpenedFile): Promise<boolean> => {
+    const ext = /\.(svgz?|ai)$/i.exec(file.name)?.[1].toLowerCase();
+    if (!ext) return false;
+    if (!vectorAvailable()) {
+      // on the web an SVG still opens as a picture in the photo editor
+      if (ext !== 'ai') return false;
+      throw new Error('Adobe Illustrator (.ai) files open in the File Editor desktop app, which has Vector Studio.');
+    }
+    setBusy(`Opening ${file.name}…`);
+    try {
+      await nextPaint();
+      let bytes = await fileBytes(file);
+      let vdoc: VectorDoc;
+      let warnings: string[];
+      if (ext === 'ai') {
+        ({ doc: vdoc, warnings } = await (await import('./core/vector/ai-import')).importAi(bytes));
+      } else {
+        if (bytes[0] === 0x1f && bytes[1] === 0x8b) bytes = new Uint8Array(await new Response(new Blob([bytes as BlobPart]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer());
+        const { decodeText } = await import('./core/dom');
+        ({ doc: vdoc, warnings } = (await import('./core/vector/svg-import')).importSvg(decodeText(bytes)));
+      }
+      // Save writes SVG. An .ai file, a compressed .svgz, or an SVG with features that were not
+      // read is never overwritten: the drawing is saved as a new file instead.
+      const keep = ext === 'svg' && !warnings.length;
+      setDoc({ kind: 'vector', key: docKey++, name: keep ? file.name : `${baseName(file.name)}.svg`, doc: vdoc, handle: keep ? file.handle : undefined, protection: EMPTY_PROTECTION });
+      setDirty(false);
+      if (ext === 'ai') toast(`Opened ${file.name} as editable artwork${warnings.length ? ` (not read: ${warnings.join(', ')})` : ''}. Saving writes an SVG, or use Save as for Illustrator / PDF; ${file.name} is not changed.`, 'info');
+      else if (warnings.length) toast(`Opened. Not editable here and not kept when saved: ${warnings.join(', ')}. Saving writes a new file, so ${file.name} is not changed.`, 'info');
+    } finally {
+      setBusy(null);
+    }
+    return true;
+  };
+
+  const newVector = async () => {
+    const { newDocument: newVectorDocument } = await import('./core/vector/model');
+    setDoc({ kind: 'vector', key: docKey++, name: 'Untitled.svg', doc: newVectorDocument(), protection: EMPTY_PROTECTION });
+    setDirty(false);
+  };
+
   const openFile = async (file: OpenedFile) => {
     try {
       if (await openProject(file)) return;
+      if (await openVector(file)) return;
       if (await openPsd(file)) return;
       if (await openDatabase(file)) return;
       if (await openSheet(file)) return;
@@ -1144,7 +1200,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
 
   const render = async (format: DocFormat, protection: ProtectionDraft): Promise<Uint8Array> => {
     const d = docRef.current!;
-    if (d.kind === 'image' || d.kind === 'proimage' || d.kind === 'media' || d.kind === 'studio' || d.kind === 'sheet' || d.kind === 'database') throw new Error('Use the image, video, spreadsheet or database save dialog.');
+    if (d.kind === 'vector' || d.kind === 'image' || d.kind === 'proimage' || d.kind === 'media' || d.kind === 'studio' || d.kind === 'sheet' || d.kind === 'database') throw new Error('Use the image, video, spreadsheet or database save dialog.');
     const pdfProt = protectionToPdf(protection);
     const pw = protection.enabled ? protection.password : undefined;
     if (d.kind === 'code') {
@@ -1340,6 +1396,38 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       setProgress(null);
     }
   };
+
+  // ── drawings ─────────────────────────────────────────────────────────────
+  /** `handle` set: write the editable SVG back to the opened file; otherwise ask where (any export format). */
+  const saveVector = async (c: VectorExportChoice, handle: unknown | undefined, quiet = false) => {
+    const d = docRef.current;
+    const editor = vectorRef.current;
+    if (d?.kind !== 'vector' || !editor) return;
+    const seq = editSeq.current;
+    if (!quiet) setBusy('Saving…');
+    try {
+      await nextPaint();
+      const { exportVector, VECTOR_FORMATS } = await import('./core/vector/browser');
+      const info = VECTOR_FORMATS[c.format];
+      const bytes = await exportVector(editor.getDocument(), c);
+      const res = await host.save({ suggestedName: c.fileName, bytes, mime: info.mime, ext: info.ext, extensions: info.extensions, description: info.label, handle, quiet });
+      if (!res) return;
+      // only the full SVG holds the whole editable document: it becomes the open file
+      const whole = c.format === 'svg' && c.artboard === 'all';
+      if (whole) {
+        if (!quiet) setDoc((cur) => (cur && cur.kind === 'vector' ? { ...cur, name: res.name, handle: res.handle } : cur));
+        markClean(seq);
+      }
+      if (quiet) return;
+      toast(`${host.canSaveInPlace || host.kind === 'desktop' ? 'Saved' : 'Downloaded'} ${res.name}${whole ? '' : ' (a copy: the drawing itself is still unsaved until you save it as SVG)'}`, 'info');
+    } catch (err) {
+      if (quiet) throw err;
+      toast(`Could not save: ${errorText(err)}`);
+    } finally {
+      if (!quiet) setBusy(null);
+    }
+  };
+  const vectorSvgChoice = (fileName: string): VectorExportChoice => ({ format: 'svg', fileName, artboard: 'all', scale: 1, background: null, quality: 90, title: baseName(fileName) });
 
   /** Saves the Studio project file (.fstudio): in place with `handle`, else asks where. */
   const saveStudioProject = async (handle: unknown | undefined, quiet = false, fileName?: string) => {
@@ -1636,6 +1724,9 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       case 'database':
         await saveDatabase(d.handle, true, quiet);
         return true;
+      case 'vector':
+        await saveVector(vectorSvgChoice(d.name), d.handle, quiet);
+        return true;
       case 'studio':
         await saveStudioProject(d.handle, quiet);
         return true;
@@ -1687,6 +1778,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       // browsers without the File System Access API: Save = download in the current format
       if (d.kind === 'sheet') return saveSheet({ format: d.format, fileName: d.name, protection: d.protection }, undefined, true);
       if (d.kind === 'database') return saveDatabase(undefined, true);
+      if (d.kind === 'vector') return saveVector(vectorSvgChoice(d.name), undefined);
       if (d.kind === 'image' && IMAGE_FORMATS[d.format].canWrite) {
         return saveImage({ format: d.format as ImageExportChoice['format'], fileName: d.name, quality: 92, lossless: false, background: '#ffffff', scale: 1 }, undefined, true);
       }
@@ -1802,7 +1894,15 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       let url: string;
       if (d.kind === 'database') throw new Error('Databases cannot be printed. Export a query result or open a spreadsheet instead.');
       if (d.kind === 'media' || d.kind === 'studio') throw new Error('Video and audio cannot be printed. Save a frame as an image to print it.');
-      if (d.kind === 'image' || d.kind === 'proimage') {
+      if (d.kind === 'vector') {
+        // the active artboard, as vectors, one per page
+        const { docToSvg } = await import('./core/vector/svg');
+        const { browserRender } = await import('./core/vector/browser');
+        const vdoc = vectorRef.current!.getDocument();
+        const pages = vdoc.artboards.map((a) => docToSvg(vdoc, { ...browserRender, artboard: a.id }).replace(/^<\?xml[^>]*>\s*/, '')).join('');
+        const html = `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(baseName(d.name))}</title><style>@page{margin:10mm}body{margin:0}svg{display:block;max-width:100%;height:auto;max-height:100vh;margin:0 auto;page-break-after:always}</style></head><body>${pages}</body></html>`;
+        url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      } else if (d.kind === 'image' || d.kind === 'proimage') {
         const px = d.kind === 'proimage' ? proImageRef.current!.getPixels() : imageRef.current!.getPixels();
         const { pixelsToCanvas } = await import('./core/media/image-codecs');
         const dataUrl = pixelsToCanvas(px).toDataURL('image/png');
@@ -1946,7 +2046,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
         ? doc.format
         : null
     : null;
-  const isMediaDoc = doc?.kind === 'image' || doc?.kind === 'proimage' || doc?.kind === 'media' || doc?.kind === 'studio';
+  const isMediaDoc = doc?.kind === 'vector' || doc?.kind === 'image' || doc?.kind === 'proimage' || doc?.kind === 'media' || doc?.kind === 'studio';
   const isDatabase = doc?.kind === 'database';
   const canSwitchFormat = doc?.kind === 'flow' || doc?.kind === 'code' || doc?.kind === 'sheet';
   const currentFormat: SwitchTarget | null = doc?.kind === 'sheet' ? doc.format : format;
@@ -1962,6 +2062,8 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       ? `${IMAGE_FORMATS[doc.format].label} image`
       : doc?.kind === 'studio'
       ? 'Studio project'
+      : doc?.kind === 'vector'
+      ? 'SVG drawing · Vector Studio'
       : doc?.kind === 'media'
         ? doc.info.hasVideo
           ? 'Video'
@@ -2020,6 +2122,11 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
         {doc?.kind === 'proimage' && (
           <Suspense fallback={<div className="busy" role="status"><span className="spinner" /> Loading the pro editor…</div>}>
             <ProImageEditor key={doc.key} ref={proImageRef} initial={doc.doc} onChange={markDirty} onError={toast} onStatus={setImageStatus} />
+          </Suspense>
+        )}
+        {doc?.kind === 'vector' && (
+          <Suspense fallback={<div className="busy" role="status"><span className="spinner" /> Loading Vector Studio…</div>}>
+            <VectorEditor key={doc.key} ref={vectorRef} initial={doc.doc} onChange={markDirty} onError={toast} onStatus={setVectorStatus} />
           </Suspense>
         )}
         {doc?.kind === 'image' && (
@@ -2129,6 +2236,7 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
             </div>
           )}
           {(doc.kind === 'image' || doc.kind === 'proimage') && imageStatus && <span>{imageStatus.width} × {imageStatus.height} px</span>}
+          {doc.kind === 'vector' && vectorStatus && <span>{vectorStatus.artboards} {vectorStatus.artboards === 1 ? 'artboard' : 'artboards'} · {vectorStatus.objects.toLocaleString()} {vectorStatus.objects === 1 ? 'object' : 'objects'}</span>}
           {doc.kind === 'media' && <span>{formatTime(doc.info.duration, false)}{doc.info.hasVideo ? ` · ${doc.info.width} × ${doc.info.height}` : ''}{doc.info.fps ? ` · ${Math.round(doc.info.fps)} fps` : ''}</span>}
           {doc.kind === 'flow' && stats && <span>{stats.words.toLocaleString()} words · {stats.characters.toLocaleString()} characters</span>}
           {(doc.kind === 'flow' || doc.kind === 'pdf') && pageCount !== null && <span>{pageCount} {pageCount === 1 ? 'page' : 'pages'}</span>}
@@ -2164,6 +2272,24 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
           onSubmit={(pw) => { askPw.resolve(pw); setAskPw(null); }}
         />
       )}
+      {exportOpen && doc?.kind === 'vector' && (() => {
+        const vdoc = vectorRef.current?.getDocument() ?? doc.doc;
+        return (
+          <Suspense fallback={null}>
+            <VectorExportModal
+              initialFormat="svg"
+              initialName={baseName(doc.name)}
+              artboards={vdoc.artboards}
+              activeArtboard={vdoc.artboards[0]?.id ?? ''}
+              onClose={() => setExportOpen(null)}
+              onSubmit={(c) => {
+                setExportOpen(null);
+                void saveVector(c, undefined);
+              }}
+            />
+          </Suspense>
+        );
+      })()}
       {exportOpen && doc?.kind === 'proimage' && (
         <ImageExportModal
           allowPsd
@@ -2357,13 +2483,15 @@ function tabIcon(kind: TabInfo['kind']) {
       return <Film size={14} />;
     case 'code':
       return <FileCode size={14} />;
+    case 'vector':
+      return <PenTool size={14} />;
     default:
       return <FileText size={14} />;
   }
 }
 
 const startName = (start: TabStart) =>
-  start.kind === 'open' ? start.file.name : start.kind === 'new-sheet' ? 'Untitled.xlsx' : start.kind === 'new-db' ? 'Untitled.sqlite' : 'Untitled.docx';
+  start.kind === 'open' ? start.file.name : start.kind === 'new-sheet' ? 'Untitled.xlsx' : start.kind === 'new-db' ? 'Untitled.sqlite' : start.kind === 'new-vector' ? 'Untitled.svg' : 'Untitled.docx';
 
 export default function App() {
   const host = getHost();
@@ -2448,10 +2576,11 @@ export default function App() {
   const newDocument = () => openTab({ kind: 'new' });
   const newSpreadsheet = () => openTab({ kind: 'new-sheet' });
   const newDatabase = () => openTab({ kind: 'new-db' });
+  const newVector = () => openTab({ kind: 'new-vector' });
 
   const pickAndOpen = async () => {
     try {
-      const extensions = host.kind === 'desktop' ? [...ALL_OPEN_EXTENSIONS, 'psd', 'fstudio'] : ALL_OPEN_EXTENSIONS;
+      const extensions = host.kind === 'desktop' ? [...ALL_OPEN_EXTENSIONS, 'psd', 'fstudio', 'ai', 'svgz'] : vectorAvailable() ? [...ALL_OPEN_EXTENSIONS, 'ai', 'svgz'] : ALL_OPEN_EXTENSIONS;
       const files = await host.openFiles({ extensions, multiple: true, description: 'Documents, spreadsheets, databases, images, video, audio & code' });
       files.forEach(openFile);
     } catch (err) {
@@ -2621,8 +2750,8 @@ export default function App() {
   }, [toast]);
 
   // ── shortcuts, OS file-open events, native menu ──────────────────────────
-  const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, newDatabase, openFile, closeTab, activate, openFolder, showFolder });
-  shell.current = { pickAndOpen, newDocument, newSpreadsheet, newDatabase, openFile, closeTab, activate, openFolder, showFolder };
+  const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, openFile, closeTab, activate, openFolder, showFolder });
+  shell.current = { pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, openFile, closeTab, activate, openFolder, showFolder };
 
   useEffect(() => {
     const cycle = (step: number) => {
@@ -2668,6 +2797,7 @@ export default function App() {
       if (cmd === 'new') s.newDocument();
       else if (cmd === 'new-spreadsheet') s.newSpreadsheet();
       else if (cmd === 'new-database') s.newDatabase();
+      else if (cmd === 'new-drawing') s.newVector();
       else if (cmd === 'open') void s.pickAndOpen();
       else if (cmd === 'open-folder') void s.openFolder();
       else if (cmd === 'license') setLicenseOpen(true);
@@ -2771,6 +2901,7 @@ export default function App() {
                 <MenuItem hint=".docx" onClick={() => { close(); newDocument(); }}>Blank document</MenuItem>
                 <MenuItem hint=".xlsx" onClick={() => { close(); newSpreadsheet(); }}>Blank spreadsheet</MenuItem>
                 <MenuItem hint=".sqlite" onClick={() => { close(); newDatabase(); }}>Blank database</MenuItem>
+                {vectorAvailable() && <MenuItem hint=".svg / .ai" onClick={() => { close(); newVector(); }}>Blank drawing</MenuItem>}
               </div>
             )}
           </Popover>
@@ -2839,6 +2970,7 @@ export default function App() {
                   {item('Studio: keyframe animation', 'studio-keyframes')}
                   {item('Studio: mixing console', 'studio-mixer')}
                   {item('Pro Photo: layers & masks', 'photo-pro', host.kind === 'desktop' ? undefined : 'Desktop app')}
+                  {item('Vector Studio: drawings & Illustrator files', 'vector', host.kind === 'desktop' ? undefined : 'Desktop app')}
                   <div className="menu-sep" role="separator" />
                   {item('Keyboard shortcuts', 'shortcuts')}
                   {item('Troubleshooting', 'troubleshooting')}
@@ -2929,6 +3061,7 @@ export default function App() {
             onNew={newDocument}
             onNewSheet={newSpreadsheet}
             onNewDatabase={newDatabase}
+            onNewVector={vectorAvailable() ? newVector : null}
             onOpen={pickAndOpen}
             onOpenFolder={() => void openFolder()}
             recents={host.recent ? recents : null}
@@ -3045,6 +3178,7 @@ function StartScreen({
   onNew,
   onNewSheet,
   onNewDatabase,
+  onNewVector,
   onOpen,
   onOpenFolder,
   recents,
@@ -3059,6 +3193,8 @@ function StartScreen({
   onNew: () => void;
   onNewSheet: () => void;
   onNewDatabase: () => void;
+  /** null where Vector Studio is not available (the web app) */
+  onNewVector: (() => void) | null;
   onOpen: () => void;
   onOpenFolder: () => void;
   recents: RecentEntry[] | null;
@@ -3139,6 +3275,13 @@ function StartScreen({
             <strong>Blank database</strong>
             <span>A SQLite database (.sqlite): make tables, add rows and run SQL</span>
           </button>
+          {onNewVector && (
+            <button type="button" className="start-card" onClick={onNewVector}>
+              <PenTool size={28} />
+              <strong>Blank drawing</strong>
+              <span>Vector Studio: pen and shape tools, pathfinder, gradients and meshes, type and artboards — saves SVG, Illustrator (.ai) and PDF</span>
+            </button>
+          )}
           <button type="button" className="start-card" onClick={onOpen}>
             <FolderOpen size={28} />
             <strong>Open a file</strong>

@@ -332,6 +332,13 @@
         "mimeType": "image/vnd.adobe.photoshop"
       },
       {
+        "ext": "ai",
+        "name": "Adobe Illustrator Artwork",
+        "description": "Adobe Illustrator artwork",
+        "role": "Editor",
+        "mimeType": "application/postscript"
+      },
+      {
         "ext": "fstudio",
         "name": "File Editor Studio Project",
         "description": "File Editor Studio project",

@@ -108,8 +108,11 @@ export function useVectorStore(initial: VectorDoc, onChange: () => void, onError
   const end = useCallback(() => {
     const b = base.current;
     base.current = null;
-    if (b && b.doc !== docRef.current) push(b);
-  }, [push]);
+    if (b && b.doc !== docRef.current) {
+      push(b);
+      onChange();
+    }
+  }, [onChange, push]);
   /** Abandons the drag in progress, putting the document back. */
   const cancel = useCallback(() => {
     const b = base.current;

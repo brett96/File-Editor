@@ -49,7 +49,7 @@ export default defineConfig({
   // these load their own WASM / workers relative to import.meta.url; pre-bundling breaks that.
   // (sql.js is not in the list: it is CommonJS, which the dev server can only import once
   // pre-bundled, and it finds its WASM through locateFile rather than import.meta.url.)
-  optimizeDeps: { exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util', '@jsquash/avif', '@jsquash/jxl', 'heic-to'], include: ['sql.js'] },
+  optimizeDeps: { exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util', '@jsquash/avif', '@jsquash/jxl', 'heic-to'], include: ['sql.js', 'paper/dist/paper-core', 'opentype.js'] },
   worker: { format: 'es' },
   test: {
     environment: 'node',

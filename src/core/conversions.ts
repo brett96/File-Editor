@@ -15,7 +15,7 @@ import { FORMATS, FORMAT_ORDER, extensionOf } from './registry';
 import { SHEET_EXTENSIONS, SHEET_FORMATS, SHEET_FORMAT_ORDER } from './sheet/workbook';
 
 /** The kinds of open document (one per editor). */
-export type DocKind = 'flow' | 'code' | 'pdf' | 'sheet' | 'database' | 'image' | 'proimage' | 'media' | 'studio';
+export type DocKind = 'flow' | 'code' | 'pdf' | 'sheet' | 'database' | 'image' | 'proimage' | 'media' | 'studio' | 'vector';
 
 /** Families of file formats. */
 export type FileFamily = 'document' | 'pdf' | 'spreadsheet' | 'database' | 'image' | 'video' | 'audio' | 'project';
@@ -41,6 +41,7 @@ const KIND_LABEL: Record<DocKind, string> = {
   proimage: 'A photo',
   media: 'A video or audio file',
   studio: 'A Studio project',
+  vector: 'A drawing',
 };
 
 /**
@@ -58,6 +59,8 @@ const TARGETS: Record<DocKind, FileFamily[]> = {
   // image: an animated GIF, or one frame saved as a picture
   media: ['video', 'audio', 'image'],
   studio: ['video', 'audio', 'project'],
+  // a drawing is written as SVG / Illustrator (vector images), a PDF, or a picture of an artboard
+  vector: ['image', 'pdf'],
 };
 
 /** The only document format a photo can become: a Word document holding the picture. */
@@ -78,6 +81,7 @@ function families(): Map<string, FileFamily[]> {
   for (const ext of DB_EXTENSIONS) add(ext, 'database');
   for (const info of Object.values(IMAGE_FORMATS)) for (const ext of info.extensions) add(ext, 'image');
   add('psd', 'image');
+  add('ai', 'image');
   for (const id of Object.keys(CONTAINERS) as ContainerFormat[]) {
     // an animated GIF is written by the video editor but is an image file
     if (id === 'gif') continue;
@@ -110,7 +114,7 @@ export function canSaveAs(kind: DocKind, ext: string): boolean {
  */
 export function ownedExtensions(ext: string): string[] {
   const e = ext.toLowerCase();
-  if (e === 'docx' || e === 'doc' || e === 'xlsx' || e === 'pdf' || e === 'psd' || e === 'fstudio') return [e];
+  if (e === 'docx' || e === 'doc' || e === 'xlsx' || e === 'pdf' || e === 'psd' || e === 'ai' || e === 'fstudio') return [e];
   if ((DB_EXTENSIONS as readonly string[]).includes(e)) return [...DB_EXTENSIONS];
   // source code keeps the one extension it has: main.py is never offered as main.rb
   if (FORMATS.code.extensions.includes(e)) return [e];

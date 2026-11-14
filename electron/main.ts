@@ -41,7 +41,7 @@ const DATA = ['xlsx', 'xlsm', 'xltx', 'csv', 'tsv', 'tab', 'sqlite', 'sqlite3', 
 /** Video can be much larger than a document. */
 const MAX_MEDIA_BYTES = 4 * 1024 * 1024 * 1024;
 const DOCUMENTS = ['docx', 'docm', 'dotx', 'doc', 'dot', 'pdf', 'odt', 'rtf', 'md', 'markdown', 'html', 'htm', 'css', 'js', 'mjs', 'txt', ...CODE_EXTENSIONS, 'xlsx', 'xlsm', 'xltx', 'csv', 'tsv', 'tab', 'sqlite', 'sqlite3', 'db', 'db3', 'sdb'];
-const IMAGES = ['png', 'jpg', 'jpeg', 'jfif', 'gif', 'webp', 'avif', 'heic', 'heif', 'jxl', 'bmp', 'tif', 'tiff', 'ico', 'svg', 'psd'];
+const IMAGES = ['png', 'jpg', 'jpeg', 'jfif', 'gif', 'webp', 'avif', 'heic', 'heif', 'jxl', 'bmp', 'tif', 'tiff', 'ico', 'svg', 'svgz', 'ai', 'psd'];
 const MEDIA = [
   'mp4', 'm4v', 'mov', 'webm', 'mkv', 'avi', 'wmv', 'asf', 'flv', 'mpg', 'mpeg', 'vob', '3gp', '3g2', 'ogv', 'ts', 'mts', 'm2ts',
   'mp3', 'm4a', 'wav', 'flac', 'ogg', 'oga', 'opus', 'aac', 'wma', 'aiff', 'aif', 'amr',
@@ -418,6 +418,7 @@ function buildMenu() {
         { label: 'New', accelerator: 'CmdOrCtrl+N', click: () => send('new') },
         { label: 'New Spreadsheet', accelerator: 'CmdOrCtrl+Shift+N', click: () => send('new-spreadsheet') },
         { label: 'New Database', click: () => send('new-database') },
+        { label: 'New Drawing', click: () => send('new-drawing') },
         { label: 'Open…', accelerator: 'CmdOrCtrl+O', click: () => send('open') },
         { label: 'Open Folder…', accelerator: 'CmdOrCtrl+Shift+O', click: () => send('open-folder') },
         {
@@ -470,6 +471,7 @@ function buildMenu() {
         { label: 'User Guide', accelerator: 'F1', click: () => send('help:context') },
         { label: 'Studio Guide', click: () => send('help:studio') },
         { label: 'Pro Photo Guide', click: () => send('help:photo-pro') },
+        { label: 'Vector Studio Guide', click: () => send('help:vector') },
         { label: 'Keyboard Shortcuts', click: () => send('help:shortcuts') },
         { type: 'separator' },
         { label: licensed ? 'View License Info…' : 'Enter License Key…', click: () => send('license') },
@@ -1004,8 +1006,10 @@ function registerUpdateIpc() {
 // ── startup ────────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
   // deny every permission prompt (camera, mic, notifications, geolocation…) — none are needed
-  session.defaultSession.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
-  session.defaultSession.setPermissionCheckHandler(() => false);
+  // Local fonts are the one exception: Vector Studio reads an installed font's outlines to convert text to paths.
+  const isAppOrigin = (url: string) => (DEV_URL ? url.startsWith(DEV_URL) : url.startsWith(APP_ORIGIN + '/'));
+  session.defaultSession.setPermissionRequestHandler((wc, perm, cb) => cb((perm as string) === 'local-fonts' && isAppOrigin(wc.getURL())));
+  session.defaultSession.setPermissionCheckHandler((_wc, perm, origin) => (perm as string) === 'local-fonts' && isAppOrigin(origin + '/'));
   // never fetch anything from the network except the dev server
   session.defaultSession.webRequest.onBeforeRequest((details, cb) => {
     const u = details.url;

@@ -96,6 +96,57 @@ export const SECTIONS: GuideSection[] = [
     ),
   },
   {
+    id: 'folders',
+    group: 'Getting started',
+    title: 'Folders, code and the web preview',
+    keywords: 'folder directory repository project explorer file tree code syntax highlighting typescript python json preview html css javascript web page module import',
+    body: (
+      <>
+        <h3>Open a folder</h3>
+        <p>
+          <Ui>Open ▸ Open folder</Ui> (<Keys k="Ctrl+Shift+O" />) opens a whole folder, for example a website or a code repository. Its files appear
+          in a list on the left; click a folder to look inside, and a file to open it in a tab. A file that is already open is brought to the
+          front instead of being opened twice. Everything File Editor can open works from the list: documents, spreadsheets, photos, video and code.
+        </p>
+        <ul>
+          <li>The buttons above the list make a <Ui>New file</Ui> or <Ui>New folder</Ui> (inside the folder you clicked last), <Ui>Refresh</Ui> the list, collapse it, and close the folder. Open files stay open.</li>
+          <li>Point at a file or folder for <Ui>Rename</Ui> (<K>F2</K>) and <Ui>Delete</Ui>. The desktop app moves deleted files to the recycle bin / Trash; a browser deletes them for good, after asking.</li>
+          <li>Dependency and build folders (<Ui>node_modules</Ui>, <Ui>.git</Ui>, <Ui>dist</Ui>…) are shown dimmed.</li>
+          <li>The panel button beside <Ui>Open</Ui> hides and shows the list. On a phone it slides over the editor and closes when you pick a file.</li>
+        </ul>
+        <Note>
+          Chrome and Edge can save changes straight back into the folder (the browser asks once). Other browsers open a folder read-only: files
+          can be edited, and saving downloads a copy. The desktop app always saves in place.
+        </Note>
+        <h3>Code files</h3>
+        <p>
+          Source and configuration files open in the code editor with syntax highlighting: TypeScript, Python, JSON, YAML, Go, Rust, Java, C and
+          C++, C#, PHP, Ruby, SQL, shell scripts, Dockerfiles and many more. They are saved exactly as text, under their own extension. The
+          language is shown at the top of the editor and in the status bar.
+        </p>
+        <h3>Preview a web page with its whole project</h3>
+        <p>
+          In an HTML, CSS or JavaScript file, <Ui>Preview</Ui> or <Ui>Split</Ui> shows the page running. When the file comes from an opened folder,
+          the preview uses the folder's other files too: stylesheets (and what they import), scripts and JavaScript modules, images, fonts and
+          media. Changes you have not saved yet are included, also those in other open tabs of the same folder.
+        </p>
+        <ul>
+          <li>A stylesheet or script is previewed inside the page it belongs to (the nearest <Ui>index.html</Ui>); choose another with <Ui>Page</Ui>.</li>
+          <li>Clicking a link to another page of the folder shows that page.</li>
+          <li><Ui>Refresh</Ui> rebuilds the preview after files changed outside File Editor.</li>
+          <li>
+            <Ui>not loaded</Ui> lists what the preview could not use: a file that is missing, an online address (the preview never goes online),
+            a package import such as <Ui>react</Ui>, or a file that needs a build step first (TypeScript, JSX, Sass).
+          </li>
+        </ul>
+        <Tip>
+          Opened one page on its own? The desktop app still finds the files beside it. In a browser, open the page's folder instead so the
+          preview can reach them.
+        </Tip>
+      </>
+    ),
+  },
+  {
     id: 'saving',
     group: 'Getting started',
     title: 'Saving, auto-save and converting',
@@ -591,6 +642,114 @@ export const SECTIONS: GuideSection[] = [
   },
 
   // ───────────────────────────── Video & audio ─────────────────────────────
+  {
+    id: 'vector',
+    group: 'Vector Studio (drawings)',
+    title: 'Vector Studio: the workspace',
+    desktop: true,
+    keywords: 'vector illustrator ai svg drawing pen path artboard logo icon',
+    body: (
+      <>
+        <p>
+          Vector Studio is a drawing editor in the style of Illustrator. Choose <Ui>New ▸ Blank drawing</Ui>, or open an <code>.svg</code> or Adobe
+          Illustrator <code>.ai</code> file. Artwork is made of paths, type and placed pictures that stay sharp at any size.
+        </p>
+        <Defs
+          rows={[
+            [<>Menu bar</>, <><Ui>Object</Ui> (group, arrange, clipping masks, compound paths, lock / hide, place and trace images), <Ui>Path</Ui> (join, outline stroke, offset, simplify, pathfinder), <Ui>Type</Ui>, <Ui>Select</Ui>. The current tool's options sit beside them.</>],
+            [<>Tools (left)</>, <>Selection and direct selection, pen, curvature, pencil, blob brush, line and shapes, type, eraser, scissors, shape builder, gradient, mesh, eyedropper, artboard, hand and zoom. Hover a tool for its shortcut.</>],
+            [<>Panels (right)</>, <>Appearance (fill, stroke, opacity, blend mode), Color, Gradient, Swatches, Color guide, Transform &amp; align, Pathfinder, Character &amp; paragraph, Layers and Artboards.</>],
+          ]}
+        />
+        <h3>Opening and saving</h3>
+        <Defs
+          rows={[
+            [<>SVG</>, <>The working format. A drawing saved here reopens exactly: artboards, layers, meshes, text settings and swatches. Every browser and vector app shows the same file as a normal SVG. If another program changes the file, File Editor reads its version of the drawing.</>],
+            [<>Illustrator (.ai)</>, <>Files saved with <em>Create PDF Compatible File</em> (Illustrator's default) open as editable paths, gradients, text and images, one artboard per page. Live effects, symbols and Illustrator's own layer names are flattened into plain objects. The .ai file is never overwritten: Save writes an SVG beside it. <Ui>Save as</Ui> can write an .ai file that Illustrator opens.</>],
+            [<>PDF</>, <>One vector page per artboard.</>],
+            [<>PNG, JPEG, WebP</>, <>A picture of one artboard at 0.5× to 8×, with a transparent or coloured background.</>],
+          ]}
+        />
+        <Note>Text is written as outlines in .ai and PDF files, so it looks the same on every computer but is no longer editable type there. Keep the SVG as your master copy.</Note>
+        <h3>Moving around</h3>
+        <ul>
+          <li>Scroll to pan, <K>Ctrl</K> + scroll to zoom, hold <K>Space</K> and drag to pan. <K>Ctrl</K>+<K>0</K> fits the artboard, <K>Ctrl</K>+<K>1</K> is 100 %.</li>
+          <li>Dragging an object snaps it to artboard edges and centres and to other objects (pink guides); hold <K>Ctrl</K> to move freely, <K>Shift</K> to keep to one axis, <K>Alt</K> to drag out a copy.</li>
+        </ul>
+      </>
+    ),
+  },
+  {
+    id: 'vector-draw',
+    group: 'Vector Studio (drawings)',
+    title: 'Drawing and editing paths',
+    desktop: true,
+    keywords: 'pen curvature pencil blob brush line anchor handle bezier scissors eraser pathfinder shape builder unite subtract',
+    body: (
+      <>
+        <Defs
+          rows={[
+            [<>Pen <K>P</K></>, <>Click for corner points, drag for curves. Click the first point to close the path; <K>Enter</K> ends an open one. On a selected path, click a segment to add a point, a point to remove it, or an end point to carry on drawing.</>],
+            [<>Curvature <K>Shift</K>+<K>~</K></>, <>Click to place points and the curve flows through them; double-click for a corner.</>],
+            [<>Pencil <K>N</K></>, <>Draw freehand; the line is smoothed into a few points (set <Ui>Smoothness</Ui>). Ending near the start closes the shape.</>],
+            [<>Blob brush <K>Shift</K>+<K>B</K></>, <>Paints filled shapes. Strokes that touch a blob of the same colour merge with it.</>],
+            [<>Line and shapes</>, <>Line <K>\</K>, rectangle <K>M</K> (with a corner radius), ellipse <K>L</K>, polygon <K>Y</K>, star <K>S</K>. <K>Shift</K> constrains, <K>Alt</K> draws from the centre; a click makes a default size.</>],
+            [<>Direct selection <K>A</K></>, <>Click a path to show its anchor points; drag points, or the handles of a selected point. <K>Alt</K>-drag a handle to break a smooth point; <Ui>Corner</Ui> / <Ui>Smooth</Ui> convert points; <K>Delete</K> removes them.</>],
+            [<>Eraser <K>Shift</K>+<K>E</K></>, <>Rubs out part of the selected objects, or of everything it touches when nothing is selected.</>],
+            [<>Scissors <K>C</K></>, <>Click a path to cut it there.</>],
+            [<>Shape builder <K>Shift</K>+<K>M</K></>, <>Select overlapping shapes, then drag across the regions to merge into one. <K>Alt</K>-click a region to remove it.</>],
+          ]}
+        />
+        <h3>Pathfinder</h3>
+        <p>
+          Select two or more paths and use the <Ui>Pathfinder</Ui> panel: <Ui>Unite</Ui>, <Ui>Minus front</Ui>, <Ui>Intersect</Ui>, <Ui>Exclude</Ui>,
+          and <Ui>Divide</Ui>, <Ui>Trim</Ui>, <Ui>Merge</Ui>, <Ui>Crop</Ui>, <Ui>Outline</Ui>, <Ui>Minus back</Ui>. Curves stay curves. Convert text
+          to outlines first to combine it with shapes.
+        </p>
+        <h3>More under Path and Object</h3>
+        <ul>
+          <li><Ui>Outline stroke</Ui> turns a stroke into a filled shape; <Ui>Offset path</Ui> makes a larger or smaller copy; <Ui>Simplify</Ui> removes surplus points; <Ui>Join</Ui> <K>Ctrl</K>+<K>J</K> connects open ends.</li>
+          <li><Ui>Make clipping mask</Ui> <K>Ctrl</K>+<K>7</K>: the topmost selected path masks the rest. <Ui>Make compound path</Ui> <K>Ctrl</K>+<K>8</K>: overlaps become holes.</li>
+          <li><Ui>Place image</Ui> adds a picture; <Ui>Image trace</Ui> turns it into flat-coloured shapes (2–24 colours, or black and white).</li>
+        </ul>
+      </>
+    ),
+  },
+  {
+    id: 'vector-color',
+    group: 'Vector Studio (drawings)',
+    title: 'Colour, gradients, type and artboards',
+    desktop: true,
+    keywords: 'swatch harmony gradient mesh color guide text outline type on path character paragraph style artboard export icon',
+    body: (
+      <>
+        <h3>Colour</h3>
+        <ul>
+          <li>In <Ui>Appearance</Ui>, pick <Ui>Fill</Ui> or <Ui>Stroke</Ui> (<K>X</K> switches, <K>Shift</K>+<K>X</K> swaps, <K>/</K> is none, <K>D</K> the default white and black), then set it in <Ui>Color</Ui> as hex, HSB, RGB or CMYK.</li>
+          <li><Ui>Swatches</Ui> belong to the document: <Ui>+</Ui> adds the current colour or gradient, <K>Alt</K>-click removes one.</li>
+          <li><Ui>Color guide</Ui> suggests colours that go with the current one (complementary, analogous, triad, shades…); <Ui>Save</Ui> adds them to the swatches.</li>
+          <li>The eyedropper <K>I</K> copies another object's fill and stroke.</li>
+        </ul>
+        <h3>Gradients and meshes</h3>
+        <ul>
+          <li>Choose <Ui>Linear</Ui> or <Ui>Radial</Ui>, then edit the stops on the gradient bar: click to add, drag to move, select one to recolour it or set its transparency. Drag across the object with the Gradient tool <K>G</K> to set direction and length.</li>
+          <li>The Mesh tool <K>U</K> gives soft, photographic shading: click inside a shape to add mesh lines, click a point and choose its colour, drag points to bend the blend. A mesh is saved in SVG as a picture clipped to the shape, and stays editable here.</li>
+        </ul>
+        <h3>Type</h3>
+        <ul>
+          <li>With the Type tool <K>T</K>: click for a line of point type, drag for a box the text wraps in, or click a path to run text along it. Double-click text to edit it; <K>Esc</K> finishes.</li>
+          <li><Ui>Character &amp; paragraph</Ui> sets font, size, weight, tracking, leading and alignment. <Ui>Save</Ui> stores them as a named style you can apply to other text.</li>
+          <li><Ui>Type ▸ Create outlines</Ui> <K>Ctrl</K>+<K>Shift</K>+<K>O</K> converts text to paths. Outlines come from the font's own glyphs when the app may read installed fonts, and are otherwise traced from the rendered text.</li>
+        </ul>
+        <h3>Artboards</h3>
+        <p>
+          One file can hold many canvases: pages of a layout, sizes of an advert, a set of icons. Add them from the <Ui>Artboards</Ui> panel
+          (presets for print, screens and icons) or draw them with the Artboard tool <K>Shift</K>+<K>O</K>; drag one to move it with its
+          artwork, drag its handles to resize it. <Ui>Save as</Ui> exports all artboards or just one.
+        </p>
+      </>
+    ),
+  },
   {
     id: 'video-quick',
     group: 'Video & audio',

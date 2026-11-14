@@ -103,7 +103,7 @@ browser cannot decode (AVI, WMV, FLV, MPEG-PS, 3GP…) are converted once to MP4
 ffmpeg.wasm on open, edited normally, and can be written back to the legacy format on save.
 Every image save re-encodes from pixels, so EXIF/GPS metadata is never copied.
 
-### Studio and Pro Photo (desktop)
+### Studio, Vector Studio and Pro Photo (desktop)
 
 **Studio** (`core/studio`, `ui/studio`) is a plain-data project (`model.ts`) drawn by one
 compositor (`compose.ts`) that the preview and the exporter share. Per layer, in order: source
@@ -120,6 +120,34 @@ as "off".
 | Expressions | `expr.ts` | A small parser/evaluator (no `eval`), so a shared project cannot run code. `data("col")` reads `Project.data` (imported CSV). |
 | Motion tracking | `track.ts` | Patch matching on grey frames; the editor seeks a hidden `<video>` frame by frame and writes mask keyframes. |
 | Title presets | `presets.ts` | Build ordinary text / colour clips with keyframes. |
+
+**Vector Studio** (`core/vector`, `ui/vector`) edits drawings: SVG and Adobe Illustrator files.
+
+- *Model* (`model.ts`): artboards over one coordinate space, layers, and objects (path, text,
+  image, group). Plain immutable data: an edit shares every untouched node with the previous
+  document, so undo is a list of documents and the canvas re-renders only changed objects.
+  Paths hold anchors with absolute handles and no transform (moving a path rewrites its
+  points); text and images carry a matrix. Paints are solid, linear / radial gradients in the
+  unit square of the object's box, or a gradient mesh.
+- *One serialiser* (`svg.ts`): the canvas draws each object from the same SVG markup that is
+  written to disk, so the file is what was on screen. A saved .svg also embeds the document in
+  `<metadata>` with a checksum of the drawing; on open it is used only while the checksum still
+  matches, otherwise the drawing is parsed (`svg-import.ts`: shapes, transforms, CSS classes,
+  gradients, `<use>`, clip paths, text, Illustrator / Inkscape layers).
+- *Geometry* (`geom.ts`): Pathfinder, Shape Builder regions, scissors, eraser, blob brush,
+  stroke outlining, offsetting and curve fitting run on Paper.js, headless and loaded on demand,
+  so results keep their Bézier curves. Stroke outlines are built as the union of a box per
+  segment and a wedge or disc per corner, which survives self-crossing scribbles.
+- *Gradient mesh* (`mesh.ts`): rendered to pixels by Catmull-Rom interpolation of position and
+  colour over the grid, then clipped to the shape (SVG has no mesh primitive).
+- *Illustrator files* (`ai-import.ts`): a PDF-compatible .ai file is a PDF, so pdf.js parses it
+  and its operator list is replayed into objects instead of onto a canvas (paths, shadings as
+  gradients, text runs, images; one artboard per page). Illustrator's private data is not read,
+  and an opened .ai file is never written back: Save produces an SVG.
+- *Export* (`browser.ts`): SVG; PDF and .ai through pdfmake's vector SVG renderer, one page per
+  artboard, with text converted to outlines (glyph outlines via opentype.js when the installed
+  font can be read, otherwise traced from the browser's rendering with `trace.ts`); PNG / JPEG /
+  WebP by rasterising an artboard.
 
 **Pro Photo** (`core/pro-image`, `ui/pro-image`) keeps immutable layers. Adjustment layers run
 through `applyAdjust`; per-pixel ones live in `adjust.ts`, neighbourhood and table ones
@@ -158,6 +186,36 @@ table) is started one frame late behind a spinner whose animation runs on the co
 families of format; the save path refuses a file name whose extension the chosen format does
 not own, in the browser (`platform/host.ts`) and in the desktop main process.
 
+### Folders, source code and the web preview
+
+A folder is opened through `OpenedFolder` (`platform/folders.ts`): a `FileSystemDirectoryHandle`
+in Chrome / Edge, a root granted by the desktop main process, or a read-only in-memory list of
+files where the browser only offers `<input webkitdirectory>`. Paths are always relative to the
+folder root and '/'-separated (`core/web/paths.ts`); directories are listed one level at a time,
+so a large repository opens at once. A file opened from the tree is an ordinary `OpenedFile`
+that also carries `folder: { folder, path }`; the shell uses that to focus an existing tab
+rather than open a file twice.
+
+Source files other than HTML / CSS / JS share one format, `code` (`core/code/languages.ts`): the
+file keeps its own extension and is written back as UTF-8 text. Grammars come from
+`@codemirror/language-data`, each in its own lazily loaded chunk.
+
+The preview of a web page is built by `core/web/bundle.ts`, a pure function from an entry path
+and a `readFile` callback to one self-contained HTML document: stylesheets are inlined with
+their `@import`s, `url(…)` and asset attributes become `data:` URLs, classic scripts are
+inlined, and ES modules are collected into a graph that a small bootstrap turns into `blob:`
+URLs inside the frame, dependencies first. The reader given to it answers from the open tabs'
+live text first (`ui/workspace/buffers.ts`), then from the folder, so unsaved edits are previewed.
+What cannot be resolved is reported, never fetched: the preview is offline.
+
+A frame filled through `srcdoc` inherits the app's CSP, under which inline scripts do not run.
+So the bundled page is served from a URL that carries its own policy (`ui/code/preview-host.ts`):
+`fe-preview://` in the desktop app, and in the web build a service worker scoped to
+`__preview__/` that answers from Cache Storage. Both send
+`Content-Security-Policy: sandbox allow-scripts allow-forms allow-modals; default-src data: blob: 'unsafe-inline' 'unsafe-eval'`,
+which gives the page an opaque origin (no access to the app or its storage) and no network.
+The development server has no CSP and uses a sandboxed `srcdoc` frame.
+
 ## Technology choices
 
 | Concern | Choice | Reason |
@@ -178,6 +236,13 @@ not own, in the browser (`platform/host.ts`) and in the desktop main process.
 - The preload exposes a five-function API (`openFile`, `saveFile`, `saveFileAs`, `onOpenFile`,
   `appInfo`). The main process only reads/writes paths that came from a native dialog, an OS
   file-open event or the command line — the renderer cannot name arbitrary paths.
+- An opened folder is one more grant. The main process keeps its real path; the renderer names a
+  folder id and a relative path, which is rejected unless it is clean (no absolute path, drive
+  letter, backslash or `..`) and its real path, following symlinks, is still inside the root.
+  Deleting moves to the recycle bin / Trash; creating never overwrites. The preview of a page
+  opened on its own may read, read-only, files in that page's own directory.
+- The web preview is served from `fe-preview://` to a sub-frame only, sandboxed and without any
+  network source in its policy; the request filter still cancels every non-app request.
 - App content is served from a custom `app://` protocol with path-traversal checks; navigation
   and `window.open` to anything else are blocked (external links open in the system browser).
 - Strict Content-Security-Policy (no remote scripts, no `eval`), Electron fuses flipped at
