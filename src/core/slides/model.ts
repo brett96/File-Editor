@@ -361,3 +361,42 @@ export function resizeDeck(deck: Deck, width: number, height: number): Deck {
   }));
   return { ...deck, width, height, slides };
 }
+
+const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/** Every paragraph list in a slide (shape text and table cells), with a way to write it back. */
+function mapSlideText(slide: Slide, fn: (ps: Paragraph[]) => Paragraph[]): Slide {
+  return {
+    ...slide,
+    elements: slide.elements.map((e): SlideElement => {
+      if (e.locked) return e;
+      if (e.kind === 'shape') return { ...e, text: fn(e.text) };
+      if (e.kind === 'table') return { ...e, cells: e.cells.map((row) => row.map((c) => (c ? { ...c, text: fn(c.text) } : c))) };
+      return e;
+    }),
+  };
+}
+
+/** The elements of a slide whose text contains `find`. */
+export function findInSlide(slide: Slide, find: string, matchCase = false): string[] {
+  if (!find) return [];
+  const has = (ps: Paragraph[]) => ps.some((p) => (matchCase ? paragraphText(p).includes(find) : paragraphText(p).toLowerCase().includes(find.toLowerCase())));
+  return slide.elements.filter((e) => !e.locked && ((e.kind === 'shape' && has(e.text)) || (e.kind === 'table' && e.cells.some((row) => row.some((c) => c && has(c.text)))))).map((e) => e.id);
+}
+
+/**
+ * Replaces text throughout the deck (slides and speaker notes), keeping the formatting of the
+ * text it replaces. Text that changes formatting part-way through a match is left alone.
+ */
+export function replaceInDeck(deck: Deck, find: string, replace: string, matchCase = false): { deck: Deck; count: number } {
+  if (!find) return { deck, count: 0 };
+  const re = new RegExp(escapeRe(find), matchCase ? 'g' : 'gi');
+  let count = 0;
+  const swap = (t: string) =>
+    t.replace(re, () => {
+      count++;
+      return replace;
+    });
+  const slides = deck.slides.map((s) => ({ ...mapSlideText(s, (ps) => ps.map((p) => ({ ...p, runs: p.runs.map((r) => ({ ...r, text: swap(r.text) })) }))), notes: swap(s.notes) }));
+  return count ? { deck: { ...deck, slides }, count } : { deck, count: 0 };
+}

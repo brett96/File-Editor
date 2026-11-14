@@ -358,6 +358,11 @@ export const SECTIONS: GuideSection[] = [
           <Ui>Design</Ui> has seven themes (colours and fonts for the whole deck), the slide size (16:9, 4:3, 16:10, A4, portrait), and the
           background of the current slide: a colour, a two-colour gradient or a picture, with <Ui>Apply to all</Ui>.
         </p>
+        <h3>Finding text and sorting slides</h3>
+        <ul>
+          <li><K>Ctrl</K>+<K>F</K> (or the magnifier at the top right) opens <Ui>Find and replace</Ui>: <Ui>Find next</Ui> jumps to the next slide and object containing the text; <Ui>Replace all</Ui> changes it on every slide and in the speaker notes, keeping its formatting.</li>
+          <li>The grid button beside it is the <b>slide sorter</b>: every slide at once. Drag slides to reorder them; double-click one to go back to editing it.</li>
+        </ul>
         <h3>Transitions and the slide show</h3>
         <p>
           <Ui>Transitions</Ui> sets how the current slide arrives (Fade, Push, Wipe, Cover, Zoom) and how long it takes. <K>F5</K> or{' '}
@@ -369,6 +374,7 @@ export const SECTIONS: GuideSection[] = [
             ['← / right-click', <>Previous slide</>],
             ['Home / End', <>First / last slide</>],
             ['B', <>Black screen, and back</>],
+            ['S', <>Show or hide the speaker notes of the current slide</>],
             ['Esc', <>End the show</>],
           ]}
         />

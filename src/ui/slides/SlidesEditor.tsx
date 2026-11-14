@@ -22,6 +22,8 @@ import {
   IndentDecrease,
   IndentIncrease,
   Italic,
+  LayoutGrid,
+  Search,
   Link as LinkIcon,
   List,
   ListOrdered,
@@ -47,12 +49,14 @@ import {
   TRANSITIONS,
   cloneElement,
   cloneSlide,
+  findInSlide,
   image,
   isEmptyText,
   layoutElements,
   line,
   newSlide,
   para,
+  replaceInDeck,
   resizeDeck,
   shape,
   styleAll,
@@ -74,7 +78,7 @@ import {
   type TransitionType,
 } from '../../core/slides/model';
 import { backgroundCss, cellTextStyle, elementInner, shapePath, shapeTextStyle, slideHtml, paragraphsHtml, type TextStyle } from '../../core/slides/render';
-import { Popover, cx } from '../components';
+import { Modal, Popover, PromptModal, cx } from '../components';
 import { openGuide } from '../help/open';
 import { useTabActive } from '../tab-active';
 import { readPicture } from './export';
@@ -235,6 +239,10 @@ export const SlidesEditor = forwardRef<SlidesHandle, Props>(function SlidesEdito
   const [guides, setGuides] = useState<{ x?: number; y?: number }[]>([]);
   const [marquee, setMarquee] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [dropAt, setDropAt] = useState<number | null>(null);
+  const [sorter, setSorter] = useState(false);
+  const [linkOpen, setLinkOpen] = useState<string | null>(null);
+  const [findOpen, setFindOpen] = useState(false);
+  const [find, setFind] = useState({ text: '', replace: '', matchCase: false, note: '' });
   const slideIndex = Math.min(index, deck.slides.length - 1);
   const slide = deck.slides[slideIndex];
   const indexRef = useRef(slideIndex);
@@ -420,10 +428,11 @@ export const SlidesEditor = forwardRef<SlidesHandle, Props>(function SlidesEdito
       );
     });
   };
-  const addLink = () => {
-    const url = window.prompt('Link address (https://…). Leave empty to remove the link.', cur.run?.link ?? 'https://');
-    if (url === null) return;
-    const clean = url.trim();
+  /** Asks for the address (the text selection is kept and put back when the answer comes). */
+  const addLink = () => setLinkOpen(cur.run?.link ?? 'https://');
+  const applyLink = (url: string) => {
+    setLinkOpen(null);
+    const clean = url === 'https://' ? '' : url.trim();
     if (clean && !/^(https?:|mailto:)/i.test(clean)) return onError('Links must start with https://, http:// or mailto:.');
     if (editingRef.current && editable.current && restoreRange()) {
       const sel = window.getSelection();
@@ -637,6 +646,32 @@ export const SlidesEditor = forwardRef<SlidesHandle, Props>(function SlidesEdito
     // merged cells cannot survive a change of grid: they are split
     next = { ...next, cells: next.cells.map((row) => row.map((cell) => (cell ? { ...cell, colSpan: undefined, rowSpan: undefined } : blank()))) };
     setElements((els) => els.map((e) => (e.id === t.id ? next : e)));
+  };
+
+  // ── find and replace ────────────────────────────────────────────────────
+  const findNext = () => {
+    const d = deckRef.current;
+    if (!find.text) return;
+    endEdit();
+    // from the slide after this one (or later on this slide), wrapping round
+    for (let step = 0; step <= d.slides.length; step++) {
+      const i = (indexRef.current + step) % d.slides.length;
+      const hits = findInSlide(d.slides[i], find.text, find.matchCase);
+      const after = step === 0 ? hits.slice(hits.indexOf(selectedRef.current[0]) + 1) : hits;
+      if (after.length) {
+        setIndex(i);
+        setSelected([after[0]]);
+        setFind((f) => ({ ...f, note: `Found on slide ${i + 1}` }));
+        return;
+      }
+    }
+    setFind((f) => ({ ...f, note: `“${find.text}” was not found.` }));
+  };
+  const replaceAll = () => {
+    endEdit();
+    const res = replaceInDeck(deckRef.current, find.text, find.replace, find.matchCase);
+    if (res.count) commit(res.deck);
+    setFind((f) => ({ ...f, note: res.count ? `Replaced ${res.count} ${res.count === 1 ? 'occurrence' : 'occurrences'}.` : `“${find.text}” was not found.` }));
   };
 
   // ── stage geometry ──────────────────────────────────────────────────────
@@ -921,6 +956,9 @@ export const SlidesEditor = forwardRef<SlidesHandle, Props>(function SlidesEdito
     } else if (mod && k === 'y') {
       e.preventDefault();
       redo();
+    } else if (mod && (k === 'f' || k === 'h')) {
+      e.preventDefault();
+      setFindOpen(true);
     } else if (mod && k === 'm') {
       e.preventDefault();
       addSlide();
@@ -1280,13 +1318,41 @@ export const SlidesEditor = forwardRef<SlidesHandle, Props>(function SlidesEdito
         <span style={{ flex: 1 }} />
         <button type="button" className="btn btn-icon" title="Undo (Ctrl+Z)" aria-label="Undo" disabled={!hist.past.length} onClick={undo}><Undo2 size={15} /></button>
         <button type="button" className="btn btn-icon" title="Redo (Ctrl+Y)" aria-label="Redo" disabled={!hist.future.length} onClick={redo}><Redo2 size={15} /></button>
+        <button type="button" className="btn btn-icon" title="Find and replace (Ctrl+F)" aria-label="Find and replace" onClick={() => setFindOpen(true)}><Search size={15} /></button>
+        <button type="button" className={cx('btn btn-icon', sorter && 'is-active')} title="Slide sorter: see every slide, drag to reorder" aria-label="Slide sorter" aria-pressed={sorter} onClick={() => { endEdit(); setSorter((v) => !v); }}><LayoutGrid size={15} /></button>
         <button type="button" className="btn btn-icon" title="Start slide show (F5)" aria-label="Start slide show" onClick={() => startShow(true)}><Play size={15} /></button>
         <button type="button" className="btn btn-icon" title="Presentations guide" aria-label="Presentations guide" onClick={() => openGuide('slides')}><CircleHelp size={15} /></button>
       </div>
       <div className="sl-ribbon" role="toolbar" aria-label="Ribbon">
         {tab === 'home' ? homeTab : tab === 'insert' ? insertTab : tab === 'design' ? designTab : tab === 'transitions' ? transitionsTab : showTab}
       </div>
-      <div className="sl-body">
+      {sorter && (
+        <div className="sl-body">
+          <div className="sl-sorter" role="listbox" aria-label="Slide sorter">
+            {deck.slides.map((s, i) => (
+              <div
+                key={s.id}
+                role="option"
+                aria-selected={i === slideIndex}
+                aria-label={`Slide ${i + 1}${s.hidden ? ' (hidden)' : ''}`}
+                tabIndex={0}
+                className={cx('sl-thumb', i === slideIndex && 'is-active', s.hidden && 'is-hidden', dropAt === i && 'is-drop')}
+                draggable
+                onClick={() => goto(i)}
+                onDoubleClick={() => { goto(i); setSorter(false); }}
+                onDragStart={(e) => { e.dataTransfer.setData('text/x-slide', String(i)); e.dataTransfer.effectAllowed = 'move'; }}
+                onDragOver={(e) => { if (e.dataTransfer.types.includes('text/x-slide')) { e.preventDefault(); setDropAt(i); } }}
+                onDragLeave={() => setDropAt((v) => (v === i ? null : v))}
+                onDrop={(e) => { e.preventDefault(); setDropAt(null); const from = Number(e.dataTransfer.getData('text/x-slide')); if (Number.isFinite(from)) moveSlide(from, i); }}
+              >
+                <Thumb deck={deck} slide={s} width={240} />
+                <span className="sl-thumb-num">{i + 1}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="sl-body" hidden={sorter} style={sorter ? { display: 'none' } : undefined}>
         <div className="sl-list" role="listbox" aria-label="Slides">
           {deck.slides.map((s, i) => (
             <div
@@ -1354,6 +1420,28 @@ export const SlidesEditor = forwardRef<SlidesHandle, Props>(function SlidesEdito
           </div>
         </div>
       </div>
+      {linkOpen !== null && <PromptModal title="Link" label="Address (leave empty to remove the link)" initial={linkOpen} placeholder="https://example.com" confirmLabel="Apply" onSubmit={applyLink} onClose={() => setLinkOpen(null)} />}
+      {findOpen && (
+        <Modal
+          title="Find and replace"
+          width={420}
+          onClose={() => setFindOpen(false)}
+          footer={
+            <>
+              <span className="dialog-hint" role="status">{find.note}</span>
+              <span className="spacer" />
+              <button type="button" className="btn" disabled={!find.text} onClick={findNext}>Find next</button>
+              <button type="button" className="btn btn-primary" disabled={!find.text} onClick={replaceAll}>Replace all</button>
+            </>
+          }
+        >
+          <form className="sl-find" onSubmit={(e) => { e.preventDefault(); findNext(); }}>
+            <label>Find<input className="input" value={find.text} data-autofocus onChange={(e) => setFind({ ...find, text: e.target.value, note: '' })} /></label>
+            <label>Replace with<input className="input" value={find.replace} onChange={(e) => setFind({ ...find, replace: e.target.value, note: '' })} /></label>
+            <label className="check"><input type="checkbox" checked={find.matchCase} onChange={(e) => setFind({ ...find, matchCase: e.target.checked })} /> Match case</label>
+          </form>
+        </Modal>
+      )}
       {show !== null && <SlideShow deck={deck} start={show} onExit={(at) => { setShow(null); setIndex(at); }} />}
     </div>
   );

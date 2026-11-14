@@ -11,6 +11,7 @@ export function SlideShow({ deck, start, onExit }: { deck: Deck; start: number; 
   const [dir, setDir] = useState(1);
   const [black, setBlack] = useState(false);
   const [done, setDone] = useState(false);
+  const [notes, setNotes] = useState(false);
   const [size, setSize] = useState({ w: window.innerWidth, h: window.innerHeight });
   const root = useRef<HTMLDivElement>(null);
   const posRef = useRef(pos);
@@ -54,6 +55,7 @@ export function SlideShow({ deck, start, onExit }: { deck: Deck; start: number; 
       else if (e.key === 'Home') goRef.current(0);
       else if (e.key === 'End') goRef.current(order.length - 1);
       else if (e.key === 'b' || e.key === 'B' || e.key === '.') setBlack((v) => !v);
+      else if (e.key === 's' || e.key === 'S') setNotes((v) => !v);
       else return;
       e.preventDefault();
     };
@@ -115,10 +117,16 @@ export function SlideShow({ deck, start, onExit }: { deck: Deck; start: number; 
         </>
       )}
       {black && <div className="sl-show-black" />}
+      {notes && cur && !done && (
+        <div className="sl-show-notes" onClick={(e) => e.stopPropagation()}>
+          {cur.s.notes.trim() || 'This slide has no speaker notes.'}
+        </div>
+      )}
       <div className="sl-show-bar" onClick={(e) => e.stopPropagation()}>
         <button type="button" onClick={() => go(pos - 1)} aria-label="Previous slide">‹</button>
         <span>{Math.min(pos + 1, order.length)} / {order.length}</span>
         <button type="button" onClick={() => go(pos + 1)} aria-label="Next slide">›</button>
+        <button type="button" onClick={() => setNotes((v) => !v)} title="Show or hide speaker notes (S)">Notes</button>
         <button type="button" onClick={exit}>Exit</button>
       </div>
     </div>

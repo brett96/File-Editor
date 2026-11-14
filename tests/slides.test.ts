@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs';
 import { deflateSync } from 'node:zlib';
 import JSZip from 'jszip';
 import {
-  THEMES, cloneSlide, image, isEmptyText, layoutElements, line, newDeck, newSlide, normalizeParagraph, para, plainText, resizeDeck, shape, styleAll, table, textBox,
+  THEMES, cloneSlide, findInSlide, image, isEmptyText, layoutElements, line, newDeck, newSlide, normalizeParagraph, para, plainText, replaceInDeck, resizeDeck, shape, styleAll, table, textBox,
   type ImageElement, type LineElement, type ShapeElement, type TableElement,
 } from '../src/core/slides/model';
 import { isPptx, readPptx } from '../src/core/slides/pptx-read';
@@ -99,6 +99,29 @@ describe('presentation model', () => {
     expect(t1.cols.reduce((a, b) => a + b, 0)).toBeCloseTo(t1.w, 6);
     // 4:3 is taller than 16:9 scaled down: content is centred vertically
     expect(t1.y).toBeCloseTo(t0.y * 0.75 + 90, 6);
+  });
+});
+
+describe('find and replace', () => {
+  it('replaces text everywhere, keeping formatting, and finds the elements that contain it', () => {
+    const deck = sampleDeck();
+    expect(findInSlide(deck.slides[1], 'REVENUE')).toHaveLength(1);
+    expect(findInSlide(deck.slides[1], 'REVENUE', true)).toHaveLength(0);
+    expect(findInSlide(deck.slides[2], 'item')).toHaveLength(1);
+    expect(findInSlide(deck.slides[1], '')).toEqual([]);
+    const { deck: next, count } = replaceInDeck(deck, 'e', '3');
+    expect(count).toBeGreaterThan(8);
+    expect(plainText((next.slides[0].elements[0] as ShapeElement).text)).toBe('Quart3rly R3vi3w');
+    expect(next.slides[0].notes).toBe('W3lcom3 3v3ryon3.\nS3cond lin3.');
+    const body = next.slides[1].elements[1] as ShapeElement;
+    expect(body.text[2].runs[0]).toMatchObject({ text: 'Bold ', bold: true });
+    expect(body.text[2].runs[2]).toMatchObject({ text: ' <tail> & "quot3s"', italic: true, size: 30 });
+    expect(plainText((next.slides[2].elements.find((e) => e.kind === 'table') as TableElement).cells[2][0]!.text)).toBe('M3rg3d');
+    // special characters are literal, and nothing found changes nothing
+    expect(replaceInDeck(deck, '<tail>', 'x').count).toBe(1);
+    expect(replaceInDeck(deck, '.*', 'x').count).toBe(0);
+    expect(replaceInDeck(deck, 'zzz', 'x').deck).toBe(deck);
+    expect(replaceInDeck(deck, 'bold', 'B', true).count).toBe(0);
   });
 });
 
