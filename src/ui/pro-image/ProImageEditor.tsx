@@ -46,6 +46,8 @@ import {
   CircleDashed,
   WandSparkles,
   Bandage,
+  Columns2,
+  Rows2,
 } from 'lucide-react';
 import type { Pixels } from '../../core/media/image-ops';
 import { ADJUST_LABELS, type AdjustType } from '../../core/pro-image/adjust';
@@ -151,6 +153,42 @@ const TOOLS: { id: Tool; label: string; key: string; icon: ReactNode }[] = [
   { id: 'hand', label: 'Hand', key: 'H', icon: <Hand size={17} /> },
 ];
 
+/** Tools that share one place in the tool rail; hovering it reveals the others. */
+const TOOL_GROUPS: Tool[][] = [
+  ['move'],
+  ['marquee', 'ellipse-marquee'],
+  ['lasso', 'wand'],
+  ['brush', 'eraser'],
+  ['clone'],
+  ['heal', 'remove', 'patch'],
+  ['dodge', 'burn'],
+  ['bucket', 'gradient'],
+  ['text'],
+  ['shape'],
+  ['eyedropper'],
+  ['hand'],
+];
+
+type Compare = 'off' | 'side' | 'stack';
+
+const THEMES = [
+  { id: 'graphite', label: 'Graphite (default)' },
+  { id: 'midnight', label: 'Midnight (darker, high contrast)' },
+  { id: 'light', label: 'Light' },
+] as const;
+type ThemeId = (typeof THEMES)[number]['id'];
+const ACCENTS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#ef4444'];
+const LOOK_KEY = 'file-editor.pro-photo.look';
+
+function loadLook(): { theme: ThemeId; accent: string } {
+  try {
+    const v = JSON.parse(localStorage.getItem(LOOK_KEY) ?? 'null') as { theme?: string; accent?: string } | null;
+    return { theme: THEMES.some((t) => t.id === v?.theme) ? (v!.theme as ThemeId) : 'graphite', accent: /^#[0-9a-f]{6}$/i.test(v?.accent ?? '') ? v!.accent! : ACCENTS[0] };
+  } catch {
+    return { theme: 'graphite', accent: ACCENTS[0] };
+  }
+}
+
 const PAINT_TOOLS: Tool[] = ['brush', 'eraser', 'clone', 'heal', 'remove', 'dodge', 'burn'];
 const RASTER_TOOLS: Tool[] = [...PAINT_TOOLS, 'bucket', 'gradient'];
 const ADJUST_ORDER: AdjustType[] = ['brightnessContrast', 'levels', 'curves', 'exposure', 'vibrance', 'hueSat', 'colorBalance', 'blackWhite', 'photoFilter', 'clarity', 'dehaze', 'grain', 'lut', 'invert', 'posterize', 'threshold'];
@@ -200,6 +238,22 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
   const [shapeKind, setShapeKind] = useState<'rect' | 'ellipse'>('rect');
   const [maskEdit, setMaskEdit] = useState(false);
   const [removeShadows, setRemoveShadows] = useState(true);
+  // before / after comparison: the picture as it was opened on one side of a divider
+  const [compare, setCompare] = useState<Compare>('off');
+  const [split, setSplit] = useState(0.5);
+  const compareRef = useRef({ mode: compare, split });
+  compareRef.current = { mode: compare, split };
+  const beforeCache = useRef<HTMLCanvasElement | null>(null);
+  const [look, setLook] = useState(loadLook);
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOOK_KEY, JSON.stringify(look));
+    } catch {
+      // private mode: the look just isn't remembered
+    }
+  }, [look]);
+  /** the tool last used from each group is the one its rail button shows */
+  const [groupTool, setGroupTool] = useState<Record<number, Tool>>({});
   const [cloneSrc, setCloneSrc] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [dialog, setDialog] = useState<null | { kind: 'filter'; id: FilterId } | { kind: 'imageSize' } | { kind: 'canvasSize' } | { kind: 'transform' } | { kind: 'feather' }>(null);
@@ -377,6 +431,47 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
       c.getContext('2d')!.putImageData(img, 0, 0);
       ctx.drawImage(c, 0, 0, w, h);
     }
+    const cmp = compareRef.current;
+    if (cmp.mode !== 'off') {
+      const side = cmp.mode === 'side';
+      const at = side ? w * cmp.split : h * cmp.split;
+      ctx.save();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2 * dpr;
+      ctx.shadowColor = 'rgba(0,0,0,0.6)';
+      ctx.shadowBlur = 4 * dpr;
+      ctx.beginPath();
+      if (side) {
+        ctx.moveTo(at, 0);
+        ctx.lineTo(at, h);
+      } else {
+        ctx.moveTo(0, at);
+        ctx.lineTo(w, at);
+      }
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(side ? at : w / 2, side ? h / 2 : at, 7 * dpr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.font = `600 ${11 * dpr}px system-ui, sans-serif`;
+      const label = (text: string, x: number, y: number, align: CanvasTextAlign) => {
+        ctx.textAlign = align;
+        const tw = ctx.measureText(text).width + 10 * dpr;
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(align === 'right' ? x - tw + 5 * dpr : x - 5 * dpr, y - 12 * dpr, tw, 17 * dpr);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(text, x, y);
+      };
+      if (side) {
+        label('Before', at - 12 * dpr, 20 * dpr, 'right');
+        label('After', at + 12 * dpr, 20 * dpr, 'left');
+      } else {
+        label('Before', 12 * dpr, at - 10 * dpr, 'left');
+        label('After', 12 * dpr, at + 20 * dpr, 'left');
+      }
+      ctx.restore();
+    }
     // brush outline
     const p = pointer.current;
     if (p && PAINT_TOOLS.includes(toolRef.current)) {
@@ -414,8 +509,22 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
     const ctx = v.getContext('2d')!;
     ctx.clearRect(0, 0, v.width, v.height);
     ctx.drawImage(c, 0, 0);
+    const cmp = compareRef.current;
+    if (cmp.mode !== 'off') {
+      // the opened picture, composited once; stretched if the image has been resized or cropped since
+      beforeCache.current ??= composite(initial, Math.min(1, MAX_RENDER_SIDE / Math.max(initial.width, initial.height)));
+      const bw = cmp.mode === 'side' ? Math.round(v.width * cmp.split) : v.width;
+      const bh = cmp.mode === 'stack' ? Math.round(v.height * cmp.split) : v.height;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, bw, bh);
+      ctx.clip();
+      ctx.clearRect(0, 0, bw, bh);
+      ctx.drawImage(beforeCache.current, 0, 0, v.width, v.height);
+      ctx.restore();
+    }
     drawOverlay();
-  }, [renderScale, drawOverlay]);
+  }, [renderScale, drawOverlay, initial]);
 
   const requestRender = useCallback(() => {
     if (!frame.current) frame.current = requestAnimationFrame(render);
@@ -431,7 +540,7 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
 
   useEffect(() => {
     requestRender();
-  }, [doc, selection, zoom, requestRender]);
+  }, [doc, selection, zoom, requestRender, compare, split]);
 
   useEffect(() => onStatus?.({ width: doc.width, height: doc.height, zoom }), [doc.width, doc.height, zoom, onStatus]);
 
@@ -522,7 +631,8 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
     | { kind: 'shape'; x0: number; y0: number; x1: number; y1: number; ellipse: boolean }
     | { kind: 'lasso'; points: [number, number][]; mode: CombineMode }
     | { kind: 'gradient'; x0: number; y0: number; x1: number; y1: number }
-    | { kind: 'pan'; sx: number; sy: number; left: number; top: number };
+    | { kind: 'pan'; sx: number; sy: number; left: number; top: number }
+    | { kind: 'compare' };
   const gesture = useRef<Gesture | null>(null);
 
   const docPoint = (e: React.PointerEvent | PointerEvent): { x: number; y: number } => {
@@ -551,6 +661,14 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
     const d = docRef.current;
     const sel = selRef.current;
     (e.target as Element).setPointerCapture(e.pointerId);
+    if (compare !== 'off') {
+      // grabbing the divider moves it instead of using the tool
+      const near = compare === 'side' ? Math.abs(p.x - d.width * split) : Math.abs(p.y - d.height * split);
+      if (near * zoom < 10) {
+        gesture.current = { kind: 'compare' };
+        return;
+      }
+    }
 
     switch (tool) {
       case 'move': {
@@ -706,6 +824,11 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
       return;
     }
     switch (g.kind) {
+      case 'compare': {
+        const d = docRef.current;
+        setSplit(Math.min(0.98, Math.max(0.02, compare === 'side' ? p.x / d.width : p.y / d.height)));
+        return;
+      }
       case 'pan': {
         const el = scroller.current!;
         el.scrollLeft = g.left - (e.clientX - g.sx);
@@ -1067,6 +1190,7 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         clear();
       } else if (!mod && k === '[') setBrush((b) => ({ ...b, size: Math.max(1, Math.round(b.size / 1.2)) }));
       else if (!mod && k === ']') setBrush((b) => ({ ...b, size: Math.min(2000, Math.round(b.size * 1.2 + 1)) }));
+      else if (!mod && e.key === '\\') setCompare((c) => (c === 'off' ? 'side' : c === 'side' ? 'stack' : 'off'));
       else if (!mod && k === 'x') {
         setFg(bg);
         setBg(fg);
@@ -1196,7 +1320,6 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
             <label className="pi-check" title="Also clears the darker area attached to the object, such as the shadow it casts">
               <input type="checkbox" checked={removeShadows} onChange={(e) => setRemoveShadows(e.target.checked)} /> Remove its shadow too
             </label>
-            <span className="pi-hint">Paint over the whole object; it is replaced with matching background when you let go.</span>
           </>
         );
       case 'patch':
@@ -1253,7 +1376,7 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
   const dispH = doc.height * zoom;
 
   return (
-    <div className="pi-root">
+    <div className={cx('pi-root', `pi-theme-${look.theme}`)} style={{ '--pi-accent': look.accent } as React.CSSProperties}>
       <div className="pi-menubar" role="menubar">
         <Popover label="Edit" text button={<span>Edit</span>}>
           {(close) => (
@@ -1357,6 +1480,30 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
             </div>
           )}
         </Popover>
+        <Popover label="View" text button={<span>View</span>}>
+          {(close) => (
+            <div className="format-menu">
+              <div className="format-menu-group">Before / after</div>
+              <MenuItem hint="\" onClick={() => { close(); setCompare('side'); }}>{compare === 'side' ? '✓ ' : ''}Compare side by side</MenuItem>
+              <MenuItem onClick={() => { close(); setCompare('stack'); }}>{compare === 'stack' ? '✓ ' : ''}Compare top and bottom</MenuItem>
+              <MenuItem disabled={compare === 'off'} onClick={() => { close(); setCompare('off'); }}>Stop comparing</MenuItem>
+              <div className="format-menu-sep" role="separator" />
+              <MenuItem hint="Ctrl+0" onClick={() => { close(); fitToScreen(); }}>Fit on screen</MenuItem>
+              <MenuItem hint="Ctrl+1" onClick={() => { close(); setZoom(1); }}>Actual pixels (100%)</MenuItem>
+              <div className="format-menu-sep" role="separator" />
+              <div className="format-menu-group">Theme</div>
+              {THEMES.map((t) => (
+                <MenuItem key={t.id} onClick={() => { close(); setLook((l) => ({ ...l, theme: t.id })); }}>{look.theme === t.id ? '✓ ' : ''}{t.label}</MenuItem>
+              ))}
+              <div className="pi-accents" role="radiogroup" aria-label="Accent colour">
+                {ACCENTS.map((a) => (
+                  <button key={a} type="button" role="radio" aria-checked={look.accent === a} aria-label={`Accent ${a}`} className={cx('pi-accent-dot', look.accent === a && 'is-active')} style={{ background: a }} onClick={() => setLook((l) => ({ ...l, accent: a }))} />
+                ))}
+                <input type="color" aria-label="Custom accent colour" value={look.accent} onChange={(e) => setLook((l) => ({ ...l, accent: e.target.value }))} />
+              </div>
+            </div>
+          )}
+        </Popover>
         <Popover label="Help" text button={<span>Help</span>}>
           {(close) => (
             <div className="format-menu">
@@ -1379,6 +1526,16 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         <span className="pi-menubar-sep" />
         <div className="pi-options">{options}</div>
         <span className="spacer" />
+        <button
+          type="button"
+          className={cx('pi-icon-btn', compare !== 'off' && 'is-on')}
+          aria-label="Compare before and after"
+          aria-pressed={compare !== 'off'}
+          title="Before / after: click for side by side, again for top and bottom, again to stop (\\). Drag the divider; zoom in to inspect."
+          onClick={() => setCompare((c) => (c === 'off' ? 'side' : c === 'side' ? 'stack' : 'off'))}
+        >
+          {compare === 'stack' ? <Rows2 size={16} /> : <Columns2 size={16} />}
+        </button>
         <button type="button" className="pi-icon-btn" aria-label="Zoom out" onClick={() => setZoom((z) => Math.max(0.02, z / 1.25))}><ZoomOut size={16} /></button>
         <button type="button" className="pi-text-btn" onClick={fitToScreen} title="Fit on screen (Ctrl+0)">{Math.round(zoom * 100)}%</button>
         <button type="button" className="pi-icon-btn" aria-label="Zoom in" onClick={() => setZoom((z) => Math.min(32, z * 1.25))}><ZoomIn size={16} /></button>
@@ -1386,11 +1543,35 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
 
       <div className="pi-body">
         <nav className="pi-tools" aria-label="Tools">
-          {TOOLS.map((t) => (
-            <button key={t.id} type="button" className={cx('pi-tool', tool === t.id && 'is-active')} title={`${t.label} (${t.key})`} aria-label={t.label} aria-pressed={tool === t.id} onClick={() => setTool(t.id)}>
-              {t.icon}
-            </button>
-          ))}
+          {TOOL_GROUPS.map((ids, gi) => {
+            const members = ids.map((id) => TOOLS.find((t) => t.id === id)!);
+            // the rail shows the group's active tool, else the one used last, else its first
+            const shown = members.find((t) => t.id === tool) ?? members.find((t) => t.id === groupTool[gi]) ?? members[0];
+            const pick = (id: Tool) => {
+              setTool(id);
+              setGroupTool((g) => ({ ...g, [gi]: id }));
+              // let go of the focus, or the pop-out would stay open over the picture
+              (document.activeElement as HTMLElement | null)?.blur();
+            };
+            return (
+              <div key={gi} className={cx('pi-tool-group', members.length > 1 && 'has-more')}>
+                <button type="button" className={cx('pi-tool', tool === shown.id && 'is-active')} title={members.length > 1 ? undefined : `${shown.label} (${shown.key})`} aria-label={shown.label} aria-pressed={tool === shown.id} onClick={() => pick(shown.id)}>
+                  {shown.icon}
+                </button>
+                {members.length > 1 && (
+                  <div className="pi-flyout" role="group" aria-label="Related tools">
+                    {members.map((t) => (
+                      <button key={t.id} type="button" className={cx('pi-flyout-item', tool === t.id && 'is-active')} aria-label={t.id === shown.id ? `${t.label} (shown)` : t.label} onClick={() => pick(t.id)}>
+                        {t.icon}
+                        <span>{t.label}</span>
+                        <kbd>{t.key}</kbd>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
           <div className="pi-swatches" title="Foreground / background colour (X swaps, D resets)">
             <label className="pi-swatch pi-fg" style={{ background: fg }}>
               <input type="color" aria-label="Foreground colour" value={fg} onChange={(e) => setFg(e.target.value)} />

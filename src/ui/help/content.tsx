@@ -406,6 +406,24 @@ export const SECTIONS: GuideSection[] = [
           Switching back to <Ui>Quick edit</Ui> flattens the layers (the app asks first).
         </p>
         <Note>Text, shape and fill layers are stored as pixels in the .psd. Layer styles (shadows, strokes) in files from Photoshop open as pixels.</Note>
+        <h3>Before / after, tool pop-outs and themes</h3>
+        <ul>
+          <li>
+            <b>Quick Compare.</b> The split-square button at the top right (or <K>\\</K>, or <Ui>View ▸ Compare side by side</Ui>) shows the
+            picture as it was opened on one side of a divider and your edit on the other. Click again for top and bottom, and once more to
+            stop. Drag the divider's handle to sweep across the picture; zoom and pan work as usual, so you can inspect a detail at 400%.
+            You can keep editing while comparing.
+          </li>
+          <li>
+            <b>Tool pop-outs.</b> Tools with a small corner mark have relatives: rest the pointer on one and a panel slides out with the
+            others and their shortcut keys (for example Spot Healing, Remove and Patch). The rail remembers the one you used last, and
+            pressing a shortcut key repeatedly steps through the tools that share it.
+          </li>
+          <li>
+            <b>Themes.</b> <Ui>View ▸ Theme</Ui> switches between Graphite, Midnight (darker, higher contrast) and Light, and the colour
+            dots under it set the accent colour. The choice is remembered.
+          </li>
+        </ul>
       </>
     ),
   },
