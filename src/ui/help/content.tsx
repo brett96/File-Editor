@@ -406,6 +406,24 @@ export const SECTIONS: GuideSection[] = [
           Switching back to <Ui>Quick edit</Ui> flattens the layers (the app asks first).
         </p>
         <Note>Text, shape and fill layers are stored as pixels in the .psd. Layer styles (shadows, strokes) in files from Photoshop open as pixels.</Note>
+        <h3>Before / after, tool pop-outs and themes</h3>
+        <ul>
+          <li>
+            <b>Quick Compare.</b> The split-square button at the top right (or <K>\</K>, or <Ui>View ▸ Compare side by side</Ui>) shows the
+            picture as it was opened on one side of a divider and your edit on the other. Click again for top and bottom, and once more to
+            stop. Drag the divider's handle to sweep across the picture; zoom and pan work as usual, so you can inspect a detail at 400%.
+            You can keep editing while comparing.
+          </li>
+          <li>
+            <b>Tool pop-outs.</b> Tools with a small corner mark have relatives: rest the pointer on one and a panel slides out with the
+            others and their shortcut keys (for example Spot Healing, Remove and Patch). The rail remembers the one you used last, and
+            pressing a shortcut key repeatedly steps through the tools that share it.
+          </li>
+          <li>
+            <b>Themes.</b> <Ui>View ▸ Theme</Ui> switches between Graphite, Midnight (darker, higher contrast) and Light, and the colour
+            dots under it set the accent colour. The choice is remembered.
+          </li>
+        </ul>
       </>
     ),
   },
@@ -536,6 +554,8 @@ export const SECTIONS: GuideSection[] = [
             [<>Brush (<K>B</K>) · Eraser (<K>E</K>)</>, <>Paint with the foreground colour, or erase to transparency.</>],
             [<>Clone Stamp (<K>S</K>)</>, <><K>Alt</K>-click a clean area to set the source, then paint over a blemish; the source follows your brush.</>],
             [<>Spot Healing (<K>J</K>)</>, <>Click or brush over a spot or dust; it's replaced with texture from around it.</>],
+            [<>Remove (<K>J</K> again)</>, <>Paint over a whole object (a person, a sign, a cable). When you let go it is replaced with background rebuilt from the surrounding picture, texture included. <Ui>Remove its shadow too</Ui> also clears the darker area attached to the object. For a precise outline, select the object instead and use <Ui>Edit ▸ Content-Aware Fill</Ui> (<K>Shift</K>+<K>Del</K>).</>],
+            [<>Patch (<K>J</K> a third time)</>, <>Draw around a flaw, then drag from inside that selection to an area of clean texture. That area is copied in and its colour and brightness are blended to the surroundings, so skin or sky copied from a lighter place still matches.</>],
             [<>Dodge · Burn (<K>O</K>)</>, <>Lighten or darken where you paint.</>],
             [<>Paint Bucket · Gradient (<K>G</K>)</>, <>Fill an area of similar colour, or drag to draw a gradient from the foreground to the background colour (tick Radial for a circular one).</>],
             [<>Type (<K>T</K>) · Shape (<K>U</K>)</>, <>Make a text or shape layer; edit it later in Properties.</>],

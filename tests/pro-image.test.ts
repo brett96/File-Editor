@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createPixels, type Pixels } from '../src/core/media/image-ops';
 import { applyAdjust, autoLevels, curveLut, defaultAdjust, histogram, levelsLut } from '../src/core/pro-image/adjust';
+import { contentAwareFill, dilateMask, expandToShadows, patchClone } from '../src/core/pro-image/inpaint';
 import { LUT_PRESETS, applyLut, clarity, dehaze, grain, makeLut, parseCube } from '../src/core/pro-image/tone';
 import { addNoise, dodgeBurn, findEdges, gaussianBlur, median, motionBlur, spotHeal, unsharpMask } from '../src/core/pro-image/filters';
 import { combineMasks, ellipseMask, featherMask, invertMask, isEmptyMask, magicWand, maskBounds, polygonMask, rectMask } from '../src/core/pro-image/selection';
@@ -12,6 +13,70 @@ function solid(w: number, h: number, rgba: [number, number, number, number]): Pi
   return px;
 }
 const at = (px: Pixels, x: number, y: number) => Array.from(px.data.subarray((y * px.width + x) * 4, (y * px.width + x) * 4 + 4));
+
+describe('remove and patch', () => {
+  /** vertical stripes (period 8) with a red square "object" in the middle */
+  const striped = (w = 96, h = 72): Pixels => {
+    const px = createPixels(w, h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) px.data.set((x >> 2) % 2 ? [200, 180, 90, 255] : [90, 110, 60, 255], (y * w + x) * 4);
+    return px;
+  };
+  const withObject = () => {
+    const px = striped();
+    for (let y = 26; y < 46; y++) for (let x = 38; x < 58; x++) px.data.set([230, 20, 30, 255], (y * 96 + x) * 4);
+    return px;
+  };
+  it('content-aware fill rebuilds the texture behind an object', () => {
+    const hole = rectMask(96, 72, 36, 24, 24, 24);
+    const filled = contentAwareFill(withObject(), hole);
+    const clean = striped();
+    let err = 0;
+    let n = 0;
+    for (let y = 24; y < 48; y++) for (let x = 36; x < 60; x++) {
+      const i = (y * 96 + x) * 4;
+      err += Math.abs(filled.data[i] - clean.data[i]) + Math.abs(filled.data[i + 1] - clean.data[i + 1]) + Math.abs(filled.data[i + 2] - clean.data[i + 2]);
+      n += 3;
+      // nothing of the red object is left
+      expect(filled.data[i] - filled.data[i + 1]).toBeLessThan(120);
+    }
+    // close to the true stripes (a flat average of the two stripe colours would be off by ~50)
+    expect(err / n).toBeLessThan(25);
+    // outside the hole nothing changes, and the same input gives the same answer
+    expect(at(filled, 5, 5)).toEqual(at(withObject(), 5, 5));
+    expect(contentAwareFill(withObject(), hole).data).toEqual(filled.data);
+    expect(contentAwareFill(striped(), rectMask(96, 72, 0, 0, 0, 0)).data).toEqual(striped().data);
+  });
+  it('grows a mask, and extends it over an attached shadow but not over a dark scene', () => {
+    const m = dilateMask(rectMask(40, 40, 18, 18, 4, 4), 3);
+    expect(maskBounds(m)).toEqual({ x: 15, y: 15, width: 10, height: 10 });
+    const px = solid(80, 60, [180, 180, 170, 255]);
+    for (let y = 30; y < 40; y++) for (let x = 40; x < 64; x++) px.data.set([60, 60, 58, 255], (y * 80 + x) * 4);
+    const object = rectMask(80, 60, 28, 18, 12, 20);
+    const grown = expandToShadows(px, object, 30);
+    expect(grown.data[35 * 80 + 60]).toBe(255);
+    expect(grown.data[8 * 80 + 8]).toBe(0);
+    expect(expandToShadows(solid(80, 60, [30, 30, 30, 255]), object, 30)).toBe(object);
+  });
+  it('patch copies texture and adapts it to the lighting where it lands', () => {
+    // left half dark, right half light, same texture; a blemish on the dark side
+    const px = createPixels(80, 40);
+    for (let y = 0; y < 40; y++) for (let x = 0; x < 80; x++) {
+      const base = (x < 40 ? 60 : 160) + ((x + y) % 2 ? 8 : -8);
+      px.data.set([base, base, base, 255], (y * 80 + x) * 4);
+    }
+    for (let y = 16; y < 22; y++) for (let x = 14; x < 20; x++) px.data.set([255, 255, 255, 255], (y * 80 + x) * 4);
+    const sel = rectMask(80, 40, 11, 13, 12, 12);
+    const out = patchClone(px, sel, 44, 0);
+    // the blemish is gone and the patch has the dark side's brightness, not the light side's
+    const v = at(out, 16, 18)[0];
+    expect(v).toBeGreaterThan(40);
+    expect(v).toBeLessThan(85);
+    // texture came across
+    expect(Math.abs(at(out, 16, 18)[0] - at(out, 17, 18)[0])).toBeGreaterThan(8);
+    expect(at(out, 60, 18)).toEqual(at(px, 60, 18));
+    expect(patchClone(px, rectMask(80, 40, 0, 0, 0, 0), 5, 5).data).toEqual(px.data);
+  });
+});
 
 describe('clarity, dehaze, grain and LUTs', () => {
   const scene = (haze = 0): Pixels => {

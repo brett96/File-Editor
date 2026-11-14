@@ -44,6 +44,10 @@ import {
   ZoomOut,
   Blend,
   CircleDashed,
+  WandSparkles,
+  Bandage,
+  Columns2,
+  Rows2,
 } from 'lucide-react';
 import type { Pixels } from '../../core/media/image-ops';
 import { ADJUST_LABELS, type AdjustType } from '../../core/pro-image/adjust';
@@ -66,6 +70,7 @@ import {
   type RasterLayer,
 } from '../../core/pro-image/document';
 import { FILTER_DEFS, runFilter, spotHeal, type FilterId } from '../../core/pro-image/filters';
+import { contentAwareFill, dilateMask, expandToShadows, patchClone } from '../../core/pro-image/inpaint';
 import { dab, maskDab, strokePoints, type Brush, type DabMode } from '../../core/pro-image/paint';
 import { writePsdDocument } from '../../core/pro-image/psd';
 import {
@@ -115,6 +120,8 @@ type Tool =
   | 'eraser'
   | 'clone'
   | 'heal'
+  | 'remove'
+  | 'patch'
   | 'dodge'
   | 'burn'
   | 'bucket'
@@ -134,6 +141,8 @@ const TOOLS: { id: Tool; label: string; key: string; icon: ReactNode }[] = [
   { id: 'eraser', label: 'Eraser', key: 'E', icon: <Eraser size={17} /> },
   { id: 'clone', label: 'Clone Stamp (Alt-click to set the source)', key: 'S', icon: <Stamp size={17} /> },
   { id: 'heal', label: 'Spot Healing Brush', key: 'J', icon: <Sparkles size={17} /> },
+  { id: 'remove', label: 'Remove (paint over an object to erase it)', key: 'J', icon: <WandSparkles size={17} /> },
+  { id: 'patch', label: 'Patch (circle a flaw, then drag it onto clean texture)', key: 'J', icon: <Bandage size={17} /> },
   { id: 'dodge', label: 'Dodge', key: 'O', icon: <Sun size={17} /> },
   { id: 'burn', label: 'Burn', key: 'O', icon: <Moon size={17} /> },
   { id: 'bucket', label: 'Paint Bucket', key: 'G', icon: <PaintBucket size={17} /> },
@@ -144,7 +153,43 @@ const TOOLS: { id: Tool; label: string; key: string; icon: ReactNode }[] = [
   { id: 'hand', label: 'Hand', key: 'H', icon: <Hand size={17} /> },
 ];
 
-const PAINT_TOOLS: Tool[] = ['brush', 'eraser', 'clone', 'heal', 'dodge', 'burn'];
+/** Tools that share one place in the tool rail; hovering it reveals the others. */
+const TOOL_GROUPS: Tool[][] = [
+  ['move'],
+  ['marquee', 'ellipse-marquee'],
+  ['lasso', 'wand'],
+  ['brush', 'eraser'],
+  ['clone'],
+  ['heal', 'remove', 'patch'],
+  ['dodge', 'burn'],
+  ['bucket', 'gradient'],
+  ['text'],
+  ['shape'],
+  ['eyedropper'],
+  ['hand'],
+];
+
+type Compare = 'off' | 'side' | 'stack';
+
+const THEMES = [
+  { id: 'graphite', label: 'Graphite (default)' },
+  { id: 'midnight', label: 'Midnight (darker, high contrast)' },
+  { id: 'light', label: 'Light' },
+] as const;
+type ThemeId = (typeof THEMES)[number]['id'];
+const ACCENTS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#ef4444'];
+const LOOK_KEY = 'file-editor.pro-photo.look';
+
+function loadLook(): { theme: ThemeId; accent: string } {
+  try {
+    const v = JSON.parse(localStorage.getItem(LOOK_KEY) ?? 'null') as { theme?: string; accent?: string } | null;
+    return { theme: THEMES.some((t) => t.id === v?.theme) ? (v!.theme as ThemeId) : 'graphite', accent: /^#[0-9a-f]{6}$/i.test(v?.accent ?? '') ? v!.accent! : ACCENTS[0] };
+  } catch {
+    return { theme: 'graphite', accent: ACCENTS[0] };
+  }
+}
+
+const PAINT_TOOLS: Tool[] = ['brush', 'eraser', 'clone', 'heal', 'remove', 'dodge', 'burn'];
 const RASTER_TOOLS: Tool[] = [...PAINT_TOOLS, 'bucket', 'gradient'];
 const ADJUST_ORDER: AdjustType[] = ['brightnessContrast', 'levels', 'curves', 'exposure', 'vibrance', 'hueSat', 'colorBalance', 'blackWhite', 'photoFilter', 'clarity', 'dehaze', 'grain', 'lut', 'invert', 'posterize', 'threshold'];
 const MAX_HISTORY = 40;
@@ -192,6 +237,23 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
   const [radialGradient, setRadialGradient] = useState(false);
   const [shapeKind, setShapeKind] = useState<'rect' | 'ellipse'>('rect');
   const [maskEdit, setMaskEdit] = useState(false);
+  const [removeShadows, setRemoveShadows] = useState(true);
+  // before / after comparison: the picture as it was opened on one side of a divider
+  const [compare, setCompare] = useState<Compare>('off');
+  const [split, setSplit] = useState(0.5);
+  const compareRef = useRef({ mode: compare, split });
+  compareRef.current = { mode: compare, split };
+  const beforeCache = useRef<HTMLCanvasElement | null>(null);
+  const [look, setLook] = useState(loadLook);
+  useEffect(() => {
+    try {
+      localStorage.setItem(LOOK_KEY, JSON.stringify(look));
+    } catch {
+      // private mode: the look just isn't remembered
+    }
+  }, [look]);
+  /** the tool last used from each group is the one its rail button shows */
+  const [groupTool, setGroupTool] = useState<Record<number, Tool>>({});
   const [cloneSrc, setCloneSrc] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [dialog, setDialog] = useState<null | { kind: 'filter'; id: FilterId } | { kind: 'imageSize' } | { kind: 'canvasSize' } | { kind: 'transform' } | { kind: 'feather' }>(null);
@@ -337,6 +399,23 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
       ctx.moveTo(g.x0 * k, g.y0 * k);
       ctx.lineTo(g.x1 * k, g.y1 * k);
       ctx.stroke();
+    } else if (g && g.kind === 'patch') {
+      const edge = outlineCache.current?.canvas;
+      const ox = (g.x1 - g.x0) * k;
+      const oy = (g.y1 - g.y0) * k;
+      // where the texture will be taken from
+      if (edge) {
+        ctx.save();
+        ctx.globalAlpha = 0.9;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(edge, ox, oy, w, h);
+        ctx.restore();
+      }
+      ctx.strokeStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(g.x0 * k, g.y0 * k);
+      ctx.lineTo(g.x1 * k, g.y1 * k);
+      ctx.stroke();
     } else if (g && g.kind === 'heal') {
       const c = document.createElement('canvas');
       c.width = g.mask.width;
@@ -351,6 +430,47 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
       }
       c.getContext('2d')!.putImageData(img, 0, 0);
       ctx.drawImage(c, 0, 0, w, h);
+    }
+    const cmp = compareRef.current;
+    if (cmp.mode !== 'off') {
+      const side = cmp.mode === 'side';
+      const at = side ? w * cmp.split : h * cmp.split;
+      ctx.save();
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 2 * dpr;
+      ctx.shadowColor = 'rgba(0,0,0,0.6)';
+      ctx.shadowBlur = 4 * dpr;
+      ctx.beginPath();
+      if (side) {
+        ctx.moveTo(at, 0);
+        ctx.lineTo(at, h);
+      } else {
+        ctx.moveTo(0, at);
+        ctx.lineTo(w, at);
+      }
+      ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath();
+      ctx.arc(side ? at : w / 2, side ? h / 2 : at, 7 * dpr, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+      ctx.font = `600 ${11 * dpr}px system-ui, sans-serif`;
+      const label = (text: string, x: number, y: number, align: CanvasTextAlign) => {
+        ctx.textAlign = align;
+        const tw = ctx.measureText(text).width + 10 * dpr;
+        ctx.fillStyle = 'rgba(0,0,0,0.6)';
+        ctx.fillRect(align === 'right' ? x - tw + 5 * dpr : x - 5 * dpr, y - 12 * dpr, tw, 17 * dpr);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(text, x, y);
+      };
+      if (side) {
+        label('Before', at - 12 * dpr, 20 * dpr, 'right');
+        label('After', at + 12 * dpr, 20 * dpr, 'left');
+      } else {
+        label('Before', 12 * dpr, at - 10 * dpr, 'left');
+        label('After', 12 * dpr, at + 20 * dpr, 'left');
+      }
+      ctx.restore();
     }
     // brush outline
     const p = pointer.current;
@@ -389,8 +509,22 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
     const ctx = v.getContext('2d')!;
     ctx.clearRect(0, 0, v.width, v.height);
     ctx.drawImage(c, 0, 0);
+    const cmp = compareRef.current;
+    if (cmp.mode !== 'off') {
+      // the opened picture, composited once; stretched if the image has been resized or cropped since
+      beforeCache.current ??= composite(initial, Math.min(1, MAX_RENDER_SIDE / Math.max(initial.width, initial.height)));
+      const bw = cmp.mode === 'side' ? Math.round(v.width * cmp.split) : v.width;
+      const bh = cmp.mode === 'stack' ? Math.round(v.height * cmp.split) : v.height;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, bw, bh);
+      ctx.clip();
+      ctx.clearRect(0, 0, bw, bh);
+      ctx.drawImage(beforeCache.current, 0, 0, v.width, v.height);
+      ctx.restore();
+    }
     drawOverlay();
-  }, [renderScale, drawOverlay]);
+  }, [renderScale, drawOverlay, initial]);
 
   const requestRender = useCallback(() => {
     if (!frame.current) frame.current = requestAnimationFrame(render);
@@ -406,7 +540,7 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
 
   useEffect(() => {
     requestRender();
-  }, [doc, selection, zoom, requestRender]);
+  }, [doc, selection, zoom, requestRender, compare, split]);
 
   useEffect(() => onStatus?.({ width: doc.width, height: doc.height, zoom }), [doc.width, doc.height, zoom, onStatus]);
 
@@ -490,13 +624,15 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
   // ── pointer interaction ─────────────────────────────────────────────────
   type Gesture =
     | { kind: 'paint'; layerId: string; last: [number, number]; carry: number; mode: DabMode | null; mask: Mask | null; source?: Pixels }
-    | { kind: 'heal'; layerId: string; mask: Mask; last: [number, number]; carry: number }
+    | { kind: 'heal'; layerId: string; mask: Mask; last: [number, number]; carry: number; remove: boolean }
+    | { kind: 'patch'; layerId: string; x0: number; y0: number; x1: number; y1: number }
     | { kind: 'move'; layerId: string; startX: number; startY: number; ox: number; oy: number; moved: boolean }
     | { kind: 'marquee'; x0: number; y0: number; x1: number; y1: number; ellipse: boolean; mode: CombineMode }
     | { kind: 'shape'; x0: number; y0: number; x1: number; y1: number; ellipse: boolean }
     | { kind: 'lasso'; points: [number, number][]; mode: CombineMode }
     | { kind: 'gradient'; x0: number; y0: number; x1: number; y1: number }
-    | { kind: 'pan'; sx: number; sy: number; left: number; top: number };
+    | { kind: 'pan'; sx: number; sy: number; left: number; top: number }
+    | { kind: 'compare' };
   const gesture = useRef<Gesture | null>(null);
 
   const docPoint = (e: React.PointerEvent | PointerEvent): { x: number; y: number } => {
@@ -525,6 +661,14 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
     const d = docRef.current;
     const sel = selRef.current;
     (e.target as Element).setPointerCapture(e.pointerId);
+    if (compare !== 'off') {
+      // grabbing the divider moves it instead of using the tool
+      const near = compare === 'side' ? Math.abs(p.x - d.width * split) : Math.abs(p.y - d.height * split);
+      if (near * zoom < 10) {
+        gesture.current = { kind: 'compare' };
+        return;
+      }
+    }
 
     switch (tool) {
       case 'move': {
@@ -626,12 +770,28 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         paintAt(p.x, p.y);
         return;
       }
+      case 'patch': {
+        const sel = selRef.current;
+        const xi = Math.round(p.x);
+        const yi = Math.round(p.y);
+        const inSel = sel && xi >= 0 && yi >= 0 && xi < sel.width && yi < sel.height && sel.data[yi * sel.width + xi] >= 128;
+        if (!inSel) {
+          // no selection under the pointer yet: draw one around the flaw
+          gesture.current = { kind: 'lasso', points: [[p.x, p.y]], mode: 'replace' };
+          return;
+        }
+        const r = activeRaster();
+        if (!r) return;
+        gesture.current = { kind: 'patch', layerId: r.id, x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+        return;
+      }
+      case 'remove':
       case 'heal': {
         const r = activeRaster();
         if (!r) return;
         const mask = emptyMask(d.width, d.height);
         maskDab(mask, p.x, p.y, { ...brush, hardness: 0.9, opacity: 1 }, 255, null);
-        gesture.current = { kind: 'heal', layerId: r.id, mask, last: [p.x, p.y], carry: 0 };
+        gesture.current = { kind: 'heal', layerId: r.id, mask, last: [p.x, p.y], carry: 0, remove: tool === 'remove' };
         drawOverlay();
         return;
       }
@@ -664,6 +824,11 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
       return;
     }
     switch (g.kind) {
+      case 'compare': {
+        const d = docRef.current;
+        setSplit(Math.min(0.98, Math.max(0.02, compare === 'side' ? p.x / d.width : p.y / d.height)));
+        return;
+      }
       case 'pan': {
         const el = scroller.current!;
         el.scrollLeft = g.left - (e.clientX - g.sx);
@@ -706,6 +871,11 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         g.carry = carry;
         return;
       }
+      case 'patch':
+        g.x1 = p.x;
+        g.y1 = p.y;
+        drawOverlay();
+        return;
       case 'heal': {
         const { points, carry } = strokePoints(g.last[0], g.last[1], p.x, p.y, brush.size, g.carry);
         for (const [x, y] of points) maskDab(g.mask, x, y, { ...brush, hardness: 0.9, opacity: 1 }, 255, null);
@@ -774,11 +944,28 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         commit(replaceLayer(docRef.current, fillRaster(docRef.current, l, sel, { from: fg, to: bg, x0: g.x0, y0: g.y0, x1: g.x1, y1: g.y1, radial: radialGradient }, brush.opacity)));
         return;
       }
+      case 'patch': {
+        drawOverlay();
+        const l = d.layers.find((x) => x.id === g.layerId);
+        const dx = Math.round(g.x1 - g.x0);
+        const dy = Math.round(g.y1 - g.y0);
+        if (!l || l.kind !== 'raster' || !sel || Math.hypot(dx, dy) < 3) return;
+        withBusy('Patching…', () => {
+          const full = ensureDocSized(l);
+          commit(replaceLayer(docRef.current, { ...full, px: patchClone(full.px, sel, dx, dy) }));
+        });
+        return;
+      }
       case 'heal': {
         const l = d.layers.find((x) => x.id === g.layerId);
         if (!l || l.kind !== 'raster') return;
         const b = maskBounds(g.mask);
         if (!b) return;
+        if (g.remove) {
+          drawOverlay();
+          removeArea(l, g.mask);
+          return;
+        }
         setBusy('Healing…');
         setTimeout(() => {
           try {
@@ -821,6 +1008,25 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         setBusy(null);
       }
     }, 10);
+  };
+
+  /** Remove: fills the masked area of a layer with texture synthesised from around it. */
+  const removeArea = (l: RasterLayer, area: Mask) => {
+    withBusy('Removing…', () => {
+      const full = ensureDocSized(l);
+      const b = maskBounds(area);
+      if (!b) return;
+      // a few pixels beyond the object, so its soft edge and halo go too
+      let hole = dilateMask(area, Math.max(2, Math.round(Math.min(b.width, b.height) * 0.04)));
+      if (removeShadows) hole = expandToShadows(full.px, hole, Math.max(b.width, b.height) * 0.75);
+      commit(replaceLayer(docRef.current, { ...full, px: contentAwareFill(full.px, hole) }));
+    });
+  };
+  const removeSelection = () => {
+    const sel = selRef.current;
+    if (!sel) return onError('Select the object to remove first (lasso or marquee), or paint over it with the Remove tool.');
+    const l = activeRaster();
+    if (l) removeArea(l, sel);
   };
 
   const newLayer = () => addLayer(emptyRaster(`Layer ${docRef.current.layers.length}`, docRef.current.width, docRef.current.height));
@@ -976,11 +1182,15 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
       } else if (mod && k === '0') {
         e.preventDefault();
         fitToScreen();
+      } else if (!mod && e.shiftKey && e.key === 'Delete') {
+        e.preventDefault();
+        removeSelection();
       } else if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {
         e.preventDefault();
         clear();
       } else if (!mod && k === '[') setBrush((b) => ({ ...b, size: Math.max(1, Math.round(b.size / 1.2)) }));
       else if (!mod && k === ']') setBrush((b) => ({ ...b, size: Math.min(2000, Math.round(b.size * 1.2 + 1)) }));
+      else if (!mod && e.key === '\\') setCompare((c) => (c === 'off' ? 'side' : c === 'side' ? 'stack' : 'off'));
       else if (!mod && k === 'x') {
         setFg(bg);
         setBg(fg);
@@ -989,7 +1199,8 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         setBg('#ffffff');
       } else if (!mod && !e.altKey) {
         const match = TOOLS.filter((x) => x.key.toLowerCase() === k);
-        if (match.length) setTool((cur) => (match.length > 1 && match[0].id === cur ? match[1].id : match[0].id));
+        // pressing the key again steps through the tools that share it
+        if (match.length) setTool((cur) => match[(match.findIndex((x) => x.id === cur) + 1) % match.length].id);
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -1102,6 +1313,17 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
             <span className="pi-hint">Paint over a blemish; it is filled from the surrounding area when you let go.</span>
           </>
         );
+      case 'remove':
+        return (
+          <>
+            {brushOpts}
+            <label className="pi-check" title="Also clears the darker area attached to the object, such as the shadow it casts">
+              <input type="checkbox" checked={removeShadows} onChange={(e) => setRemoveShadows(e.target.checked)} /> Remove its shadow too
+            </label>
+          </>
+        );
+      case 'patch':
+        return <span className="pi-hint">{selection ? 'Drag from inside the selection to a clean area: that area is copied in and blended.' : 'Draw around the flaw, then drag the selection onto clean texture.'}</span>;
       case 'dodge':
       case 'burn':
         return (
@@ -1154,7 +1376,7 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
   const dispH = doc.height * zoom;
 
   return (
-    <div className="pi-root">
+    <div className={cx('pi-root', `pi-theme-${look.theme}`)} style={{ '--pi-accent': look.accent } as React.CSSProperties}>
       <div className="pi-menubar" role="menubar">
         <Popover label="Edit" text button={<span>Edit</span>}>
           {(close) => (
@@ -1167,6 +1389,7 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
               <MenuItem hint="Ctrl+V" disabled={!clipboard} onClick={() => { close(); paste(); }}>Paste</MenuItem>
               <MenuItem hint="Del" onClick={() => { close(); clear(); }}>Clear</MenuItem>
               <MenuItem onClick={() => { close(); fillSelection(); }}>Fill with foreground</MenuItem>
+              <MenuItem hint="Shift+Del" disabled={!selection} onClick={() => { close(); removeSelection(); }}>Content-Aware Fill (remove selection)</MenuItem>
               <div className="format-menu-sep" role="separator" />
               <MenuItem hint="Ctrl+T" onClick={() => { close(); setDialog({ kind: 'transform' }); }}>Free Transform…</MenuItem>
             </div>
@@ -1257,6 +1480,30 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
             </div>
           )}
         </Popover>
+        <Popover label="View" text button={<span>View</span>}>
+          {(close) => (
+            <div className="format-menu">
+              <div className="format-menu-group">Before / after</div>
+              <MenuItem hint="\" onClick={() => { close(); setCompare('side'); }}>{compare === 'side' ? '✓ ' : ''}Compare side by side</MenuItem>
+              <MenuItem onClick={() => { close(); setCompare('stack'); }}>{compare === 'stack' ? '✓ ' : ''}Compare top and bottom</MenuItem>
+              <MenuItem disabled={compare === 'off'} onClick={() => { close(); setCompare('off'); }}>Stop comparing</MenuItem>
+              <div className="format-menu-sep" role="separator" />
+              <MenuItem hint="Ctrl+0" onClick={() => { close(); fitToScreen(); }}>Fit on screen</MenuItem>
+              <MenuItem hint="Ctrl+1" onClick={() => { close(); setZoom(1); }}>Actual pixels (100%)</MenuItem>
+              <div className="format-menu-sep" role="separator" />
+              <div className="format-menu-group">Theme</div>
+              {THEMES.map((t) => (
+                <MenuItem key={t.id} onClick={() => { close(); setLook((l) => ({ ...l, theme: t.id })); }}>{look.theme === t.id ? '✓ ' : ''}{t.label}</MenuItem>
+              ))}
+              <div className="pi-accents" role="radiogroup" aria-label="Accent colour">
+                {ACCENTS.map((a) => (
+                  <button key={a} type="button" role="radio" aria-checked={look.accent === a} aria-label={`Accent ${a}`} className={cx('pi-accent-dot', look.accent === a && 'is-active')} style={{ background: a }} onClick={() => setLook((l) => ({ ...l, accent: a }))} />
+                ))}
+                <input type="color" aria-label="Custom accent colour" value={look.accent} onChange={(e) => setLook((l) => ({ ...l, accent: e.target.value }))} />
+              </div>
+            </div>
+          )}
+        </Popover>
         <Popover label="Help" text button={<span>Help</span>}>
           {(close) => (
             <div className="format-menu">
@@ -1279,6 +1526,16 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         <span className="pi-menubar-sep" />
         <div className="pi-options">{options}</div>
         <span className="spacer" />
+        <button
+          type="button"
+          className={cx('pi-icon-btn', compare !== 'off' && 'is-on')}
+          aria-label="Compare before and after"
+          aria-pressed={compare !== 'off'}
+          title="Before / after: click for side by side, again for top and bottom, again to stop (\). Drag the divider; zoom in to inspect."
+          onClick={() => setCompare((c) => (c === 'off' ? 'side' : c === 'side' ? 'stack' : 'off'))}
+        >
+          {compare === 'stack' ? <Rows2 size={16} /> : <Columns2 size={16} />}
+        </button>
         <button type="button" className="pi-icon-btn" aria-label="Zoom out" onClick={() => setZoom((z) => Math.max(0.02, z / 1.25))}><ZoomOut size={16} /></button>
         <button type="button" className="pi-text-btn" onClick={fitToScreen} title="Fit on screen (Ctrl+0)">{Math.round(zoom * 100)}%</button>
         <button type="button" className="pi-icon-btn" aria-label="Zoom in" onClick={() => setZoom((z) => Math.min(32, z * 1.25))}><ZoomIn size={16} /></button>
@@ -1286,11 +1543,35 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
 
       <div className="pi-body">
         <nav className="pi-tools" aria-label="Tools">
-          {TOOLS.map((t) => (
-            <button key={t.id} type="button" className={cx('pi-tool', tool === t.id && 'is-active')} title={`${t.label} (${t.key})`} aria-label={t.label} aria-pressed={tool === t.id} onClick={() => setTool(t.id)}>
-              {t.icon}
-            </button>
-          ))}
+          {TOOL_GROUPS.map((ids, gi) => {
+            const members = ids.map((id) => TOOLS.find((t) => t.id === id)!);
+            // the rail shows the group's active tool, else the one used last, else its first
+            const shown = members.find((t) => t.id === tool) ?? members.find((t) => t.id === groupTool[gi]) ?? members[0];
+            const pick = (id: Tool) => {
+              setTool(id);
+              setGroupTool((g) => ({ ...g, [gi]: id }));
+              // let go of the focus, or the pop-out would stay open over the picture
+              (document.activeElement as HTMLElement | null)?.blur();
+            };
+            return (
+              <div key={gi} className={cx('pi-tool-group', members.length > 1 && 'has-more')}>
+                <button type="button" className={cx('pi-tool', tool === shown.id && 'is-active')} title={members.length > 1 ? undefined : `${shown.label} (${shown.key})`} aria-label={shown.label} aria-pressed={tool === shown.id} onClick={() => pick(shown.id)}>
+                  {shown.icon}
+                </button>
+                {members.length > 1 && (
+                  <div className="pi-flyout" role="group" aria-label="Related tools">
+                    {members.map((t) => (
+                      <button key={t.id} type="button" className={cx('pi-flyout-item', tool === t.id && 'is-active')} aria-label={t.id === shown.id ? `${t.label} (shown)` : t.label} onClick={() => pick(t.id)}>
+                        {t.icon}
+                        <span>{t.label}</span>
+                        <kbd>{t.key}</kbd>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
           <div className="pi-swatches" title="Foreground / background colour (X swaps, D resets)">
             <label className="pi-swatch pi-fg" style={{ background: fg }}>
               <input type="color" aria-label="Foreground colour" value={fg} onChange={(e) => setFg(e.target.value)} />

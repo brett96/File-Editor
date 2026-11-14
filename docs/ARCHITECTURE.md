@@ -103,6 +103,31 @@ browser cannot decode (AVI, WMV, FLV, MPEG-PS, 3GP…) are converted once to MP4
 ffmpeg.wasm on open, edited normally, and can be written back to the legacy format on save.
 Every image save re-encodes from pixels, so EXIF/GPS metadata is never copied.
 
+### Studio and Pro Photo (desktop)
+
+**Studio** (`core/studio`, `ui/studio`) is a plain-data project (`model.ts`) drawn by one
+compositor (`compose.ts`) that the preview and the exporter share. Per layer, in order: source
+frame → colour grade and chroma key → stylize effect stack (`fx.ts`: curl noise, contour, glow…)
+→ mask (`ClipMask`) → 2D or perspective placement (`projectQuad`, a triangle mesh spaced by the
+quad's homography) → blend, blur, shadow. Optional fields on a clip (`three`, `mask`,
+`expressions`, `effects.stylize`, text `reveal`) are absent in older `.fstudio` files and read
+as "off".
+
+| Piece | File | Notes |
+|---|---|---|
+| Animatable properties | `anim.ts` | One list (`animProps`) feeds the inspector, graph editor and command palette. `propValue` is the only way the compositor reads a property: keyframes, then the property's expression. |
+| Easing | `model.ts` | Per-key easing including `bezier` (CSS cubic-bezier control points, edited in `ui/studio/GraphEditor`). |
+| Expressions | `expr.ts` | A small parser/evaluator (no `eval`), so a shared project cannot run code. `data("col")` reads `Project.data` (imported CSV). |
+| Motion tracking | `track.ts` | Patch matching on grey frames; the editor seeks a hidden `<video>` frame by frame and writes mask keyframes. |
+| Title presets | `presets.ts` | Build ordinary text / colour clips with keyframes. |
+
+**Pro Photo** (`core/pro-image`, `ui/pro-image`) keeps immutable layers. Adjustment layers run
+through `applyAdjust`; per-pixel ones live in `adjust.ts`, neighbourhood and table ones
+(Clarity, Dehaze, Grain, LUT / `.cube`) in `tone.ts`. `inpaint.ts` holds the Remove tool
+(coarse-to-fine PatchMatch fill, plus a heuristic that extends the mask over an attached
+shadow) and the Patch tool (copy with a harmonic colour correction). Adjustments Photoshop
+has no layer for are baked to pixel layers on `.psd` export (`ops.bakeForPsd`).
+
 ### Spreadsheets, databases and large files
 
 Spreadsheets are edited as a Univer snapshot (`core/sheet/workbook.ts`); databases as a SQLite
