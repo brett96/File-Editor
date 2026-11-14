@@ -536,6 +536,8 @@ export const SECTIONS: GuideSection[] = [
             [<>Brush (<K>B</K>) · Eraser (<K>E</K>)</>, <>Paint with the foreground colour, or erase to transparency.</>],
             [<>Clone Stamp (<K>S</K>)</>, <><K>Alt</K>-click a clean area to set the source, then paint over a blemish; the source follows your brush.</>],
             [<>Spot Healing (<K>J</K>)</>, <>Click or brush over a spot or dust; it's replaced with texture from around it.</>],
+            [<>Remove (<K>J</K> again)</>, <>Paint over a whole object (a person, a sign, a cable). When you let go it is replaced with background rebuilt from the surrounding picture, texture included. <Ui>Remove its shadow too</Ui> also clears the darker area attached to the object. For a precise outline, select the object instead and use <Ui>Edit ▸ Content-Aware Fill</Ui> (<K>Shift</K>+<K>Del</K>).</>],
+            [<>Patch (<K>J</K> a third time)</>, <>Draw around a flaw, then drag from inside that selection to an area of clean texture. That area is copied in and its colour and brightness are blended to the surroundings, so skin or sky copied from a lighter place still matches.</>],
             [<>Dodge · Burn (<K>O</K>)</>, <>Lighten or darken where you paint.</>],
             [<>Paint Bucket · Gradient (<K>G</K>)</>, <>Fill an area of similar colour, or drag to draw a gradient from the foreground to the background colour (tick Radial for a circular one).</>],
             [<>Type (<K>T</K>) · Shape (<K>U</K>)</>, <>Make a text or shape layer; edit it later in Properties.</>],

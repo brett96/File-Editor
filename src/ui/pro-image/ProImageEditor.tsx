@@ -44,6 +44,8 @@ import {
   ZoomOut,
   Blend,
   CircleDashed,
+  WandSparkles,
+  Bandage,
 } from 'lucide-react';
 import type { Pixels } from '../../core/media/image-ops';
 import { ADJUST_LABELS, type AdjustType } from '../../core/pro-image/adjust';
@@ -66,6 +68,7 @@ import {
   type RasterLayer,
 } from '../../core/pro-image/document';
 import { FILTER_DEFS, runFilter, spotHeal, type FilterId } from '../../core/pro-image/filters';
+import { contentAwareFill, dilateMask, expandToShadows, patchClone } from '../../core/pro-image/inpaint';
 import { dab, maskDab, strokePoints, type Brush, type DabMode } from '../../core/pro-image/paint';
 import { writePsdDocument } from '../../core/pro-image/psd';
 import {
@@ -115,6 +118,8 @@ type Tool =
   | 'eraser'
   | 'clone'
   | 'heal'
+  | 'remove'
+  | 'patch'
   | 'dodge'
   | 'burn'
   | 'bucket'
@@ -134,6 +139,8 @@ const TOOLS: { id: Tool; label: string; key: string; icon: ReactNode }[] = [
   { id: 'eraser', label: 'Eraser', key: 'E', icon: <Eraser size={17} /> },
   { id: 'clone', label: 'Clone Stamp (Alt-click to set the source)', key: 'S', icon: <Stamp size={17} /> },
   { id: 'heal', label: 'Spot Healing Brush', key: 'J', icon: <Sparkles size={17} /> },
+  { id: 'remove', label: 'Remove (paint over an object to erase it)', key: 'J', icon: <WandSparkles size={17} /> },
+  { id: 'patch', label: 'Patch (circle a flaw, then drag it onto clean texture)', key: 'J', icon: <Bandage size={17} /> },
   { id: 'dodge', label: 'Dodge', key: 'O', icon: <Sun size={17} /> },
   { id: 'burn', label: 'Burn', key: 'O', icon: <Moon size={17} /> },
   { id: 'bucket', label: 'Paint Bucket', key: 'G', icon: <PaintBucket size={17} /> },
@@ -144,7 +151,7 @@ const TOOLS: { id: Tool; label: string; key: string; icon: ReactNode }[] = [
   { id: 'hand', label: 'Hand', key: 'H', icon: <Hand size={17} /> },
 ];
 
-const PAINT_TOOLS: Tool[] = ['brush', 'eraser', 'clone', 'heal', 'dodge', 'burn'];
+const PAINT_TOOLS: Tool[] = ['brush', 'eraser', 'clone', 'heal', 'remove', 'dodge', 'burn'];
 const RASTER_TOOLS: Tool[] = [...PAINT_TOOLS, 'bucket', 'gradient'];
 const ADJUST_ORDER: AdjustType[] = ['brightnessContrast', 'levels', 'curves', 'exposure', 'vibrance', 'hueSat', 'colorBalance', 'blackWhite', 'photoFilter', 'clarity', 'dehaze', 'grain', 'lut', 'invert', 'posterize', 'threshold'];
 const MAX_HISTORY = 40;
@@ -192,6 +199,7 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
   const [radialGradient, setRadialGradient] = useState(false);
   const [shapeKind, setShapeKind] = useState<'rect' | 'ellipse'>('rect');
   const [maskEdit, setMaskEdit] = useState(false);
+  const [removeShadows, setRemoveShadows] = useState(true);
   const [cloneSrc, setCloneSrc] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [dialog, setDialog] = useState<null | { kind: 'filter'; id: FilterId } | { kind: 'imageSize' } | { kind: 'canvasSize' } | { kind: 'transform' } | { kind: 'feather' }>(null);
@@ -332,6 +340,23 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
       ctx.stroke();
       ctx.setLineDash([]);
     } else if (g && g.kind === 'gradient') {
+      ctx.strokeStyle = '#fff';
+      ctx.beginPath();
+      ctx.moveTo(g.x0 * k, g.y0 * k);
+      ctx.lineTo(g.x1 * k, g.y1 * k);
+      ctx.stroke();
+    } else if (g && g.kind === 'patch') {
+      const edge = outlineCache.current?.canvas;
+      const ox = (g.x1 - g.x0) * k;
+      const oy = (g.y1 - g.y0) * k;
+      // where the texture will be taken from
+      if (edge) {
+        ctx.save();
+        ctx.globalAlpha = 0.9;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(edge, ox, oy, w, h);
+        ctx.restore();
+      }
       ctx.strokeStyle = '#fff';
       ctx.beginPath();
       ctx.moveTo(g.x0 * k, g.y0 * k);
@@ -490,7 +515,8 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
   // ── pointer interaction ─────────────────────────────────────────────────
   type Gesture =
     | { kind: 'paint'; layerId: string; last: [number, number]; carry: number; mode: DabMode | null; mask: Mask | null; source?: Pixels }
-    | { kind: 'heal'; layerId: string; mask: Mask; last: [number, number]; carry: number }
+    | { kind: 'heal'; layerId: string; mask: Mask; last: [number, number]; carry: number; remove: boolean }
+    | { kind: 'patch'; layerId: string; x0: number; y0: number; x1: number; y1: number }
     | { kind: 'move'; layerId: string; startX: number; startY: number; ox: number; oy: number; moved: boolean }
     | { kind: 'marquee'; x0: number; y0: number; x1: number; y1: number; ellipse: boolean; mode: CombineMode }
     | { kind: 'shape'; x0: number; y0: number; x1: number; y1: number; ellipse: boolean }
@@ -626,12 +652,28 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         paintAt(p.x, p.y);
         return;
       }
+      case 'patch': {
+        const sel = selRef.current;
+        const xi = Math.round(p.x);
+        const yi = Math.round(p.y);
+        const inSel = sel && xi >= 0 && yi >= 0 && xi < sel.width && yi < sel.height && sel.data[yi * sel.width + xi] >= 128;
+        if (!inSel) {
+          // no selection under the pointer yet: draw one around the flaw
+          gesture.current = { kind: 'lasso', points: [[p.x, p.y]], mode: 'replace' };
+          return;
+        }
+        const r = activeRaster();
+        if (!r) return;
+        gesture.current = { kind: 'patch', layerId: r.id, x0: p.x, y0: p.y, x1: p.x, y1: p.y };
+        return;
+      }
+      case 'remove':
       case 'heal': {
         const r = activeRaster();
         if (!r) return;
         const mask = emptyMask(d.width, d.height);
         maskDab(mask, p.x, p.y, { ...brush, hardness: 0.9, opacity: 1 }, 255, null);
-        gesture.current = { kind: 'heal', layerId: r.id, mask, last: [p.x, p.y], carry: 0 };
+        gesture.current = { kind: 'heal', layerId: r.id, mask, last: [p.x, p.y], carry: 0, remove: tool === 'remove' };
         drawOverlay();
         return;
       }
@@ -706,6 +748,11 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         g.carry = carry;
         return;
       }
+      case 'patch':
+        g.x1 = p.x;
+        g.y1 = p.y;
+        drawOverlay();
+        return;
       case 'heal': {
         const { points, carry } = strokePoints(g.last[0], g.last[1], p.x, p.y, brush.size, g.carry);
         for (const [x, y] of points) maskDab(g.mask, x, y, { ...brush, hardness: 0.9, opacity: 1 }, 255, null);
@@ -774,11 +821,28 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         commit(replaceLayer(docRef.current, fillRaster(docRef.current, l, sel, { from: fg, to: bg, x0: g.x0, y0: g.y0, x1: g.x1, y1: g.y1, radial: radialGradient }, brush.opacity)));
         return;
       }
+      case 'patch': {
+        drawOverlay();
+        const l = d.layers.find((x) => x.id === g.layerId);
+        const dx = Math.round(g.x1 - g.x0);
+        const dy = Math.round(g.y1 - g.y0);
+        if (!l || l.kind !== 'raster' || !sel || Math.hypot(dx, dy) < 3) return;
+        withBusy('Patching…', () => {
+          const full = ensureDocSized(l);
+          commit(replaceLayer(docRef.current, { ...full, px: patchClone(full.px, sel, dx, dy) }));
+        });
+        return;
+      }
       case 'heal': {
         const l = d.layers.find((x) => x.id === g.layerId);
         if (!l || l.kind !== 'raster') return;
         const b = maskBounds(g.mask);
         if (!b) return;
+        if (g.remove) {
+          drawOverlay();
+          removeArea(l, g.mask);
+          return;
+        }
         setBusy('Healing…');
         setTimeout(() => {
           try {
@@ -821,6 +885,25 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         setBusy(null);
       }
     }, 10);
+  };
+
+  /** Remove: fills the masked area of a layer with texture synthesised from around it. */
+  const removeArea = (l: RasterLayer, area: Mask) => {
+    withBusy('Removing…', () => {
+      const full = ensureDocSized(l);
+      const b = maskBounds(area);
+      if (!b) return;
+      // a few pixels beyond the object, so its soft edge and halo go too
+      let hole = dilateMask(area, Math.max(2, Math.round(Math.min(b.width, b.height) * 0.04)));
+      if (removeShadows) hole = expandToShadows(full.px, hole, Math.max(b.width, b.height) * 0.75);
+      commit(replaceLayer(docRef.current, { ...full, px: contentAwareFill(full.px, hole) }));
+    });
+  };
+  const removeSelection = () => {
+    const sel = selRef.current;
+    if (!sel) return onError('Select the object to remove first (lasso or marquee), or paint over it with the Remove tool.');
+    const l = activeRaster();
+    if (l) removeArea(l, sel);
   };
 
   const newLayer = () => addLayer(emptyRaster(`Layer ${docRef.current.layers.length}`, docRef.current.width, docRef.current.height));
@@ -976,6 +1059,9 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
       } else if (mod && k === '0') {
         e.preventDefault();
         fitToScreen();
+      } else if (!mod && e.shiftKey && e.key === 'Delete') {
+        e.preventDefault();
+        removeSelection();
       } else if (!mod && (e.key === 'Delete' || e.key === 'Backspace')) {
         e.preventDefault();
         clear();
@@ -989,7 +1075,8 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         setBg('#ffffff');
       } else if (!mod && !e.altKey) {
         const match = TOOLS.filter((x) => x.key.toLowerCase() === k);
-        if (match.length) setTool((cur) => (match.length > 1 && match[0].id === cur ? match[1].id : match[0].id));
+        // pressing the key again steps through the tools that share it
+        if (match.length) setTool((cur) => match[(match.findIndex((x) => x.id === cur) + 1) % match.length].id);
       }
     };
     const onKeyUp = (e: KeyboardEvent) => {
@@ -1102,6 +1189,18 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
             <span className="pi-hint">Paint over a blemish; it is filled from the surrounding area when you let go.</span>
           </>
         );
+      case 'remove':
+        return (
+          <>
+            {brushOpts}
+            <label className="pi-check" title="Also clears the darker area attached to the object, such as the shadow it casts">
+              <input type="checkbox" checked={removeShadows} onChange={(e) => setRemoveShadows(e.target.checked)} /> Remove its shadow too
+            </label>
+            <span className="pi-hint">Paint over the whole object; it is replaced with matching background when you let go.</span>
+          </>
+        );
+      case 'patch':
+        return <span className="pi-hint">{selection ? 'Drag from inside the selection to a clean area: that area is copied in and blended.' : 'Draw around the flaw, then drag the selection onto clean texture.'}</span>;
       case 'dodge':
       case 'burn':
         return (
@@ -1167,6 +1266,7 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
               <MenuItem hint="Ctrl+V" disabled={!clipboard} onClick={() => { close(); paste(); }}>Paste</MenuItem>
               <MenuItem hint="Del" onClick={() => { close(); clear(); }}>Clear</MenuItem>
               <MenuItem onClick={() => { close(); fillSelection(); }}>Fill with foreground</MenuItem>
+              <MenuItem hint="Shift+Del" disabled={!selection} onClick={() => { close(); removeSelection(); }}>Content-Aware Fill (remove selection)</MenuItem>
               <div className="format-menu-sep" role="separator" />
               <MenuItem hint="Ctrl+T" onClick={() => { close(); setDialog({ kind: 'transform' }); }}>Free Transform…</MenuItem>
             </div>

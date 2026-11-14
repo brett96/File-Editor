@@ -531,3 +531,11 @@
 .pi-error {
   color: #f87171;
 }
+
+.pi-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  white-space: nowrap;
+}
