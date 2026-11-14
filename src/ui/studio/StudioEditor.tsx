@@ -35,6 +35,7 @@ import { bufferToData, buildMix, dataToBuffer, decodeAudio, meterDb, renderMix, 
 import { clipBox, clipQuad, drawFrame, homography } from '../../core/studio/compose';
 import { animProps } from '../../core/studio/anim';
 import { parseDataCsv } from '../../core/studio/expr';
+import { TITLE_PRESETS, titlePreset, type TitlePreset } from '../../core/studio/presets';
 import { STYLE_DEFS, newStyle, type StyleType } from '../../core/studio/fx';
 import { simplifyKeys, toGray, trackPatch, type Gray } from '../../core/studio/track';
 import { encodeWav, frames, sliceAudio, waveformPeaks, type AudioData } from '../../core/studio/dsp';
@@ -92,6 +93,55 @@ interface SourceRt {
 }
 
 const IMAGE_EXT = /\.(png|jpe?g|webp|gif|bmp|avif|svg)$/i;
+const VECTOR_EXT = /\.(svg|ai|pdf)$/i;
+
+/**
+ * Vector artwork (SVG, and Illustrator .ai / PDF, which carry a PDF copy of the page) drawn
+ * as a PNG large enough to stay sharp when scaled up to `fill` × the frame.
+ */
+async function rasterizeVector(file: File, frameW: number, frameH: number, fill = 2): Promise<Blob> {
+  const toPng = (cv: HTMLCanvasElement) => new Promise<Blob>((res, rej) => cv.toBlob((b) => (b ? res(b) : rej(new Error('The artwork could not be drawn.'))), 'image/png'));
+  const sized = (w: number, h: number) => {
+    const k = Math.min(8192 / Math.max(w, h), Math.max(1, Math.min((frameW * fill) / w, (frameH * fill) / h)));
+    const cv = document.createElement('canvas');
+    cv.width = Math.max(1, Math.round(w * k));
+    cv.height = Math.max(1, Math.round(h * k));
+    return { cv, k };
+  };
+  if (/\.svg$/i.test(file.name) || file.type === 'image/svg+xml') {
+    const url = URL.createObjectURL(new Blob([await file.arrayBuffer()], { type: 'image/svg+xml' }));
+    try {
+      const img = new Image();
+      await new Promise<void>((res, rej) => {
+        img.onload = () => res();
+        img.onerror = () => rej(new Error(`${file.name} is not an SVG picture that can be drawn.`));
+        img.src = url;
+      });
+      const { cv } = sized(img.naturalWidth || 512, img.naturalHeight || 512);
+      cv.getContext('2d')!.drawImage(img, 0, 0, cv.width, cv.height);
+      return await toPng(cv);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+  const { openPdf } = await import('../../core/pdf/pdfjs');
+  let pdf;
+  try {
+    pdf = await openPdf(new Uint8Array(await file.arrayBuffer()));
+  } catch {
+    throw new Error(`${file.name} can't be read. Illustrator files need “Create PDF Compatible File” ticked when they are saved (it is by default).`);
+  }
+  try {
+    const page = await pdf.doc.getPage(1);
+    const base = page.getViewport({ scale: 1 });
+    const { cv, k } = sized(base.width, base.height);
+    // no background: the artboard stays transparent, as it does in Illustrator
+    await page.render({ canvas: cv, canvasContext: cv.getContext('2d')!, viewport: page.getViewport({ scale: k }), background: 'rgba(0,0,0,0)' } as never).promise;
+    return await toPng(cv);
+  } finally {
+    await pdf.close();
+  }
+}
 
 export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEditor({ initial, blobs, onChange, onError }, ref) {
   // ── project + history ───────────────────────────────────────────────────
@@ -514,23 +564,39 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
     setView('timeline');
   };
 
+  /** Adds a ready-made title: its layers go on new tracks above everything, in order. */
+  const addTitle = (id: TitlePreset) => {
+    const clips = titlePreset(projectRef.current, id, playheadRef.current);
+    if (clips.length === 1) return addVisual(clips[0]);
+    const p = projectRef.current;
+    const count = p.tracks.filter((t) => t.kind === 'video').length;
+    const tracks = clips.map((c, i) => ({ ...newTrack('video', `V${count + clips.length - i}`), clips: [c as Clip] }));
+    commit({ ...p, tracks: [...tracks, ...p.tracks] });
+    setSelectedId(clips[0].id);
+    setView('timeline');
+  };
+
   const addFiles = async (files: FileList | null) => {
     if (!files?.length) return;
-    for (const file of Array.from(files)) {
+    for (const picked of Array.from(files)) {
+      let file: File | Blob = picked;
+      const name = picked.name;
       try {
-        setStatus(`Adding ${file.name}…`);
+        setStatus(`Adding ${name}…`);
         const id = sid('S');
         let meta: SourceMeta;
-        const isImage = file.type.startsWith('image/') || IMAGE_EXT.test(file.name);
+        const vector = VECTOR_EXT.test(name) || picked.type === 'image/svg+xml' || picked.type === 'application/pdf';
+        if (vector) file = await rasterizeVector(picked, projectRef.current.width, projectRef.current.height);
+        const isImage = vector || picked.type.startsWith('image/') || IMAGE_EXT.test(name);
         if (isImage) {
           const bmp = await createImageBitmap(file);
-          meta = { id, name: file.name, kind: 'image', duration: 0, width: bmp.width, height: bmp.height, hasAudio: false, fps: null };
+          meta = { id, name: name, kind: 'image', duration: 0, width: bmp.width, height: bmp.height, hasAudio: false, fps: null };
           bmp.close();
         } else {
           const { probeMedia } = await import('../../core/media/video-engine');
-          const info = await probeMedia(file).catch(() => null);
-          if (!info || (!info.hasVideo && !info.hasAudio)) throw new Error(`${file.name} can't be read here. Open it on its own first (it will be converted), save it as MP4 or WAV, then add it.`);
-          meta = { id, name: file.name, kind: info.hasVideo ? 'video' : 'audio', duration: info.duration, width: info.width, height: info.height, hasAudio: info.hasAudio, fps: info.fps };
+          const info = await probeMedia(picked).catch(() => null);
+          if (!info || (!info.hasVideo && !info.hasAudio)) throw new Error(`${name} can't be read here. Open it on its own first (it will be converted), save it as MP4 or WAV, then add it.`);
+          meta = { id, name: name, kind: info.hasVideo ? 'video' : 'audio', duration: info.duration, width: info.width, height: info.height, hasAudio: info.hasAudio, fps: info.fps };
         }
         const rt = registerSource(id, file, meta);
         const { project: next, clipId } = addMediaClips(projectRef.current, meta, playheadRef.current);
@@ -786,6 +852,7 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
       { id: 'add-media', group: 'Add', label: 'Add media files…', run: () => fileInput.current?.click() },
       { id: 'add-text', group: 'Add', label: 'Add text (title)', run: () => addVisual(textClip(projectRef.current, playheadRef.current)) },
       { id: 'add-solid', group: 'Add', label: 'Add colour / gradient layer', run: () => addVisual(solidClip(projectRef.current, playheadRef.current)) },
+      ...TITLE_PRESETS.map((tp): Command => ({ id: `title-${tp.id}`, group: 'Title', label: tp.label, run: () => addTitle(tp.id) })),
       { id: 'add-vtrack', group: 'Add', label: 'Add video track', run: () => addTrack('video') },
       { id: 'add-atrack', group: 'Add', label: 'Add audio track', run: () => addTrack('audio') },
       { id: 'split', group: 'Edit', label: 'Split clip at playhead', hint: 'S', disabled: !sel, run: split },
@@ -904,11 +971,15 @@ export const StudioEditor = forwardRef<StudioHandle, Props>(function StudioEdito
   return (
     <div className="studio">
       <div className="st-toolbar" role="toolbar" aria-label="Studio">
-        <button type="button" className="btn" onClick={() => fileInput.current?.click()} title="Add video, audio or image files at the playhead">
+        <button type="button" className="btn" onClick={() => fileInput.current?.click()} title="Add video, audio, image or vector (SVG, Illustrator .ai, PDF) files at the playhead">
           <Plus size={14} /> Add media
         </button>
-        <input ref={fileInput} type="file" hidden multiple accept="video/*,audio/*,image/*,.mkv,.mov,.m4a,.flac,.opus,.ogg,.wav" onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
+        <input ref={fileInput} type="file" hidden multiple accept="video/*,audio/*,image/*,.mkv,.mov,.m4a,.flac,.opus,.ogg,.wav,.svg,.ai,.pdf" onChange={(e) => { void addFiles(e.target.files); e.target.value = ''; }} />
         <button type="button" className="btn" onClick={() => addVisual(textClip(projectRef.current, playheadRef.current))} title="Add a title"><Type size={14} /> Text</button>
+        <select className="tb-select st-titles" aria-label="Add an animated title" title="Add a ready-made animated title at the playhead" value="" onChange={(e) => e.target.value && addTitle(e.target.value as TitlePreset)}>
+          <option value="">Titles…</option>
+          {TITLE_PRESETS.map((t) => <option key={t.id} value={t.id} title={t.hint}>{t.label}</option>)}
+        </select>
         <button type="button" className="btn" onClick={() => addVisual(solidClip(projectRef.current, playheadRef.current))} title="Add a colour / gradient layer"><Square size={14} /> Colour</button>
         <button type="button" className="btn btn-text" onClick={() => addTrack('video')} title="Add a video track"><Film size={14} /> + Video track</button>
         <button type="button" className="btn btn-text" onClick={() => addTrack('audio')} title="Add an audio track"><Rows3 size={14} /> + Audio track</button>

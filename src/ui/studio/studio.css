@@ -207,6 +207,7 @@
 
 .studio .st-inspector .tb-select,
 .studio .st-inspector .input,
+.studio .st-toolbar .st-titles,
 .studio .st-graph-bar .tb-select,
 .studio .st-mixer .tb-select {
   background: var(--st-panel-2);

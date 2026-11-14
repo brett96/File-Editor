@@ -711,7 +711,32 @@ export const SECTIONS: GuideSection[] = [
         </Steps>
         <p>
           <Ui>Colour</Ui> adds a full-frame colour layer (tick <Ui>Gradient</Ui> for two colours). Use it as a background on the lowest video
-          track, or scale it down for a coloured bar behind a lower-third title.
+          track, or set its <Ui>Width %</Ui> and <Ui>Height %</Ui> for a coloured bar or panel.
+        </p>
+        <h3>Ready-made animated titles</h3>
+        <p>
+          The <Ui>Titles…</Ui> menu in the toolbar adds a finished, animated title at the playhead. Each one is made of ordinary text and
+          colour clips with keyframes, so you can retype the words, change colours and retime or reshape the motion afterwards.
+        </p>
+        <Defs
+          rows={[
+            [<>Lower third</>, <>A bar slides in at the bottom left with a name and a smaller line under it. Its four layers are linked and move together on the timeline.</>],
+            [<>Fade and drift in, Slide up, Pop</>, <>A centred title that fades in while growing, rises from below, or springs in past its size and settles.</>],
+            [<>Typewriter</>, <>Letters appear one at a time. The speed is the two <Ui>Typed %</Ui> keyframes; any text clip can be typed on this way.</>],
+            [<>3D swing</>, <>Swings in like a door, in perspective.</>],
+            [<>Scrolling credits</>, <>Lines of text roll from below the frame to above it over 12 seconds. Make the clip longer to slow it down, then move its last keyframe to the new end.</>],
+          ]}
+        />
+        <p>
+          <Ui>Anchor</Ui> decides which part of a text stays on its position when you retype it: <Ui>Left edge</Ui> for lower thirds and
+          captions that should grow to the right, <Ui>Centre</Ui> for titles.
+        </p>
+        <h3>Logos and vector artwork</h3>
+        <p>
+          <Ui>Add media</Ui> also takes vector files: <b>SVG</b>, <b>Illustrator (.ai)</b> and <b>PDF</b> (first page or artboard). They are
+          drawn large enough to stay sharp at twice the frame size and keep their transparent background, so a logo can be scaled up and
+          animated like any picture. The artwork becomes a picture layer: its shapes and text are not editable inside Studio, so change them
+          in Illustrator and add the file again. Illustrator files must be saved with <i>Create PDF Compatible File</i> on (the default).
         </p>
       </>
     ),

@@ -24,8 +24,15 @@ function makeCanvas(w: number, h: number): AnyCanvas {
 
 const textCache = new Map<string, AnyCanvas>();
 
-function textCanvas(c: TextClip, scale: number): AnyCanvas {
-  const key = JSON.stringify([c.text, c.font, c.size, c.color, c.bold, c.italic, c.align, c.stroke, c.strokeColor, c.background, scale]);
+/** The text as typed so far: the first `reveal` (0–1) of its letters; the rest keep their space. */
+function typedChars(c: TextClip, reveal: number): number {
+  const total = [...c.text].filter((ch) => ch !== '\n').length;
+  return reveal >= 1 ? total : Math.max(0, Math.floor(total * reveal + 1e-6));
+}
+
+function textCanvas(c: TextClip, scale: number, reveal = 1): AnyCanvas {
+  const typed = typedChars(c, reveal);
+  const key = JSON.stringify([c.text, c.font, c.size, c.color, c.bold, c.italic, c.align, c.stroke, c.strokeColor, c.background, scale, typed]);
   let cv = textCache.get(key);
   if (cv) return cv;
   const size = c.size * scale;
@@ -50,8 +57,26 @@ function textCanvas(c: TextClip, scale: number): AnyCanvas {
   ctx.textAlign = c.align;
   ctx.lineJoin = 'round';
   const x = c.align === 'left' ? pad : c.align === 'right' ? w - pad : w / 2;
-  lines.forEach((l, i) => {
+  let left = typed;
+  lines.forEach((full, i) => {
     const y = pad + lh * (i + 0.5);
+    // the canvas keeps its full size while typing, so the text does not shift as letters appear
+    const chars = [...full];
+    let l = chars.slice(0, Math.max(0, left)).join('');
+    left -= chars.length;
+    if (l.length < full.length && c.align !== 'left') {
+      // centred and right-aligned lines still type from their own left edge
+      const fullW = probe.measureText(full).width;
+      const start = c.align === 'right' ? x - fullW : x - fullW / 2;
+      ctx.textAlign = 'left';
+      draw(l, start, y);
+      ctx.textAlign = c.align;
+      return;
+    }
+    draw(l, x, y);
+  });
+  function draw(l: string, x: number, y: number) {
+    if (!l) return;
     if (c.stroke > 0) {
       ctx.strokeStyle = c.strokeColor;
       ctx.lineWidth = c.stroke * 2 * scale;
@@ -59,8 +84,8 @@ function textCanvas(c: TextClip, scale: number): AnyCanvas {
     }
     ctx.fillStyle = c.color;
     ctx.fillText(l, x, y);
-  });
-  if (textCache.size > 60) textCache.delete(textCache.keys().next().value!);
+  }
+  if (textCache.size > 240) textCache.delete(textCache.keys().next().value!);
   textCache.set(key, cv);
   return cv;
 }
@@ -119,7 +144,7 @@ function drawClip(ctx: Ctx2D, p: Project, c: VisualClip, local: number, frameFor
     dh = sh * fit * s * scale;
   } else if (c.kind === 'text') {
     if (!c.text.trim()) return;
-    img = textCanvas(c, scale * s);
+    img = textCanvas(c, scale * s, c.reveal ? val('reveal', c.reveal) : 1);
     const [w, h] = sourceSize(img);
     dw = w;
     dh = h;
@@ -134,8 +159,8 @@ function drawClip(ctx: Ctx2D, p: Project, c: VisualClip, local: number, frameFor
     } else cctx.fillStyle = c.color;
     cctx.fillRect(0, 0, 8, 64);
     img = cv;
-    dw = p.width * s * scale;
-    dh = p.height * s * scale;
+    dw = p.width * s * scale * (c.size?.w ?? 1);
+    dh = p.height * s * scale * (c.size?.h ?? 1);
   }
   if (!img || dw < 0.5 || dh < 0.5) return;
 
@@ -167,9 +192,11 @@ function drawClip(ctx: Ctx2D, p: Project, c: VisualClip, local: number, frameFor
     img = tmp;
   }
 
-  const x = val('x', tr.x);
-  const y = val('y', tr.y);
   const rot = val('rotation', tr.rotation);
+  // text can hang from its left or right edge instead of its centre
+  const off = anchorOffset(c, dw / scale);
+  const x = val('x', tr.x) + off * Math.cos((rot * Math.PI) / 180);
+  const y = val('y', tr.y) + off * Math.sin((rot * Math.PI) / 180);
   let quad: Quad | null = null;
   if (is3D(c)) {
     quad = projectQuad(p, x, y, dw / scale, dh / scale, rot, val('rotX', c.three!.rotX), val('rotY', c.three!.rotY), val('z', c.three!.z));
@@ -196,6 +223,12 @@ function drawClip(ctx: Ctx2D, p: Project, c: VisualClip, local: number, frameFor
     ctx.drawImage(img, -dw / 2, -dh / 2, dw, dh);
   }
   ctx.restore();
+}
+
+/** How far the centre of a text layer of width `w` is from its position, along its own baseline. */
+function anchorOffset(c: VisualClip, w: number): number {
+  if (c.kind !== 'text' || !c.anchor || c.anchor === 'center') return 0;
+  return c.anchor === 'left' ? w / 2 : -w / 2;
 }
 
 // ── masks ─────────────────────────────────────────────────────────────────
@@ -346,11 +379,14 @@ export function clipBox(p: Project, c: VisualClip, local: number, sourceSizeOf: 
     w = tw;
     h = th;
   } else {
-    w = p.width * s;
-    h = p.height * s;
+    const size = c.kind === 'solid' ? c.size : undefined;
+    w = p.width * s * (size?.w ?? 1);
+    h = p.height * s * (size?.h ?? 1);
   }
-  const x = propValue(p, c, 'x', c.transform.x, local);
-  const y = propValue(p, c, 'y', c.transform.y, local);
+  const rot = (propValue(p, c, 'rotation', c.transform.rotation, local) * Math.PI) / 180;
+  const off = anchorOffset(c, w);
+  const x = propValue(p, c, 'x', c.transform.x, local) + off * Math.cos(rot);
+  const y = propValue(p, c, 'y', c.transform.y, local) + off * Math.sin(rot);
   return { x: x - w / 2, y: y - h / 2, w, h };
 }
 

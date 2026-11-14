@@ -8,7 +8,7 @@ import { anim, defaultThree, valueAt, type Animatable, type Project, type Transf
 export interface AnimProp {
   id: string;
   label: string;
-  group: 'Transform' | '3D' | 'Mask';
+  group: 'Transform' | '3D' | 'Mask' | 'Text';
   /** slider range in view units */
   min: number;
   max: number;
@@ -62,6 +62,19 @@ export function animProps(p: Pick<Project, 'width' | 'height'>, c: VisualClip): 
     threeProp('rotY', 'Swivel Y °', -180, 180, 0.5),
     threeProp('z', 'Depth Z', -p.width * 2, p.width * 4, 1),
   ];
+  if (c.kind === 'text') {
+    list.push({
+      id: 'reveal',
+      label: 'Typed %',
+      group: 'Text',
+      min: 0,
+      max: 100,
+      step: 1,
+      view: 100,
+      get: (cl) => (cl.kind === 'text' ? cl.reveal : undefined) ?? anim(1),
+      set: (cl, a) => (cl.kind === 'text' ? { ...cl, reveal: a } : cl),
+    });
+  }
   if (c.mask) {
     for (const [key, label] of [['x', 'Mask X %'], ['y', 'Mask Y %'], ['w', 'Mask width %'], ['h', 'Mask height %']] as const) {
       list.push({
@@ -94,7 +107,7 @@ export { anim };
 // ── values, with expressions ──────────────────────────────────────────────
 
 /** Properties shown as percentages: expressions see (and return) the shown value, not the stored 0–1. */
-const VIEW: Record<string, number> = { scale: 100, opacity: 100, 'mask.x': 100, 'mask.y': 100, 'mask.w': 100, 'mask.h': 100 };
+const VIEW: Record<string, number> = { scale: 100, opacity: 100, reveal: 100, 'mask.x': 100, 'mask.y': 100, 'mask.w': 100, 'mask.h': 100 };
 
 /** Repeats the keyframed stretch of `a` after (and before) its keys. */
 function loop(a: Animatable, t: number, pingPong: boolean): number {

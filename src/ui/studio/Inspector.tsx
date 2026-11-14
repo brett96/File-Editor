@@ -237,6 +237,14 @@ export function Inspector({
             <label className="check"><input type="checkbox" checked={c.bold} onChange={(e) => onChange({ ...c, bold: e.target.checked })} /> Bold</label>
             <label className="check"><input type="checkbox" checked={c.italic} onChange={(e) => onChange({ ...c, italic: e.target.checked })} /> Italic</label>
           </div>
+          <Row label="Anchor">
+            <select className="tb-select" value={c.anchor ?? 'center'} title="Which part of the text stays on its position when the text gets longer" onChange={(e) => onChange({ ...c, anchor: e.target.value as 'left' | 'center' | 'right' })}>
+              <option value="center">Centre</option>
+              <option value="left">Left edge</option>
+              <option value="right">Right edge</option>
+            </select>
+          </Row>
+          {propRows('Text')}
           <Row label="Outline"><Num value={c.stroke} min={0} max={30} onChange={(v) => onChange({ ...c, stroke: v })} /></Row>
           <div className="st-row-btns">
             {c.stroke > 0 && <input type="color" aria-label="Outline colour" value={c.strokeColor} onChange={(e) => onChange({ ...c, strokeColor: e.target.value })} />}
@@ -253,6 +261,8 @@ export function Inspector({
             <label className="check"><input type="checkbox" checked={!!c.color2} onChange={(e) => onChange({ ...c, color2: e.target.checked ? '#000000' : null })} /> Gradient</label>
             {c.color2 && <input type="color" aria-label="Second colour" value={c.color2} onChange={(e) => onChange({ ...c, color2: e.target.value })} />}
           </div>
+          <Row label="Width %"><Num value={(c.size?.w ?? 1) * 100} min={0.5} max={100} step={0.5} onChange={(v) => onChange({ ...c, size: { w: Math.min(1, Math.max(0.002, v / 100)), h: c.size?.h ?? 1 } })} /></Row>
+          <Row label="Height %"><Num value={(c.size?.h ?? 1) * 100} min={0.5} max={100} step={0.5} onChange={(v) => onChange({ ...c, size: { w: c.size?.w ?? 1, h: Math.min(1, Math.max(0.002, v / 100)) } })} /></Row>
         </section>
       )}
       <section>

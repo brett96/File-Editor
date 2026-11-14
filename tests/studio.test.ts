@@ -7,12 +7,13 @@ import {
 import { animProps, keyTimes, propValue } from '../src/core/studio/anim';
 import { PURE_FNS, evalExpression, expressionError, parseDataCsv } from '../src/core/studio/expr';
 import { fuzzyScore } from '../src/ui/studio/CommandPalette';
+import { TITLE_PRESETS, titlePreset } from '../src/core/studio/presets';
 import { simplifyKeys, toGray, trackPatch, type Gray } from '../src/core/studio/track';
 import { applyStyle, curlField, newStyle, noise3, type StyleEffect } from '../src/core/studio/fx';
 import { homography, projectQuad, type Quad } from '../src/core/studio/compose';
 import {
   addKey, anim, audibleTracks, bezierAt, cameraDistance, defaultMask, defaultThree, is3D, envelopeDb, hasKeyAt, newProject, newTrack, projectDuration, removeKey, setValueAt, snap, splitClip, valueAt,
-  defaultEffects, defaultTransform, type AudioClip, type MediaClip,
+  defaultEffects, defaultTransform, type AudioClip, type MediaClip, type SolidClip, type TextClip,
 } from '../src/core/studio/model';
 
 const sine = (freq: number, amp: number, seconds: number, sr = 48000, ch = 2): AudioData => {
@@ -21,6 +22,40 @@ const sine = (freq: number, amp: number, seconds: number, sr = 48000, ch = 2): A
   for (let i = 0; i < n; i++) c[i] = amp * Math.sin((2 * Math.PI * freq * i) / sr);
   return { sampleRate: sr, channels: Array.from({ length: ch }, () => c.slice()) };
 };
+
+describe('title presets', () => {
+  const p = newProject(1920, 1080, 30);
+  it('builds editable clips for every preset', () => {
+    for (const { id } of TITLE_PRESETS) {
+      const clips = titlePreset(p, id, 3);
+      expect(clips.length).toBeGreaterThan(0);
+      expect(new Set(clips.map((c) => c.id)).size).toBe(clips.length);
+      for (const c of clips) {
+        expect(c.start).toBe(3);
+        expect(c.duration).toBeGreaterThan(0);
+        for (const pr of animProps(p, c)) for (const k of pr.get(c).keys) expect(k.t).toBeLessThanOrEqual(c.duration);
+      }
+    }
+  });
+  it('links the layers of a lower third and slides them in from the left', () => {
+    const clips = titlePreset(p, 'lowerThird', 0);
+    expect(clips.map((c) => c.kind)).toEqual(['text', 'text', 'solid', 'solid']);
+    expect(new Set(clips.map((c) => c.linkId)).size).toBe(1);
+    const bar = clips[3] as SolidClip;
+    expect(bar.size!.w).toBeLessThan(1);
+    expect(valueAt(bar.transform.x, 0)).toBeLessThan(valueAt(bar.transform.x, 1));
+    expect((clips[0] as TextClip).anchor).toBe('left');
+  });
+  it('types a text on and splits the typing between halves', () => {
+    const [t] = titlePreset(p, 'typewriter', 0) as [TextClip];
+    expect(valueAt(t.reveal!, 0)).toBe(0);
+    expect(valueAt(t.reveal!, 2)).toBe(1);
+    const [l, r] = splitClip(t, 1) as [TextClip, TextClip];
+    expect(valueAt(l.reveal!, 1)).toBeCloseTo(0.5, 6);
+    expect(valueAt(r.reveal!, 0)).toBeCloseTo(0.5, 6);
+    expect(animProps(p, t).some((x) => x.id === 'reveal')).toBe(true);
+  });
+});
 
 describe('expressions', () => {
   const ctx = (vars: Record<string, number> = {}) => ({ vars: { time: 2, value: 10, PI: Math.PI, ...vars }, fns: { ...PURE_FNS, wiggle: () => 0, data: () => 0 } });

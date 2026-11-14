@@ -158,6 +158,10 @@ export interface TextClip extends ClipBase, VisualExtras {
   strokeColor: string;
   /** box behind the text, or null */
   background: string | null;
+  /** which edge of the text sits on its position (default: its centre), so edited text grows away from it */
+  anchor?: 'left' | 'center' | 'right';
+  /** 0–1: how much of the text has been typed so far (typewriter); absent = all of it */
+  reveal?: Animatable;
   transform: Transform;
   effects: VisualEffects;
 }
@@ -167,6 +171,8 @@ export interface SolidClip extends ClipBase, VisualExtras {
   color: string;
   /** optional second colour: a vertical gradient */
   color2: string | null;
+  /** size as fractions of the frame (default: the whole frame), for bars and panels */
+  size?: { w: number; h: number };
   transform: Transform;
   effects: VisualEffects;
 }
@@ -294,6 +300,7 @@ export function mapAnimatables<T extends VisualClip>(c: T, fn: (a: Animatable) =
   for (const k of ['x', 'y', 'scale', 'rotation', 'opacity'] as TransformProp[]) out.transform[k] = fn(c.transform[k]);
   if (c.three) out.three = { rotX: fn(c.three.rotX), rotY: fn(c.three.rotY), z: fn(c.three.z) };
   if (c.mask) out.mask = { ...c.mask, x: fn(c.mask.x), y: fn(c.mask.y), w: fn(c.mask.w), h: fn(c.mask.h) };
+  if (out.kind === 'text' && out.reveal) out.reveal = fn(out.reveal);
   return out;
 }
 
