@@ -1,17 +1,23 @@
 import { decodeText, escapeHtml, parseHtml, utf8Encode } from '../dom';
 import type { Exporter, Importer } from '../types';
 
+/**
+ * Plain text opens line for line: every line is a paragraph and a blank line is an empty
+ * paragraph, so saving it again (exportText) gives back the same lines. Runs of spaces and
+ * indentation are kept as non-breaking spaces (the editor would collapse ordinary ones); tabs
+ * become four of them.
+ */
 export const importText: Importer = async (bytes) => {
-  const text = decodeText(bytes).replace(/\r\n?/g, '\n');
-  // Blank lines separate paragraphs; single newlines inside a paragraph become line breaks.
-  const paragraphs = text.split(/\n{2,}/);
-  const html = paragraphs
-    .map((p) => {
-      const lines = p.split('\n').map((l) => escapeHtml(l.replace(/\t/g, '    ')));
-      return `<p>${lines.join('<br>')}</p>`;
+  const text = decodeText(bytes).replace(/\r\n?/g, '\n').replace(/\n$/, '');
+  if (!text) return { html: '<p></p>' };
+  const html = text
+    .split('\n')
+    .map((line) => {
+      const kept = line.replace(/\t/g, '    ').replace(/^ +| (?= )/g, (m) => '\u00a0'.repeat(m.length));
+      return line === '\f' ? '<div data-page-break="true"></div>' : `<p>${escapeHtml(kept)}</p>`;
     })
     .join('');
-  return { html: html || '<p></p>' };
+  return { html };
 };
 
 const BLOCKS = new Set(['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'pre', 'li', 'tr', 'div', 'hr', 'table', 'ul', 'ol']);
@@ -31,7 +37,8 @@ export function htmlToPlainText(html: string): string {
   const walk = (node: Node, listStack: { ordered: boolean; n: number }[]) => {
     for (const child of Array.from(node.childNodes)) {
       if (child.nodeType === 3) {
-        line += (child.textContent ?? '').replace(/\s+/g, ' ');
+        // the editor keeps spaces as typed: only line breaks in the markup become spaces
+        line += (child.textContent ?? '').replace(/[\r\n\t]+/g, ' ').replace(/\u00a0/g, ' ');
         continue;
       }
       if (child.nodeType !== 1) continue;
@@ -101,6 +108,15 @@ export function htmlToPlainText(html: string): string {
         out.push('');
         continue;
       }
+      if (tag === 'p' && listStack.length === 0 && !el.closest('td,th')) {
+        // a paragraph is exactly its line(s): an empty one is a blank line, and no blank line
+        // is added between paragraphs, so a text file round-trips unchanged
+        if (line) flush();
+        walk(el, listStack);
+        out.push(line);
+        line = '';
+        continue;
+      }
       if (BLOCKS.has(tag)) {
         // a paragraph directly inside a list item continues the "- " / "1. " marker line
         if (!/^\s*(-|\d+\.)\s$/.test(line)) flush();
@@ -109,21 +125,16 @@ export function htmlToPlainText(html: string): string {
         if (listStack.length === 0 && !el.closest('td,th')) out.push('');
         continue;
       }
-      if (tag === 'a') {
-        const href = el.getAttribute('href');
-        const text = el.textContent ?? '';
-        walk(el, listStack);
-        if (href && href !== text && !href.startsWith('#')) line += ` (${href})`;
-        continue;
-      }
+      // links are written as their text: plain text keeps what was typed (an address the
+      // editor linked automatically, such as "client.chat", must not gain "(http://…)")
       walk(el, listStack);
     }
   };
 
   walk(body, []);
   flush();
-  // collapse runs of blank lines, trim the tail
-  const text = out.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/g, '');
+  // blank lines the document has are kept; only the trailing ones go
+  const text = out.join('\n').replace(/\s+$/g, '');
   return text + '\n';
 }
 

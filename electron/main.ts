@@ -17,7 +17,7 @@
  *    CSP. Navigation away from the app and new windows are blocked; external links open in
  *    the default browser.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, protocol, session, shell, type MenuItemConstructorOptions } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { appendFile, copyFile, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
@@ -84,6 +84,45 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 let mainWindow: BrowserWindow | null = null;
+
+// ── appearance: View ▸ Appearance (System / Light / Dark) ─────────────────
+/**
+ * Setting nativeTheme.themeSource switches everything together: the page's
+ * prefers-color-scheme (so the app's light / dark styles), native menus, dialogs, scrollbars
+ * and the title bar. The renderer also gets the choice as data-theme on <html>.
+ */
+type ThemeChoice = 'system' | 'light' | 'dark';
+let theme: ThemeChoice = 'system';
+const settingsFile = () => join(app.getPath('userData'), 'settings.json');
+const windowBackground = () => (nativeTheme.shouldUseDarkColors ? '#17181c' : '#eef0f4');
+
+async function loadTheme() {
+  try {
+    const saved = JSON.parse(await readFile(settingsFile(), 'utf8')) as { theme?: unknown };
+    if (saved.theme === 'light' || saved.theme === 'dark' || saved.theme === 'system') theme = saved.theme;
+  } catch {
+    /* first run */
+  }
+  nativeTheme.themeSource = theme;
+}
+
+function setTheme(next: ThemeChoice) {
+  theme = next;
+  nativeTheme.themeSource = next;
+  mainWindow?.setBackgroundColor(windowBackground());
+  mainWindow?.webContents.send('theme', next);
+  buildMenu();
+  void (async () => {
+    let saved: Record<string, unknown> = {};
+    try {
+      saved = JSON.parse(await readFile(settingsFile(), 'utf8')) as Record<string, unknown>;
+    } catch {
+      /* none yet */
+    }
+    await mkdir(dirname(settingsFile()), { recursive: true });
+    await writeFile(settingsFile(), JSON.stringify({ ...saved, theme: next }));
+  })().catch(() => undefined);
+}
 let dirty = false;
 /** mirrors the renderer's Auto Save setting for the File menu checkbox */
 let autoSave = true;
@@ -355,7 +394,7 @@ function createWindow() {
     minWidth: 720,
     minHeight: 480,
     title: windowTitle(),
-    backgroundColor: '#eef0f4',
+    backgroundColor: windowBackground(),
     show: false,
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
@@ -474,6 +513,20 @@ function buildMenu() {
       label: 'View',
       submenu: [
         { label: 'Coding Agent', accelerator: 'CmdOrCtrl+Shift+A', click: () => send('agent') },
+        { type: 'separator' },
+        {
+          label: 'Appearance',
+          submenu: [
+            { label: 'Use System Setting', type: 'radio', checked: theme === 'system', click: () => setTheme('system') },
+            { label: 'Light', type: 'radio', checked: theme === 'light', click: () => setTheme('light') },
+            { label: 'Dark', type: 'radio', checked: theme === 'dark', click: () => setTheme('dark') },
+          ],
+        },
+        {
+          label: nativeTheme.shouldUseDarkColors ? 'Switch to Light Mode' : 'Switch to Dark Mode',
+          accelerator: 'CmdOrCtrl+Shift+L',
+          click: () => setTheme(nativeTheme.shouldUseDarkColors ? 'light' : 'dark'),
+        },
         { type: 'separator' },
         { role: 'togglefullscreen' },
         ...(!app.isPackaged ? [{ type: 'separator' as const }, { role: 'reload' as const }, { role: 'toggleDevTools' as const }] : []),
@@ -855,6 +908,19 @@ function registerIpc() {
     }
   });
 
+  ipcMain.handle('theme-get', (e) => {
+    assertSender(e);
+    return theme;
+  });
+  ipcMain.on('theme-set', (e, value: unknown) => {
+    try {
+      assertSender(e);
+      if (value === 'system' || value === 'light' || value === 'dark') setTheme(value);
+    } catch {
+      /* ignore */
+    }
+  });
+
   ipcMain.on('set-dirty', (e, value: boolean) => {
     try {
       assertSender(e);
@@ -1077,6 +1143,12 @@ app.whenReady().then(async () => {
     cb({ cancel: !ok });
   });
 
+  await loadTheme();
+  // the system switching light / dark changes the menu's "Switch to …" label
+  nativeTheme.on('updated', () => {
+    mainWindow?.setBackgroundColor(windowBackground());
+    buildMenu();
+  });
   registerAppProtocol();
   registerPreviewProtocol();
   registerIpc();

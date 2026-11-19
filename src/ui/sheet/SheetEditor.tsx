@@ -11,6 +11,7 @@
  * inserting or deleting rows, undo) run behind a spinner, and a large workbook is saved from
  * the cells as the editor holds them instead of from a second copy of all of them.
  */
+import { isDarkTheme, onThemeChange } from '../theme';
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import type { ICellData, IWorkbookData, SheetData } from '../../core/sheet/workbook';
 import { BusyPill, useBusy } from '../components';
@@ -129,12 +130,11 @@ export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEd
           phoneRestore.current = restore;
           if (unfroze) onNoticeRef.current?.('Frozen columns or rows are unfrozen on this screen so you can scroll through the sheet. The file keeps them when you save.');
         }
-        const dark = window.matchMedia?.('(prefers-color-scheme: dark)');
         const { LocaleType, mergeLocales, createUniver } = presets;
         const { univer, univerAPI } = createUniver({
           locale: LocaleType.EN_US,
           locales: { [LocaleType.EN_US]: withHomeTab(mergeLocales(enCore.default, enSort.default, enFilter.default, enFind.default)) },
-          darkMode: !!dark?.matches,
+          darkMode: isDarkTheme(),
           presets: [
             core.UniverSheetsCorePreset({
               container: host.current,
@@ -232,8 +232,8 @@ export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEd
             })
           : null;
 
-        const onScheme = (e: MediaQueryListEvent) => univerAPI.toggleDarkMode(e.matches);
-        dark?.addEventListener?.('change', onScheme);
+        // follows View ▸ Appearance as well as the system setting
+        const stopTheme = onThemeChange((dark) => univerAPI.toggleDarkMode(dark));
         // Ignore the burst of layout/formula mutations Univer runs while it loads the file.
         let ready = false;
         const readyTimer = setTimeout(() => (ready = true), 800);
@@ -245,7 +245,7 @@ export const SheetEditor = forwardRef<SheetEditorHandle, Props>(function SheetEd
         dispose = () => {
           clearTimeout(readyTimer);
           removeTouch?.();
-          dark?.removeEventListener?.('change', onScheme);
+          stopTheme();
           sub.dispose();
           api.current = null;
           univer.dispose();

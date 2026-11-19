@@ -108,6 +108,16 @@ const bridge = {
       return () => ipcRenderer.removeListener('git-progress', listener);
     },
   },
+  // View ▸ Appearance: 'system' | 'light' | 'dark'
+  theme: {
+    get: (): Promise<string> => ipcRenderer.invoke('theme-get'),
+    set: (value: string) => ipcRenderer.send('theme-set', value),
+    onChange: (callback: (value: string) => void) => {
+      const listener = (_e: IpcRendererEvent, value: string) => callback(value);
+      ipcRenderer.on('theme', listener);
+      return () => ipcRenderer.removeListener('theme', listener);
+    },
+  },
   setDirty: (dirty: boolean) => ipcRenderer.send('set-dirty', dirty),
   setTitle: (title: string) => ipcRenderer.send('set-title', title),
 };

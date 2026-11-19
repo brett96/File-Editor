@@ -1559,6 +1559,7 @@ export const SECTIONS: GuideSection[] = [
             ['Ctrl+Tab / Ctrl+Shift+Tab', 'Next / previous tab (desktop app)'],
             ['Ctrl+W', 'Close tab (desktop app)'],
             ['Ctrl+Shift+A', 'Show or hide the coding agent (licensed desktop app)'],
+            ['Ctrl+Shift+L', 'Switch between light and dark mode (desktop app; View ▸ Appearance also follows the system)'],
             ['Ctrl+= / Ctrl+-', 'Zoom documents and PDFs in / out (Ctrl+0: 100%)'],
           ]}
         />

@@ -11,9 +11,35 @@ import { utf8Encode } from '../src/core/dom';
 const dec = (b: Uint8Array) => new TextDecoder().decode(b);
 
 describe('plain text', () => {
-  it('imports paragraphs and line breaks and escapes markup', async () => {
-    const doc = await importText(utf8Encode('Line one\nline two\n\n<b>not bold</b> & co'));
-    expect(doc.html).toBe('<p>Line one<br>line two</p><p>&lt;b&gt;not bold&lt;/b&gt; &amp; co</p>');
+  it('imports line for line, keeping blank lines and escaping markup', async () => {
+    const doc = await importText(utf8Encode('Line one\nline two\n\n<b>not bold</b> & co\n'));
+    expect(doc.html).toBe('<p>Line one</p><p>line two</p><p></p><p>&lt;b&gt;not bold&lt;/b&gt; &amp; co</p>');
+  });
+
+  it('saves a text file back exactly as it was opened', async () => {
+    const original = [
+      '-H "Content-Type: application/json" \\',
+      "-d '{\"model\": \"m\"}'",
+      '',
+      '----------------------------------------',
+      '',
+      '',
+      'Python:',
+      'import os',
+      'client = OpenAI(',
+      '    base_url="https://api.openuncensored.com/v1",',
+      '\tapi_key=os.environ["OU_API_KEY"],',
+      ')',
+      'resp = client.chat.completions.create(',
+      'x  =  1   # aligned',
+      '',
+      'end',
+      '',
+    ].join('\n');
+    const doc = await importText(utf8Encode(original));
+    // what the editor gives back: links it added on its own (client.chat) stay plain text
+    const edited = doc.html.replace('client.chat.completions', '<a href="http://client.chat">client.chat</a>.completions');
+    expect(dec(await exportText({ html: edited }))).toBe(original.replace('\t', '    '));
   });
 
   it('decodes UTF-16 with BOM and windows-1252 fallback', async () => {
@@ -29,7 +55,8 @@ describe('plain text', () => {
       '<ol><li><p>one</p></li><li><p>two</p></li></ol><table><tbody><tr><th><p>H1</p></th><th><p>H2</p></th></tr><tr><td><p>c1</p></td><td><p>c2</p></td></tr></tbody></table>';
     const text = htmlToPlainText(html);
     expect(text).toContain('Title');
-    expect(text).toContain('Hello site (https://x.dev)');
+    expect(text).toContain('Hello site\n');
+    expect(text).not.toContain('https://x.dev');
     expect(text).toContain('- a\n  - b');
     expect(text).toContain('1. one\n2. two');
     expect(text).toContain('H1\tH2\nc1\tc2');

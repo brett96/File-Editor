@@ -173,6 +173,12 @@ export interface DesktopBridge {
     cancel(opId: string): void;
     onProgress(callback: (opId: string, line: string) => void): () => void;
   };
+  /** View ▸ Appearance (electron/main.ts): the main process switches the native theme too. */
+  theme?: {
+    get(): Promise<'system' | 'light' | 'dark'>;
+    set(value: 'system' | 'light' | 'dark'): void;
+    onChange(callback: (value: 'system' | 'light' | 'dark') => void): () => void;
+  };
   /** Desktop license activation (see electron/license.ts). */
   license: {
     get(): Promise<LicenseState>;

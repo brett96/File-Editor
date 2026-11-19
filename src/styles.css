@@ -8,6 +8,8 @@
   --muted: #626775;
   --accent: #2f5bea;
   --accent-soft: #e6ecfd;
+  /* text on an accent-filled button */
+  --on-accent: #ffffff;
   --danger: #c4302b;
   --danger-soft: #fdecea;
   --ok: #1e7a46;
@@ -18,6 +20,7 @@
   color-scheme: light;
 }
 
+/* Dark: when the system is dark (unless View ▸ Appearance says Light), or when it says Dark */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme='light']) {
     --bg: #17181c;
@@ -29,11 +32,29 @@
     --muted: #9da1ac;
     --accent: #7c9bff;
     --accent-soft: #2a3355;
+    --on-accent: #0d1430;
     --danger: #ff7a73;
     --danger-soft: #3d2322;
     --shadow: 0 1px 2px rgb(0 0 0 / 30%), 0 4px 12px rgb(0 0 0 / 25%);
     color-scheme: dark;
   }
+}
+
+:root[data-theme='dark'] {
+  --bg: #17181c;
+  --surface: #212328;
+  --surface-2: #2a2c32;
+  --border: #363941;
+  --border-strong: #4a4e58;
+  --text: #e7e8eb;
+  --muted: #9da1ac;
+  --accent: #7c9bff;
+  --accent-soft: #2a3355;
+  --on-accent: #0d1430;
+  --danger: #ff7a73;
+  --danger-soft: #3d2322;
+  --shadow: 0 1px 2px rgb(0 0 0 / 30%), 0 4px 12px rgb(0 0 0 / 25%);
+  color-scheme: dark;
 }
 
 * {
@@ -196,7 +217,7 @@ body {
 
 .btn-primary {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   height: 34px;
   padding: 0 16px;
   font-weight: 600;
@@ -1399,7 +1420,7 @@ body {
 
 .segmented button.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 /* ── desktop: Quick edit / Pro (Studio) workspace switch in the status bar ── */
@@ -1421,7 +1442,7 @@ body {
 
 .workspace-switch button.is-active {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 /* ── spreadsheet editor (Univer) ────────────────────────────────────── */
