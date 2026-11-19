@@ -14,6 +14,7 @@ copies, which sends what you ask it, and the files it reads, to the model you pi
 | **Databases** | Open SQLite files (`.sqlite`, `.sqlite3`, `.db`, `.db3`, up to 2 GB); browse tables and views, edit cells, add/delete rows, run SQL. The file is edited in memory on this device and written back on Save. LiteDB `.db` files open with collections as tables; LiteDB 3/4 files are saved back in place in LiteDB's own format (untouched documents byte for byte, field types kept, indexes rebuilt, `.bak` of the original on first save), LiteDB 5 files open as a copy saved as SQLite |
 | **PDF editing** | Edit existing text, add text, images, links, shapes, lines, freehand drawing/signature, highlights, white-out; insert blank pages or pages from another document at any position; delete, duplicate, reorder (drag) and rotate pages |
 | **Coding agent** (licensed desktop app) | An AI agent beside the code editor and opened folders (**Agent** button, View ▸ Coding Agent, Ctrl+Shift+A). Pick any of OpenUncensored's 60+ models from a dropdown. **Agent** mode reads, searches and changes the project's files, showing each change as a diff to apply or reject; **Chat** mode answers questions about the file on screen (or the selection) with code you can insert in one click. Requires an activated license; messages and the files the agent reads go through File Editor's license server to OpenUncensored, with daily limits per license |
+| **Git & GitHub** (desktop app) | Every opened folder has a **Files \| Git** switch; a file opened on its own has a **Git** button at the bottom left of the status bar. Both show the repository's changed files: diff, stage, unstage, discard, commit (amend, commit & push), pull / push / fetch with a sync button, and conflict handling (continue / skip / abort a merge, rebase or cherry-pick). The ⋯ menu adds branches (switch, create, rename, delete, merge, rebase), history (check out, branch or tag here, cherry-pick, revert, reset), remotes, stashes, tags, worktrees, clone (also **Open ▸ Clone repository…**), init, your commit name and email, and **Run git command** for anything else. Connect a GitHub account (personal access token) to clone your repositories, push and pull without signing in, publish a repository and open pull requests. Uses the git installed on the computer |
 | **Folders & code** | **Open ▸ Open folder** (Ctrl+Shift+O) opens a whole folder or code repository with a file tree beside the tabs: open, create, rename and delete files (the desktop app deletes to the recycle bin / Trash). Source and config files (TypeScript, Python, JSON, YAML, Go, Rust, Java, C/C++, C#, PHP, Ruby, SQL, shell, Dockerfile and many more) open in the code editor with syntax highlighting and are saved as text under their own extension. **Preview / Split** on an HTML, CSS or JS file runs the page with everything it references in the folder (stylesheets and their imports, scripts, ES modules, images, fonts, media), including unsaved changes in open tabs; stylesheets and scripts are previewed in the page they belong to, and links between pages work. The preview is sandboxed and offline |
 | **Photos** | Open JPEG, PNG, WebP, AVIF, HEIC/HEIF (iPhone), JPEG XL, GIF, TIFF, BMP, ICO and SVG. Crop (with aspect presets), rotate, flip, straighten, resize; exposure, contrast, highlights/shadows, saturation, warmth, hue, vignette, sharpen, blur; one-click filters; text, arrows, shapes, freehand drawing, stickers; redact faces, plates or text (pixelate / blur / black box) |
 | **Video & audio** | Open MP4, MOV, WebM, MKV, TS, MP3, M4A, WAV, FLAC, OGG/Opus, AAC, plus legacy AVI, WMV, FLV, MPEG, 3GP, OGV, WMA, AIFF, AMR. Trim, crop, rotate, flip, resize, change frame rate; colour look and filters; text overlays with timing; fade in/out; volume or mute; save a frame as a picture or edit it in the photo editor |
@@ -126,7 +127,30 @@ What the build does to harden the app:
 - At runtime the renderer is sandboxed, can only reach files the user picked, cannot navigate
   away or open new windows, and is blocked from making any network request. The only network
   traffic besides updates is license activation and the coding agent (below), both made by the
-  main process and both to the license server.
+  main process and both to the license server, plus what the user does with Git (below).
+
+### Git (desktop only)
+
+The Git panel (`src/ui/git/`) runs the **git installed on the computer** from the main process
+(`electron/git.ts`, `electron/git-runner.ts`); without git it says how to install it.
+
+- The renderer names a repository only by an opened folder's id or an opened file's token,
+  like every other file call. Clone destinations and worktree folders are picked in native
+  dialogs in the main process.
+- git is started without a shell, with argument lists the main process builds. Branch, tag,
+  remote and stash names, URLs and paths are checked first (`src/core/git/parse.ts`); paths go
+  after `--` as literal pathspecs. `ext::`/`fd::` transports are refused, `core.fsmonitor` is
+  off and diffs never use an external diff tool, so a repository's config can't run programs
+  during routine refreshes. Hooks still run on commit, as in any git client.
+- **Run git command** shows the exact command in a native confirmation dialog before running
+  it, so only the user can run an arbitrary command.
+- git never waits on a terminal prompt. Sign-in uses the system's credential helper (Git
+  Credential Manager, SSH keys) or, for github.com, the **GitHub token** the user connects: it is
+  checked against `api.github.com`, encrypted with the OS keychain (`safeStorage`) and handed to
+  git through a credential helper that reads it from the environment (never the command line).
+  GitHub API calls use their own session limited to `api.github.com`.
+- After a checkout, pull, stash or discard, open code tabs without unsaved changes are re-read
+  from disk.
 
 ### Licenses (desktop only)
 

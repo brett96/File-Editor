@@ -12,6 +12,8 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  Files,
+  GitBranch,
   Image as ImageIcon,
   Music,
   Presentation,
@@ -62,6 +64,7 @@ export function Explorer({
   onRenamed,
   onRemoved,
   toast,
+  gitView,
 }: {
   folder: OpenedFolder;
   /** the file of the tab on screen, when it belongs to this folder */
@@ -71,7 +74,12 @@ export function Explorer({
   onRenamed?: (from: string, to: string) => void;
   onRemoved?: (path: string) => void;
   toast: (text: string, kind?: 'error' | 'info') => void;
+  /** the folder's Git panel (desktop): shown by the Files | Git switch; `visible` while it is on screen */
+  gitView?: (visible: boolean) => ReactNode;
 }) {
+  const [view, setView] = useState<'files' | 'git'>('files');
+  /** the Git panel stays mounted once shown, so a half-written commit message survives Files ↔ Git */
+  const [gitShown, setGitShown] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(['']));
   const [children, setChildren] = useState<Map<string, FolderEntry[]>>(() => new Map());
   const [loading, setLoading] = useState<Set<string>>(() => new Set());
@@ -338,9 +346,31 @@ export function Explorer({
     );
   };
 
+  const switcher = gitView && (
+    <div className="explorer-switch" role="tablist" aria-label="Folder view">
+      {(['files', 'git'] as const).map((v) => (
+        <button
+          key={v}
+          type="button"
+          role="tab"
+          aria-selected={view === v}
+          className={cx(view === v && 'is-active')}
+          onClick={() => {
+            setView(v);
+            if (v === 'git') setGitShown(true);
+          }}
+        >
+          {v === 'files' ? <><Files size={13} /> Files</> : <><GitBranch size={13} /> Git</>}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
-    <aside className="explorer" aria-label={`Files in ${folder.name}`}>
-      <div className="explorer-head">
+    <aside className={cx('explorer', view === 'git' && 'is-git')} aria-label={`Files in ${folder.name}`}>
+      {switcher}
+      {gitView && gitShown && <div className="explorer-git" hidden={view !== 'git'}>{gitView(view === 'git')}</div>}
+      <div className="explorer-head" hidden={view === 'git'}>
         <span className="explorer-title" title={folder.name}>{folder.name}</span>
         <button type="button" title="New file" aria-label="New file" onClick={() => startNew('new-file')}><FilePlus size={15} /></button>
         <button type="button" title="New folder" aria-label="New folder" onClick={() => startNew('new-dir')}><FolderPlus size={15} /></button>
@@ -348,8 +378,8 @@ export function Explorer({
         <button type="button" title="Collapse all folders" aria-label="Collapse all folders" onClick={() => setExpanded(new Set(['']))}><ChevronsDownUp size={15} /></button>
         <button type="button" title="Close folder (open files stay open)" aria-label="Close folder" onClick={onClose}><X size={15} /></button>
       </div>
-      {!folder.canWrite && <div className="explorer-readonly">Read-only: this browser can open a folder but not change it. Saving a file downloads it.</div>}
-      <div className="explorer-tree" role="tree" aria-label={folder.name}>
+      {!folder.canWrite && view === 'files' && <div className="explorer-readonly">Read-only: this browser can open a folder but not change it. Saving a file downloads it.</div>}
+      <div className="explorer-tree" role="tree" aria-label={folder.name} hidden={view === 'git'}>
         {renderDir('', 0)}
       </div>
     </aside>

@@ -98,6 +98,16 @@ const bridge = {
       return () => ipcRenderer.removeListener('agent-delta', listener);
     },
   },
+  // Git panel: the main process runs git in the repository of an opened folder or file
+  git: {
+    call: (ctx: unknown, op: string, args?: unknown, opId?: string) => ipcRenderer.invoke('git', ctx, op, args, opId),
+    cancel: (opId: string) => ipcRenderer.send('git-cancel', opId),
+    onProgress: (callback: (opId: string, line: string) => void) => {
+      const listener = (_e: IpcRendererEvent, opId: string, line: string) => callback(opId, line);
+      ipcRenderer.on('git-progress', listener);
+      return () => ipcRenderer.removeListener('git-progress', listener);
+    },
+  },
   setDirty: (dirty: boolean) => ipcRenderer.send('set-dirty', dirty),
   setTitle: (title: string) => ipcRenderer.send('set-title', title),
 };

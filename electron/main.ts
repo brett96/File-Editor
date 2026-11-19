@@ -24,6 +24,7 @@ import { appendFile, copyFile, mkdir, readdir, readFile, realpath, rename, stat,
 import { basename, dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { agentStatus, cancelAllChats, cancelChat, chat as agentChat, listModels } from './agent';
+import { registerGitIpc } from './git';
 import { activateLicense, getLicenseState, refreshLicenseStatus } from './license';
 import { CODE_EXTENSIONS, isCodeFileName } from '../src/core/code/languages';
 import { isSafeName, safeSegments } from '../src/core/web/paths';
@@ -283,6 +284,14 @@ async function pathInside(root: string, rel: unknown): Promise<string> {
   const back = relative(root, existing);
   if (back === '..' || back.startsWith(`..${sep}`) || resolve(root, back) !== existing) throw new Error('That is not a path inside the folder.');
   return target;
+}
+
+/** Grants a folder (picked by the user, or one they cloned or made a worktree in) and returns its id. */
+function addFolderRoot(root: string): { id: string; name: string } {
+  for (const [id, p] of folderRoots) if (p === root) return { id, name: basename(root) || root };
+  const id = randomUUID();
+  folderRoots.set(id, root);
+  return { id, name: basename(root) || root };
 }
 
 function folderRoot(id: unknown): string {
@@ -635,11 +644,17 @@ function registerIpc() {
     assertSender(e);
     const res = await dialog.showOpenDialog(mainWindow!, { title: 'Open Folder', properties: ['openDirectory', 'createDirectory'] });
     if (res.canceled || !res.filePaths[0]) return null;
-    const root = await realpath(res.filePaths[0]);
-    for (const [id, p] of folderRoots) if (p === root) return { id, name: basename(root) || root };
-    const id = randomUUID();
-    folderRoots.set(id, root);
-    return { id, name: basename(root) || root };
+    return addFolderRoot(await realpath(res.filePaths[0]));
+  });
+
+  // Git panel: runs the user's git in the repository of an opened folder or file (see git.ts)
+  registerGitIpc({
+    window: () => mainWindow,
+    assertSender,
+    folderRoot: (id) => folderRoots.get(id),
+    filePath: (token) => grants.get(token),
+    addFolder: addFolderRoot,
+    openFile: readGranted,
   });
 
   ipcMain.handle('folder-list', async (e, id: unknown, rel: unknown) => {

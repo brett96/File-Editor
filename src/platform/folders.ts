@@ -23,6 +23,8 @@ export interface OpenedFolder {
   canWrite: boolean;
   /** Deleting moves to the recycle bin / Trash (desktop) rather than removing for good. */
   removesToTrash?: boolean;
+  /** Set in the desktop app, where the Git panel can run git in this folder's repository. */
+  git?: { folder: string };
   /** The entries directly inside `path` ('' is the root): folders first, then files, by name. */
   list(path: string): Promise<FolderEntry[]>;
   /** Opens a file for editing; Save writes back to it. */
@@ -291,6 +293,7 @@ export function desktopFolder(bridge: NonNullable<DesktopBridge['folder']>, id: 
     name,
     canWrite: true,
     removesToTrash: true,
+    ...(typeof window !== 'undefined' && window.desktop?.git ? { git: { folder: id } } : {}),
     list: async (path) => sortEntries((await bridge.list(id, path)).map((e) => entry(path, e.name, e.kind))),
     async open(path) {
       const f = await bridge.open(id, path);

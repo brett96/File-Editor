@@ -99,6 +99,9 @@ export interface FileHost {
   backup(handle: unknown, name: string, original: Uint8Array): Promise<string | null>;
 }
 
+/** Which repository a Git request is about: the one an opened folder (desktop id) or opened file (token) is in. */
+export type GitContext = { folder: string } | { file: string };
+
 /** License state reported by the desktop app's main process (electron/license.ts). */
 export interface LicenseState {
   status: 'unlicensed' | 'active' | 'revoked';
@@ -163,6 +166,12 @@ export interface DesktopBridge {
     chat(id: string, request: AgentChatRequest): Promise<AgentResponse<AgentChatResult>>;
     cancel(id: string): void;
     onDelta(callback: (id: string, delta: AgentDelta) => void): () => void;
+  };
+  /** Git: runs the user's git in the repository of an opened folder or file (see electron/git.ts). */
+  git?: {
+    call(ctx: GitContext, op: string, args?: Record<string, unknown>, opId?: string): Promise<{ ok: true; data: unknown } | { ok: false; code: string; error: string }>;
+    cancel(opId: string): void;
+    onProgress(callback: (opId: string, line: string) => void): () => void;
   };
   /** Desktop license activation (see electron/license.ts). */
   license: {

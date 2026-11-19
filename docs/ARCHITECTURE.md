@@ -231,6 +231,19 @@ So the bundled page is served from a URL that carries its own policy (`ui/code/p
 which gives the page an opaque origin (no access to the app or its storage) and no network.
 The development server has no CSP and uses a sandboxed `srcdoc` frame.
 
+### Git (desktop)
+
+| Piece | File | Notes |
+|---|---|---|
+| Parsing and checks | `core/git/parse.ts` | Porcelain v2 status, refs, log, stashes, tags, remotes, worktrees and unified diffs from NUL-separated output; ref / remote / URL / path validators; the "Run git command" tokenizer (no shell). |
+| Running git | `electron/git-runner.ts` | Spawns git with safe `-c` settings, no terminal prompts, literal pathspecs, timeouts, cancellation and progress lines; every action builds its own argument list. Tested against real repositories (`tests/git.test.ts`). |
+| Bridge | `electron/git.ts` | Resolves the repository from a folder id or file token, dialogs for clone / worktree folders and for confirming typed commands, the GitHub token (keychain-encrypted) and API calls. |
+| Panel | `ui/git/GitPanel.tsx` | Changes (conflicts / staged / changes), diff, commit, sync, branch picker, the ⋯ menu. The same component is the folder sidebar's Git view and the single-file popup. |
+| Window | `ui/git/GitManager.tsx` | Branches, history, remotes, stashes, tags, worktrees, GitHub, command, output, identity. |
+
+Actions that change the working tree announce it (`fe:git-changed`), and clean code tabs re-read
+their file; saves announce themselves (`fe:saved`) so the panel refreshes.
+
 ### Coding agent (licensed desktop copies)
 
 A chat panel beside the editor (`ui/agent/AgentPanel`) that runs model-assisted coding sessions
