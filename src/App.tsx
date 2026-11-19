@@ -16,6 +16,8 @@ import {
   FolderOpen,
   FolderTree,
   PanelLeft,
+  GitBranch,
+  Sparkles,
   Sheet as SheetIcon,
   Lock,
   LockOpen,
@@ -41,7 +43,7 @@ import type { PdfProtection } from './core/pdf/types';
 import { PasswordError, UnsupportedError, isCodeFormat, type CodeFormat, type DocFormat, type FlowFormat, type RichDocument } from './core/types';
 import { escapeHtml, utf8Encode } from './core/dom';
 import { fileBytes, getHost, readDroppedFile, type FileHost, type OpenedFile, type OpenedFolder, type RecentEntry, type UpdateStatus } from './platform/host';
-import { droppedFolder, memoryFolder } from './platform/folders';
+import { desktopFolder, droppedFolder, memoryFolder } from './platform/folders';
 import { Explorer } from './ui/workspace/Explorer';
 import { registerBuffer } from './ui/workspace/buffers';
 import { folderPages } from './ui/workspace/pages';
@@ -55,7 +57,7 @@ import {
   startInstallerDownload,
   type InstallerOption,
 } from './platform/desktop-download';
-import { IconButton, Divider, Modal, cx, Popover, MenuItem, nextPaint } from './ui/components';
+import { IconButton, Divider, Modal, cx, Popover, MenuItem, PromptModal, nextPaint } from './ui/components';
 import {
   EMPTY_PROTECTION,
   ExportModal,
@@ -68,6 +70,11 @@ import {
 } from './ui/dialogs';
 import { RichEditor, type RichEditorHandle } from './ui/rich/RichEditor';
 import { LicenseDialog } from './ui/license/LicenseDialog';
+import { AgentPanel } from './ui/agent/AgentPanel';
+import { GitPanel } from './ui/git/GitPanel';
+import { git as runGitOp, gitAvailable, type GitContext } from './ui/git/git-client';
+import { codeEditorForTab, onCodeEditorsChange, registerCodeEditor } from './ui/agent/editors';
+import type { AgentWorkspace } from './ui/agent/tools';
 import { PdfEditor, type PdfEditorHandle } from './ui/pdf/PdfEditor';
 import { ImageEditor, type ImageEditorHandle } from './ui/image/ImageEditor';
 import type { ProImageEditorHandle } from './ui/pro-image/ProImageEditor';
@@ -291,6 +298,10 @@ interface TabProps {
   /** the file couldn't be opened (or the password prompt was cancelled): close this tab */
   onEmpty: (id: number) => void;
   register: (id: number, api: TabApi | null) => void;
+  /** opens another file in a tab (the Git panel's "open file") */
+  onOpenFile: (file: OpenedFile) => void;
+  /** opens a folder as the working folder (a clone or a worktree from the Git panel) */
+  onOpenFolder: (folder: { id: string; name: string }) => void;
 }
 
 /**
@@ -298,7 +309,7 @@ interface TabProps {
  * it is open (inactive tabs are hidden), so switching tabs keeps undo history, selection and
  * scroll position.
  */
-function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSave, actionsSlot, onInfo, onEmpty, register }: TabProps) {
+function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSave, actionsSlot, onInfo, onEmpty, register, onOpenFile, onOpenFolder }: TabProps) {
   const rawHost = getHost();
   const [doc, setDoc] = useState<OpenDoc | null>(null);
   const [dirty, setDirty] = useState(false);
@@ -361,13 +372,18 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
   /** bumps on every change; a save only marks the file clean if nothing changed meanwhile */
   const editSeq = useRef(0);
   const autoSaveKick = useRef<() => void>(() => undefined);
+  /** set while the Git panel reloads a clean tab from disk (that isn't an edit) */
+  const reloading = useRef(false);
   const markDirty = useCallback(() => {
+    if (reloading.current) return;
     editSeq.current++;
     setDirty(true);
     autoSaveKick.current();
   }, []);
   const markClean = (seq: number) => {
     if (editSeq.current === seq) setDirty(false);
+    // the Git panel shows the saved file's changes
+    window.dispatchEvent(new Event('fe:saved'));
   };
 
   // ── report name / unsaved state to the tab bar and window title ──────────
@@ -400,6 +416,69 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       return codeRef.current?.getText() ?? (d?.kind === 'code' ? d.text : '');
     });
   }, [previewSource]);
+
+  // the coding agent reads and edits code tabs through their editor (src/ui/agent)
+  const codeName = doc?.kind === 'code' ? doc.name : null;
+  useEffect(() => {
+    if (!codeName) return;
+    return registerCodeEditor({
+      tabId,
+      name: codeName,
+      getText: () => codeRef.current?.getText() ?? '',
+      getSelection: () => codeRef.current?.getSelection() ?? null,
+      setText: (text) => codeRef.current?.setText(text),
+      insert: (text) => codeRef.current?.insert(text),
+    });
+  }, [codeName, docKeyValue, tabId]);
+
+  // ── Git: the repository this file is in (desktop), and keeping a clean code tab in step with it ──
+  const gitHandle = doc?.handle;
+  const gitCtx = useMemo<GitContext | null>(() => (gitAvailable() && typeof gitHandle === 'string' ? { file: gitHandle } : null), [gitHandle]);
+  const [gitOpen, setGitOpen] = useState(false);
+  const [gitMounted, setGitMounted] = useState(false);
+  const [gitBranch, setGitBranch] = useState<string | null>(null);
+  useEffect(() => {
+    if (!gitCtx) return setGitBranch(null);
+    let live = true;
+    const read = () =>
+      void runGitOp<{ isRepo: boolean }>(gitCtx, 'info')
+        .then((i) => (i.isRepo ? runGitOp<{ branch: string | null; oid: string | null }>(gitCtx, 'status') : null))
+        .then((s) => live && setGitBranch(s ? (s.branch ?? `(${s.oid?.slice(0, 7) ?? 'no commits'})`) : null), () => live && setGitBranch(null));
+    read();
+    window.addEventListener('fe:git-ran', read);
+    window.addEventListener('focus', read);
+    return () => {
+      live = false;
+      window.removeEventListener('fe:git-ran', read);
+      window.removeEventListener('focus', read);
+    };
+  }, [gitCtx]);
+  // after a checkout, pull, stash… re-read this file if it has no unsaved changes
+  useEffect(() => {
+    const onChanged = async () => {
+      const d = docRef.current;
+      if (!d || d.kind !== 'code' || dirtyRef.current || !codeRef.current) return;
+      let blob: Blob | null = null;
+      if (startFile?.folder && d.name === startFile.name) blob = await startFile.folder.folder.read(startFile.folder.path);
+      else if (typeof d.handle === 'string') {
+        const bytes = await window.desktop?.readSibling?.(d.handle, d.name).catch(() => null);
+        blob = bytes ? new Blob([bytes as BlobPart]) : null;
+      }
+      if (!blob || dirtyRef.current) return;
+      const text = await blob.text();
+      if (text === codeRef.current.getText()) return;
+      reloading.current = true;
+      try {
+        codeRef.current.setText(text);
+      } finally {
+        reloading.current = false;
+      }
+    };
+    const handler = () => void onChanged();
+    window.addEventListener('fe:git-changed', handler);
+    return () => window.removeEventListener('fe:git-changed', handler);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [startFile]);
 
   // a tab sent to the background stops playing (Studio, the video editor, previews)
   useEffect(() => {
@@ -2279,8 +2358,40 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
         )}
       </main>
 
+      {doc && gitCtx && gitMounted && (
+        <div className="git-float" hidden={!gitOpen}>
+          <GitPanel
+            ctx={gitCtx}
+            variant="popup"
+            active={active && gitOpen}
+            toast={toast}
+            onClose={() => setGitOpen(false)}
+            onOpenFolder={onOpenFolder}
+            onOpenFile={(path) => {
+              void runGitOp<{ name: string; bytes: Uint8Array; token: string }>(gitCtx, 'openFile', { path }).then(
+                (f) => onOpenFile({ name: f.name, blob: new Blob([f.bytes as BlobPart]), handle: f.token }),
+                (err) => toast(err instanceof Error ? err.message : 'The file couldn’t be opened.'),
+              );
+            }}
+          />
+        </div>
+      )}
       {doc && (
         <footer className="statusbar">
+          {gitCtx && (
+            <button
+              type="button"
+              className={cx('statusbar-git', gitOpen && 'is-active')}
+              title={gitBranch ? `Git: ${gitBranch}. Changes, commit, push, pull and more` : 'Git: changes, commit, push, pull and more'}
+              aria-expanded={gitOpen}
+              onClick={() => {
+                setGitMounted(true);
+                setGitOpen((v) => !v);
+              }}
+            >
+              <GitBranch size={13} /> {gitBranch ?? 'Git'}
+            </button>
+          )}
           {canSwitchFormat ? (
             <Popover
               label="Change format"
@@ -2812,17 +2923,82 @@ export default function App() {
   const activeOrigin = activeTab?.origin;
   const activeFolderPath = folder && activeOrigin?.folderId === folder.id ? activeOrigin.path : null;
 
+  // ── Git: clones and worktrees open as the working folder; the folder view's Git panel opens files ──
+  const openGitFolder = (f: { id: string; name: string }) => {
+    const bridge = window.desktop?.folder;
+    if (!bridge) return;
+    showFolder(desktopFolder(bridge, f.id, f.name));
+    toast(`Opened ${f.name}.`, 'info');
+  };
+  const openRepoFile = (repoPath: string, prefix: string) => {
+    const f = folderRef.current;
+    if (!f) return;
+    if (!prefix || repoPath.startsWith(prefix)) return void openFolderFile(repoPath.slice(prefix.length));
+    // outside the opened folder (it is a subfolder of the repository): open the file on its own
+    if (!f.git) return;
+    void runGitOp<{ name: string; bytes: Uint8Array; token: string }>(f.git, 'openFile', { path: repoPath }).then(
+      (file) => openFile({ name: file.name, blob: new Blob([file.bytes as BlobPart]), handle: file.token }),
+      (err) => toast(err instanceof Error ? err.message : 'The file couldn’t be opened.'),
+    );
+  };
+  const [cloneOpen, setCloneOpen] = useState(false);
+
+  // ── the coding agent (licensed desktop copies; see src/ui/agent) ─────────
+  const [agentOpen, setAgentOpen] = useState(false);
+  /** mounted once opened, so closing the panel keeps the session */
+  const [agentMounted, setAgentMounted] = useState(false);
+  const [licenseVersion, setLicenseVersion] = useState(0);
+  const toggleAgent = useCallback(() => {
+    setAgentMounted(true);
+    setAgentOpen((v) => !v);
+  }, []);
+  /** a code tab's editor, with where its file sits in the opened folder */
+  const editorWithOrigin = (tab: TabEntry | undefined) => {
+    const ed = tab ? codeEditorForTab(tab.id) : null;
+    if (!ed || !tab) return null;
+    const f = folderRef.current;
+    return tab.origin && f && tab.origin.folderId === f.id ? { ...ed, folderId: f.id, path: tab.origin.path } : { ...ed, folderId: undefined, path: undefined };
+  };
+  const getAgentWorkspace = useCallback((): AgentWorkspace => {
+    const f = folderRef.current;
+    const inFolder = (path: string) => tabsRef.current.find((t) => f && t.origin?.folderId === f.id && t.origin.path === path);
+    return {
+      folder: f,
+      active: editorWithOrigin(tabsRef.current.find((t) => t.id === activeIdRef.current)),
+      editorFor: (path) => editorWithOrigin(inFolder(path)),
+      openElsewhere: (path) => {
+        const t = inFolder(path);
+        return !!t && !codeEditorForTab(t.id);
+      },
+      folderChanged: (dir) => window.dispatchEvent(new CustomEvent('fe:folder-changed', { detail: { folderId: f?.id, dir } })),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // the panel's context line follows the tab on screen and its code editor coming and going
+  const [editorsSeq, setEditorsSeq] = useState(0);
+  useEffect(() => onCodeEditorsChange(() => setEditorsSeq((n) => n + 1)), []);
+  const agentContext = useMemo(
+    () => {
+      const isCode = activeId !== null && !!codeEditorForTab(activeId);
+      return { file: isCode ? (activeFolderPath ?? activeTab?.info.name ?? null) : null, folder: folder?.name ?? null, code: isCode };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeId, activeFolderPath, activeTab?.info.name, folder, editorsSeq],
+  );
+
   // development: open a folder held in memory, to try the file tree and the preview without a picker
   useEffect(() => {
     if (!import.meta.env.DEV) return;
-    const w = window as Window & { __feOpenMemoryFolder?: (files: Record<string, string | Uint8Array>, name?: string) => void };
-    w.__feOpenMemoryFolder = (files, name = 'project') => {
+    const w = window as Window & { __feOpenMemoryFolder?: (files: Record<string, string | Uint8Array>, name?: string, withGit?: boolean) => void };
+    // withGit: give it a Git context, for trying the Git panel against a stand-in bridge
+    w.__feOpenMemoryFolder = (files, name = 'project', withGit = false) => {
       const map = new Map<string, Blob>();
       for (const [path, content] of Object.entries(files)) {
         const data = typeof content === 'string' && /^data:[^,]*;base64,/.test(content) ? Uint8Array.from(atob(content.slice(content.indexOf(',') + 1)), (c) => c.charCodeAt(0)) : content;
         map.set(path, new Blob([data as BlobPart]));
       }
-      showFolder(memoryFolder(name, map, true));
+      const f = memoryFolder(name, map, true);
+      showFolder(withGit ? { ...f, git: { folder: f.id } } : f);
     };
     return () => {
       delete w.__feOpenMemoryFolder;
@@ -2913,6 +3089,7 @@ export default function App() {
   // License check-ins run with each update check; surface a revoke/refund when the title flips.
   useEffect(() => {
     const off = window.desktop?.license?.onChange?.((state) => {
+      setLicenseVersion((n) => n + 1);
       if (state.status === 'active') return;
       toast(state.message ?? 'This license was revoked (for example after a refund). Enter a different key under Help if you have one.', 'info');
     });
@@ -2920,8 +3097,8 @@ export default function App() {
   }, [toast]);
 
   // ── shortcuts, OS file-open events, native menu ──────────────────────────
-  const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, newPresentation, openFile, closeTab, activate, openFolder, showFolder });
-  shell.current = { pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, newPresentation, openFile, closeTab, activate, openFolder, showFolder };
+  const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, newPresentation, openFile, closeTab, activate, openFolder, showFolder, toggleAgent });
+  shell.current = { pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, newPresentation, openFile, closeTab, activate, openFolder, showFolder, toggleAgent };
 
   useEffect(() => {
     const cycle = (step: number) => {
@@ -2972,6 +3149,7 @@ export default function App() {
       else if (cmd === 'open') void s.pickAndOpen();
       else if (cmd === 'open-folder') void s.openFolder();
       else if (cmd === 'license') setLicenseOpen(true);
+      else if (cmd === 'agent') s.toggleAgent();
       else if (cmd === 'toggle-autosave') setAutoSave((v) => !v);
       else if (cmd === 'help' || cmd === 'help:context') {
         const kind = tabsRef.current.find((t) => t.id === activeIdRef.current)?.info.kind ?? null;
@@ -3082,6 +3260,7 @@ export default function App() {
               <div className="format-menu" role="menu" aria-label="Open">
                 <MenuItem hint="Ctrl+O" onClick={() => { close(); void pickAndOpen(); }}>Open files…</MenuItem>
                 <MenuItem hint="Ctrl+Shift+O" onClick={() => { close(); void openFolder(); }}>Open folder…</MenuItem>
+                {gitAvailable() && <MenuItem hint="Git" onClick={() => { close(); setCloneOpen(true); }}>Clone repository…</MenuItem>}
               </div>
             )}
           </Popover>
@@ -3122,6 +3301,11 @@ export default function App() {
               )}
             </Popover>
           )}
+          {host.kind === 'desktop' && (
+            <IconButton label="Agent" text active={agentOpen} onClick={toggleAgent} className="agent-toggle">
+              <Sparkles size={16} />
+            </IconButton>
+          )}
           {/* the active tab's own buttons (Save, Print, zoom…) are rendered here */}
           <span className="topbar-doc-actions" ref={setActionsSlot} />
           <Popover label="Help" text align="right" button={<><CircleHelp size={16} /><span>Help</span></>}>
@@ -3135,6 +3319,8 @@ export default function App() {
                   <div className="menu-sep" role="separator" />
                   {item('Opening, saving & auto-save', 'saving')}
                   {item('Folders, code & web preview', 'folders')}
+                  {host.kind === 'desktop' && item('Git & GitHub', 'git')}
+                  {host.kind === 'desktop' && item('Coding agent', 'agent', 'License')}
                   {item('Documents & PDFs', 'documents')}
                   {item('Photos', 'photo-quick')}
                   {item('Video & audio', 'video-quick')}
@@ -3171,6 +3357,13 @@ export default function App() {
             onClose={() => setFolder(null)}
             onRenamed={onFolderRenamed}
             toast={toast}
+            gitView={
+              folder.git
+                ? (visible) => (
+                    <GitPanel ctx={folder.git!} variant="sidebar" active={visible} toast={toast} onOpenFile={openRepoFile} onOpenFolder={openGitFolder} />
+                  )
+                : undefined
+            }
           />
         </>
       )}
@@ -3261,9 +3454,21 @@ export default function App() {
           onInfo={onInfo}
           onEmpty={onEmpty}
           register={register}
+          onOpenFile={openFile}
+          onOpenFolder={openGitFolder}
         />
       ))}
       </div>
+      {host.kind === 'desktop' && agentMounted && (
+        <AgentPanel
+          hidden={!agentOpen}
+          onClose={() => setAgentOpen(false)}
+          getWorkspace={getAgentWorkspace}
+          context={agentContext}
+          licenseVersion={licenseVersion}
+          onOpenLicense={() => setLicenseOpen(true)}
+        />
+      )}
       </div>
 
       {dragging && (
@@ -3337,7 +3542,35 @@ export default function App() {
           </div>
         ))}
       </div>
-      {licenseOpen && host.kind === 'desktop' && <LicenseDialog onClose={() => setLicenseOpen(false)} />}
+      {cloneOpen && (
+        <PromptModal
+          title="Clone a repository"
+          label="Repository URL"
+          placeholder="https://github.com/owner/repo.git"
+          confirmLabel="Choose folder…"
+          onClose={() => setCloneOpen(false)}
+          onSubmit={async (url) => {
+            setCloneOpen(false);
+            if (!url) return;
+            toast('Cloning… (pick where to put it)', 'info');
+            try {
+              const res = await runGitOp<{ folder?: { id: string; name: string } }>(null, 'clone', { url });
+              if (res.folder) openGitFolder(res.folder);
+            } catch (err) {
+              toast(err instanceof Error ? err.message : 'The repository couldn’t be cloned.');
+            }
+          }}
+        />
+      )}
+      {licenseOpen && host.kind === 'desktop' && (
+        <LicenseDialog
+          onClose={() => {
+            setLicenseOpen(false);
+            setLicenseVersion((n) => n + 1);
+          }}
+          onActivated={() => setLicenseVersion((n) => n + 1)}
+        />
+      )}
       {help && (
         <Suspense fallback={<div className="busy" role="status"><span className="spinner" /> Opening the guide…</div>}>
           <HelpGuide section={help.section} desktop={host.kind === 'desktop'} onClose={() => setHelp(null)} />

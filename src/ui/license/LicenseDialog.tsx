@@ -1,7 +1,7 @@
 /**
  * Help → Enter License Key… / View License Info… (desktop app only). Shows this computer's license, or a form to
- * activate one. Activation runs in the main process (electron/license.ts); nothing in the app
- * is locked without a license.
+ * activate one. Activation runs in the main process (electron/license.ts). The coding agent is
+ * the only feature that needs a license.
  */
 import { useEffect, useState } from 'react';
 import { BadgeCheck, KeyRound, ShieldAlert } from 'lucide-react';

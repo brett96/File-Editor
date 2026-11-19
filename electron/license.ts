@@ -1,6 +1,8 @@
 /**
- * Desktop license activation (main process only). Nothing in the app is locked behind a
- * license; this only records that this computer holds one.
+ * Desktop license activation (main process only). Records that this computer holds a license.
+ * The only feature that needs one is the coding agent: its requests go to the license server
+ * with this computer's token (electron/agent.ts), which checks the license before answering.
+ * Everything else works without.
  *
  * - Activation: the key the user enters is sent, with a device id, to
  *   https://license.bretttomita.com/api/license/activate (Portfolio-Website). The server binds
@@ -66,7 +68,7 @@ interface TokenPayload {
 }
 
 /** The dev build may point at a local server (FILE_EDITOR_LICENSE_API); packaged builds never do. */
-function apiBase(): string {
+export function apiBase(): string {
   const override = process.env.FILE_EDITOR_LICENSE_API;
   return !app.isPackaged && override ? override.replace(/\/+$/, '') : DEFAULT_API;
 }
@@ -196,6 +198,17 @@ export async function getLicenseState(): Promise<LicenseState> {
     activatedAt: stored.activatedAt ?? new Date(payload.iat * 1000).toISOString(),
     purchaseUrl: PURCHASE_URL,
   };
+}
+
+/**
+ * The activation token and device id of this computer's active license, or null. The coding
+ * agent sends them to the license server, which checks them before answering (electron/agent.ts).
+ */
+export async function licenseCredentials(): Promise<{ token: string; deviceId: string } | null> {
+  const stored = await readStored();
+  if (!stored || stored.status !== 'active') return null;
+  const device = await deviceId();
+  return verifyToken(stored.token, device) ? { token: stored.token, deviceId: device } : null;
 }
 
 // ── network ────────────────────────────────────────────────────────────────

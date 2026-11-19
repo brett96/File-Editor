@@ -148,6 +148,109 @@ export const SECTIONS: GuideSection[] = [
     ),
   },
   {
+    id: 'git',
+    group: 'Getting started',
+    title: 'Git and GitHub',
+    desktop: true,
+    keywords: 'git github version control commit push pull fetch branch merge rebase stash tag worktree clone remote diff stage repository source control pull request',
+    body: (
+      <>
+        <p>
+          The desktop app works with Git repositories using the <strong>git installed on your computer</strong> (from git-scm.com, or Xcode’s
+          command line tools on a Mac).
+        </p>
+        <h3>Where to find it</h3>
+        <ul>
+          <li>In an opened folder, switch the list on the left from <Ui>Files</Ui> to <Ui>Git</Ui>.</li>
+          <li>In a file opened on its own, click the <Ui>Git</Ui> button (it shows the branch) at the bottom left of the status bar.</li>
+          <li>To get a repository, use <Ui>Open ▸ Clone repository…</Ui>, or <Ui>Initialize repository</Ui> in a folder that isn’t one yet.</li>
+        </ul>
+        <h3>Changes and commits</h3>
+        <ul>
+          <li>Changed files are listed under <Ui>Changes</Ui>; files ready to commit under <Ui>Staged changes</Ui>. Click a file to see what changed, double-click to open it.</li>
+          <li>Point at a file for <Ui>+</Ui> (stage), <Ui>−</Ui> (unstage) and <Ui>Discard</Ui>. The buttons on a section’s title do the same for all its files.</li>
+          <li>Write a message and press <Ui>Commit</Ui> (<Keys k="Ctrl+Enter" />). With nothing staged it offers to commit every change. The arrow next to it has <Ui>Commit & push</Ui> and <Ui>Amend last commit</Ui>.</li>
+          <li>The arrows at the top show commits to pull and to push; click them to sync. A branch that isn’t on the remote yet shows <Ui>Publish</Ui>.</li>
+          <li>If a merge, rebase or cherry-pick stops on a conflict, edit the files, stage them, then press <Ui>Continue</Ui> (or <Ui>Abort</Ui>).</li>
+        </ul>
+        <h3>The ⋯ menu</h3>
+        <Defs
+          rows={[
+            [<Ui>Pull, Push, Fetch</Ui>, <>Including pull with rebase, force push (with lease) and fetch all & prune.</>],
+            [<Ui>Branches…</Ui>, <>Switch, create, rename and delete branches (also on the remote), merge one into the current branch, or rebase onto it. The branch name at the top is a quick switcher.</>],
+            [<Ui>History…</Ui>, <>Recent commits with their files and changes. Check one out, start a branch or tag there, cherry-pick, revert or reset to it.</>],
+            [<Ui>Stashes…</Ui>, <>Put changes aside and bring them back (apply, pop, to a new branch), or drop them.</>],
+            [<Ui>Tags…, Remotes…</Ui>, <>Create, push and delete tags; add, rename, re-point and remove remotes.</>],
+            [<Ui>Worktrees…</Ui>, <>A second folder with another branch checked out, sharing the same repository. Add, open and remove them.</>],
+            [<Ui>Run git command…</Ui>, <>Anything else: type the command (without a shell) and confirm it. <Ui>Output</Ui> lists what ran and what git said.</>],
+            [<Ui>Your name & email…</Ui>, <>The author recorded on your commits.</>],
+          ]}
+        />
+        <h3>GitHub</h3>
+        <p>
+          <Ui>⋯ ▸ GitHub…</Ui> connects your account with a personal access token (the page links to GitHub to create one). Then you can clone
+          your repositories from a list, push and pull without signing in again, publish a local repository to GitHub, and open the repository
+          or a pull request for the current branch in your browser. Without a token, git uses your usual sign-in (Git Credential Manager or SSH
+          keys).
+        </p>
+        <Note>
+          Pushing, pulling and cloning talk to the remote you chose; nothing else leaves your computer. The token is encrypted with your
+          system’s keychain and only sent to github.com.
+        </Note>
+      </>
+    ),
+  },
+  {
+    id: 'agent',
+    group: 'Getting started',
+    title: 'Coding agent',
+    desktop: true,
+    keywords: 'ai agent assistant chat model llm openuncensored code fix refactor explain license copilot',
+    body: (
+      <>
+        <p>
+          The coding agent is an AI assistant that works beside the code editor and opened folders. It is part of <strong>licensed</strong> copies
+          of the desktop app: enter your key under <Ui>Help ▸ License…</Ui>. Without a license the panel shows how to get one.
+        </p>
+        <h3>Open the agent</h3>
+        <p>
+          Click <Ui>Agent</Ui> in the top bar, or use <Ui>View ▸ Coding Agent</Ui> (<Keys k="Ctrl+Shift+A" />). The panel opens on the right;
+          drag its left edge to make it wider. Closing it keeps the conversation; <Ui>New session</Ui> (the pencil button) starts over.
+        </p>
+        <h3>Pick a model</h3>
+        <p>
+          The list under the title has every model the agent service offers, with the size of its context window (how much it can read at
+          once). Point at a model for its price and what it is based on. Models whose names end in <Ui>thinking</Ui> reason before answering:
+          slower, often better at hard problems. Your choice is remembered.
+        </p>
+        <h3>Agent and Chat</h3>
+        <Defs
+          rows={[
+            [
+              <Ui>Agent</Ui>,
+              <>
+                The agent looks through the opened folder (or the one open file), reads what it needs and changes files. Each change appears as
+                a diff: <Ui>Apply</Ui> or <Ui>Reject</Ui> it. Tick <Ui>Apply changes without asking</Ui> to skip the review.
+              </>,
+            ],
+            [<Ui>Chat</Ui>, <>Ask about the file on screen. Select lines first to ask about just those. <Ui>Insert</Ui> on a code block puts it in the editor (replacing the selection).</>],
+          ]}
+        />
+        <ul>
+          <li>A change to a file that is open in a tab is made in the tab: <Keys k="Ctrl+Z" /> undoes it, and it is saved like any other edit.</li>
+          <li>Changes to other files of the folder are written to the file. New files (and their folders) are created as needed.</li>
+          <li>The agent cannot delete or rename files, run commands or tests, or go online. <Ui>Stop</Ui> ends a turn at any time.</li>
+          <li>Some models can't use tools. If one fails in Agent mode, switch to Chat or pick another model.</li>
+        </ul>
+        <Note>
+          Everything else in File Editor stays on your computer. The agent is the exception: your messages, and the files it reads, go through
+          File Editor’s license server to OpenUncensored so the model can answer. They aren’t stored. Each license has a daily allowance; when it
+          runs out, the agent says so and is back the next day (midnight UTC).
+        </Note>
+      </>
+    ),
+  },
+  {
     id: 'saving',
     group: 'Getting started',
     title: 'Saving, auto-save and converting',
@@ -1455,6 +1558,8 @@ export const SECTIONS: GuideSection[] = [
             ['Ctrl+Z / Ctrl+Y', 'Undo / Redo'],
             ['Ctrl+Tab / Ctrl+Shift+Tab', 'Next / previous tab (desktop app)'],
             ['Ctrl+W', 'Close tab (desktop app)'],
+            ['Ctrl+Shift+A', 'Show or hide the coding agent (licensed desktop app)'],
+            ['Ctrl+Shift+L', 'Switch between light and dark mode (desktop app; View ▸ Appearance also follows the system)'],
             ['Ctrl+= / Ctrl+-', 'Zoom documents and PDFs in / out (Ctrl+0: 100%)'],
           ]}
         />

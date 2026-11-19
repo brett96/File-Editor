@@ -4,6 +4,7 @@
  * Electron preload bridge (native dialogs; paths stay in the main process).
  */
 
+import type { AgentChatRequest, AgentChatResult, AgentDelta, AgentModel, AgentResponse, AgentStatus } from '../core/agent/protocol';
 import { saveNameProblem, type DocKind } from '../core/conversions';
 import { desktopFolder, pickWebFolder, type OpenedFolder } from './folders';
 
@@ -98,6 +99,9 @@ export interface FileHost {
   backup(handle: unknown, name: string, original: Uint8Array): Promise<string | null>;
 }
 
+/** Which repository a Git request is about: the one an opened folder (desktop id) or opened file (token) is in. */
+export type GitContext = { folder: string } | { file: string };
+
 /** License state reported by the desktop app's main process (electron/license.ts). */
 export interface LicenseState {
   status: 'unlicensed' | 'active' | 'revoked';
@@ -145,6 +149,8 @@ export interface DesktopBridge {
     createDir(id: string, path: string): Promise<void>;
     rename(id: string, path: string, newName: string): Promise<string>;
     remove(id: string, path: string): Promise<void>;
+    /** Replaces the content of an existing file (the coding agent's edits). */
+    write?(id: string, path: string, bytes: Uint8Array): Promise<void>;
   };
   /** Reads a file beside a granted file (same directory or below), for the web preview. */
   readSibling?(token: string, path: string): Promise<Uint8Array | null>;
@@ -152,6 +158,26 @@ export interface DesktopBridge {
   preview?: {
     set(id: string, html: string): Promise<string>;
     clear(id: string): void;
+  };
+  /** The coding agent: licensed copies only, checked by the main process (see electron/agent.ts). */
+  agent?: {
+    status(): Promise<AgentStatus>;
+    models(force?: boolean): Promise<AgentResponse<{ models: AgentModel[] }>>;
+    chat(id: string, request: AgentChatRequest): Promise<AgentResponse<AgentChatResult>>;
+    cancel(id: string): void;
+    onDelta(callback: (id: string, delta: AgentDelta) => void): () => void;
+  };
+  /** Git: runs the user's git in the repository of an opened folder or file (see electron/git.ts). */
+  git?: {
+    call(ctx: GitContext, op: string, args?: Record<string, unknown>, opId?: string): Promise<{ ok: true; data: unknown } | { ok: false; code: string; error: string }>;
+    cancel(opId: string): void;
+    onProgress(callback: (opId: string, line: string) => void): () => void;
+  };
+  /** View ▸ Appearance (electron/main.ts): the main process switches the native theme too. */
+  theme?: {
+    get(): Promise<'system' | 'light' | 'dark'>;
+    set(value: 'system' | 'light' | 'dark'): void;
+    onChange(callback: (value: 'system' | 'light' | 'dark') => void): () => void;
   };
   /** Desktop license activation (see electron/license.ts). */
   license: {
@@ -531,6 +557,11 @@ export async function readDroppedFile(file: File, handle?: Promise<FileSystemHan
 
 export async function fileBytes(file: OpenedFile): Promise<Uint8Array> {
   return new Uint8Array(await file.blob.arrayBuffer());
+}
+
+/** The desktop app's coding-agent API, or null in the browser (the agent needs a desktop license). */
+export function agentBridge(): DesktopBridge['agent'] | null {
+  return typeof window !== 'undefined' ? window.desktop?.agent ?? null : null;
 }
 
 /** The desktop app's license API, or null in the browser (licenses are desktop-only). */

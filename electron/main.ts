@@ -17,12 +17,14 @@
  *    CSP. Navigation away from the app and new windows are blocked; external links open in
  *    the default browser.
  */
-import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, session, shell, type MenuItemConstructorOptions } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, net, protocol, session, shell, type MenuItemConstructorOptions } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { appendFile, copyFile, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { agentStatus, cancelAllChats, cancelChat, chat as agentChat, listModels } from './agent';
+import { registerGitIpc } from './git';
 import { activateLicense, getLicenseState, refreshLicenseStatus } from './license';
 import { CODE_EXTENSIONS, isCodeFileName } from '../src/core/code/languages';
 import { isSafeName, safeSegments } from '../src/core/web/paths';
@@ -82,6 +84,45 @@ protocol.registerSchemesAsPrivileged([
 ]);
 
 let mainWindow: BrowserWindow | null = null;
+
+// ── appearance: View ▸ Appearance (System / Light / Dark) ─────────────────
+/**
+ * Setting nativeTheme.themeSource switches everything together: the page's
+ * prefers-color-scheme (so the app's light / dark styles), native menus, dialogs, scrollbars
+ * and the title bar. The renderer also gets the choice as data-theme on <html>.
+ */
+type ThemeChoice = 'system' | 'light' | 'dark';
+let theme: ThemeChoice = 'system';
+const settingsFile = () => join(app.getPath('userData'), 'settings.json');
+const windowBackground = () => (nativeTheme.shouldUseDarkColors ? '#17181c' : '#eef0f4');
+
+async function loadTheme() {
+  try {
+    const saved = JSON.parse(await readFile(settingsFile(), 'utf8')) as { theme?: unknown };
+    if (saved.theme === 'light' || saved.theme === 'dark' || saved.theme === 'system') theme = saved.theme;
+  } catch {
+    /* first run */
+  }
+  nativeTheme.themeSource = theme;
+}
+
+function setTheme(next: ThemeChoice) {
+  theme = next;
+  nativeTheme.themeSource = next;
+  mainWindow?.setBackgroundColor(windowBackground());
+  mainWindow?.webContents.send('theme', next);
+  buildMenu();
+  void (async () => {
+    let saved: Record<string, unknown> = {};
+    try {
+      saved = JSON.parse(await readFile(settingsFile(), 'utf8')) as Record<string, unknown>;
+    } catch {
+      /* none yet */
+    }
+    await mkdir(dirname(settingsFile()), { recursive: true });
+    await writeFile(settingsFile(), JSON.stringify({ ...saved, theme: next }));
+  })().catch(() => undefined);
+}
 let dirty = false;
 /** mirrors the renderer's Auto Save setting for the File menu checkbox */
 let autoSave = true;
@@ -284,6 +325,14 @@ async function pathInside(root: string, rel: unknown): Promise<string> {
   return target;
 }
 
+/** Grants a folder (picked by the user, or one they cloned or made a worktree in) and returns its id. */
+function addFolderRoot(root: string): { id: string; name: string } {
+  for (const [id, p] of folderRoots) if (p === root) return { id, name: basename(root) || root };
+  const id = randomUUID();
+  folderRoots.set(id, root);
+  return { id, name: basename(root) || root };
+}
+
 function folderRoot(id: unknown): string {
   const root = folderRoots.get(String(id));
   if (!root) throw new Error('This folder is no longer open.');
@@ -345,7 +394,7 @@ function createWindow() {
     minWidth: 720,
     minHeight: 480,
     title: windowTitle(),
-    backgroundColor: '#eef0f4',
+    backgroundColor: windowBackground(),
     show: false,
     webPreferences: {
       preload: join(__dirname, 'preload.cjs'),
@@ -463,6 +512,22 @@ function buildMenu() {
     {
       label: 'View',
       submenu: [
+        { label: 'Coding Agent', accelerator: 'CmdOrCtrl+Shift+A', click: () => send('agent') },
+        { type: 'separator' },
+        {
+          label: 'Appearance',
+          submenu: [
+            { label: 'Use System Setting', type: 'radio', checked: theme === 'system', click: () => setTheme('system') },
+            { label: 'Light', type: 'radio', checked: theme === 'light', click: () => setTheme('light') },
+            { label: 'Dark', type: 'radio', checked: theme === 'dark', click: () => setTheme('dark') },
+          ],
+        },
+        {
+          label: nativeTheme.shouldUseDarkColors ? 'Switch to Light Mode' : 'Switch to Dark Mode',
+          accelerator: 'CmdOrCtrl+Shift+L',
+          click: () => setTheme(nativeTheme.shouldUseDarkColors ? 'light' : 'dark'),
+        },
+        { type: 'separator' },
         { role: 'togglefullscreen' },
         ...(!app.isPackaged ? [{ type: 'separator' as const }, { role: 'reload' as const }, { role: 'toggleDevTools' as const }] : []),
       ],
@@ -498,7 +563,7 @@ function buildMenu() {
               type: 'info',
               title: 'About',
               message: `File Editor ${app.getVersion()}`,
-              detail: `Documents are processed locally on this computer and are never uploaded.\n\n${licensed}`,
+              detail: `Documents are processed locally on this computer and are never uploaded. The coding agent (licensed copies) sends your messages, and the files it reads, through the license server to OpenUncensored.\n\n${licensed}`,
             });
           },
         },
@@ -632,11 +697,17 @@ function registerIpc() {
     assertSender(e);
     const res = await dialog.showOpenDialog(mainWindow!, { title: 'Open Folder', properties: ['openDirectory', 'createDirectory'] });
     if (res.canceled || !res.filePaths[0]) return null;
-    const root = await realpath(res.filePaths[0]);
-    for (const [id, p] of folderRoots) if (p === root) return { id, name: basename(root) || root };
-    const id = randomUUID();
-    folderRoots.set(id, root);
-    return { id, name: basename(root) || root };
+    return addFolderRoot(await realpath(res.filePaths[0]));
+  });
+
+  // Git panel: runs the user's git in the repository of an opened folder or file (see git.ts)
+  registerGitIpc({
+    window: () => mainWindow,
+    assertSender,
+    folderRoot: (id) => folderRoots.get(id),
+    filePath: (token) => grants.get(token),
+    addFolder: addFolderRoot,
+    openFile: readGranted,
   });
 
   ipcMain.handle('folder-list', async (e, id: unknown, rel: unknown) => {
@@ -673,6 +744,17 @@ function registerIpc() {
     await writeFile(path, toBytes(data), { flag: 'wx' }).catch((err) => {
       throw (err as NodeJS.ErrnoException).code === 'EEXIST' ? new Error(`${basename(path)} already exists.`) : err;
     });
+  });
+
+  // the coding agent's edits: replaces the content of a file that is already in the folder
+  ipcMain.handle('folder-write', async (e, id: unknown, rel: unknown, data: unknown) => {
+    assertSender(e);
+    const path = await pathInside(folderRoot(id), rel);
+    const info = await stat(path).catch(() => null);
+    if (!info?.isFile()) throw new Error(`${basename(path)} is not a file in the folder.`);
+    const bytes = toBytes(data);
+    if (bytes.length > MAX_FILE_BYTES) throw new Error('That is too large to write.');
+    await writeFile(path, bytes);
   });
 
   ipcMain.handle('folder-create-dir', async (e, id: unknown, rel: unknown) => {
@@ -799,6 +881,44 @@ function registerIpc() {
     const res = await activateLicense(typeof key === 'string' ? key.slice(0, 100) : '');
     void refreshLicenseMenu();
     return res;
+  });
+
+  // coding agent: requests go from here to the license server, which holds the key (see agent.ts)
+  ipcMain.handle('agent-status', (e) => {
+    assertSender(e);
+    return agentStatus();
+  });
+
+  ipcMain.handle('agent-models', (e, force: unknown) => {
+    assertSender(e);
+    return listModels(force === true);
+  });
+
+  ipcMain.handle('agent-chat', (e, id: unknown, req: unknown) => {
+    assertSender(e);
+    return agentChat(e.sender, id, req);
+  });
+
+  ipcMain.on('agent-cancel', (e, id: unknown) => {
+    try {
+      assertSender(e);
+      cancelChat(id);
+    } catch {
+      /* ignore */
+    }
+  });
+
+  ipcMain.handle('theme-get', (e) => {
+    assertSender(e);
+    return theme;
+  });
+  ipcMain.on('theme-set', (e, value: unknown) => {
+    try {
+      assertSender(e);
+      if (value === 'system' || value === 'light' || value === 'dark') setTheme(value);
+    } catch {
+      /* ignore */
+    }
   });
 
   ipcMain.on('set-dirty', (e, value: boolean) => {
@@ -1023,6 +1143,12 @@ app.whenReady().then(async () => {
     cb({ cancel: !ok });
   });
 
+  await loadTheme();
+  // the system switching light / dark changes the menu's "Switch to …" label
+  nativeTheme.on('updated', () => {
+    mainWindow?.setBackgroundColor(windowBackground());
+    buildMenu();
+  });
   registerAppProtocol();
   registerPreviewProtocol();
   registerIpc();
@@ -1043,6 +1169,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  cancelAllChats();
   if (process.platform !== 'darwin') app.quit();
 });
 

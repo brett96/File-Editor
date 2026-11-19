@@ -2,7 +2,8 @@
 
 Create, edit, convert and password-protect documents, spreadsheets, presentations, SQLite databases, photos, video and audio, in the browser or as an installed desktop
 app for Windows and macOS. Everything runs on the user's device: no file is ever uploaded, and
-there is no server to run.
+there is no server to run. (The one exception is the optional coding agent in licensed desktop
+copies, which sends what you ask it, and the files it reads, to the model you pick.)
 
 | | |
 |---|---|
@@ -12,6 +13,8 @@ there is no server to run.
 | **Presentations** | Open and save PowerPoint (`.pptx`; `.ppsx` and `.potx` open too), including Google Slides and Keynote decks exported as PowerPoint; start one with **New → Blank presentation**. PowerPoint-style editor: slide list with drag to reorder, six layouts, rich text with bullets, numbering and links, 24 shapes, pictures, lines and arrows, tables, column / bar / line / pie charts with editable data, fills, outlines, shadows, rotate / align / distribute with snap guides, seven themes, slide sizes and backgrounds, speaker notes, slide transitions and a full-screen slide show (F5). **Save as** PowerPoint, PowerPoint show, PDF or PNG pictures. Opens and saves password-protected presentations. Find and replace, slide sorter. SmartArt, media, special chart types and object animations are not edited (shown as placeholders and left out on save) |
 | **Databases** | Open SQLite files (`.sqlite`, `.sqlite3`, `.db`, `.db3`, up to 2 GB); browse tables and views, edit cells, add/delete rows, run SQL. The file is edited in memory on this device and written back on Save. LiteDB `.db` files open with collections as tables; LiteDB 3/4 files are saved back in place in LiteDB's own format (untouched documents byte for byte, field types kept, indexes rebuilt, `.bak` of the original on first save), LiteDB 5 files open as a copy saved as SQLite |
 | **PDF editing** | Edit existing text, add text, images, links, shapes, lines, freehand drawing/signature, highlights, white-out; insert blank pages or pages from another document at any position; delete, duplicate, reorder (drag) and rotate pages |
+| **Coding agent** (licensed desktop app) | An AI agent beside the code editor and opened folders (**Agent** button, View ▸ Coding Agent, Ctrl+Shift+A). Pick any of OpenUncensored's 60+ models from a dropdown. **Agent** mode reads, searches and changes the project's files, showing each change as a diff to apply or reject; **Chat** mode answers questions about the file on screen (or the selection) with code you can insert in one click. Requires an activated license; messages and the files the agent reads go through File Editor's license server to OpenUncensored, with daily limits per license |
+| **Git & GitHub** (desktop app) | Every opened folder has a **Files \| Git** switch; a file opened on its own has a **Git** button at the bottom left of the status bar. Both show the repository's changed files: diff, stage, unstage, discard, commit (amend, commit & push), pull / push / fetch with a sync button, and conflict handling (continue / skip / abort a merge, rebase or cherry-pick). The ⋯ menu adds branches (switch, create, rename, delete, merge, rebase), history (check out, branch or tag here, cherry-pick, revert, reset), remotes, stashes, tags, worktrees, clone (also **Open ▸ Clone repository…**), init, your commit name and email, and **Run git command** for anything else. Connect a GitHub account (personal access token) to clone your repositories, push and pull without signing in, publish a repository and open pull requests. Uses the git installed on the computer |
 | **Folders & code** | **Open ▸ Open folder** (Ctrl+Shift+O) opens a whole folder or code repository with a file tree beside the tabs: open, create, rename and delete files (the desktop app deletes to the recycle bin / Trash). Source and config files (TypeScript, Python, JSON, YAML, Go, Rust, Java, C/C++, C#, PHP, Ruby, SQL, shell, Dockerfile and many more) open in the code editor with syntax highlighting and are saved as text under their own extension. **Preview / Split** on an HTML, CSS or JS file runs the page with everything it references in the folder (stylesheets and their imports, scripts, ES modules, images, fonts, media), including unsaved changes in open tabs; stylesheets and scripts are previewed in the page they belong to, and links between pages work. The preview is sandboxed and offline |
 | **Photos** | Open JPEG, PNG, WebP, AVIF, HEIC/HEIF (iPhone), JPEG XL, GIF, TIFF, BMP, ICO and SVG. Crop (with aspect presets), rotate, flip, straighten, resize; exposure, contrast, highlights/shadows, saturation, warmth, hue, vignette, sharpen, blur; one-click filters; text, arrows, shapes, freehand drawing, stickers; redact faces, plates or text (pixelate / blur / black box) |
 | **Video & audio** | Open MP4, MOV, WebM, MKV, TS, MP3, M4A, WAV, FLAC, OGG/Opus, AAC, plus legacy AVI, WMV, FLV, MPEG, 3GP, OGV, WMA, AIFF, AMR. Trim, crop, rotate, flip, resize, change frame rate; colour look and filters; text overlays with timing; fade in/out; volume or mute; save a frame as a picture or edit it in the photo editor |
@@ -19,6 +22,7 @@ there is no server to run.
 | **Pro Photo** (desktop app only) | Photoshop-style workspace: layers (pixel, text, shape, fill) with 16 blend modes, opacity, masks and lock; non-destructive adjustment layers (Curves, Levels, Hue/Saturation, Color Balance, Black & White, Exposure, Brightness/Contrast, Vibrance, Photo Filter, Invert, Threshold, Posterize); marquee, lasso and magic-wand selections with add/subtract/intersect, feather and invert; brush, eraser, clone stamp, spot healing, dodge/burn, gradient and paint bucket; filters (Gaussian blur, unsharp mask, noise, median, motion blur, emboss, find edges); image/canvas size, rotate, crop; open and save layered **.psd** |
 | **Studio** (desktop app only) | After Effects / Premiere-style video and audio editing: multi-track timeline (move, trim, split, snap, linked picture + sound, lock/hide/mute/solo); titles and colour layers; keyframed position, scale, rotation and opacity with easing; blend modes, fades, blur, drop shadow, colour grading and looks, chroma key (green screen); mixing console per audio track (EQ with low/high cut, shelves and parametric mid, compressor, delay, reverb, pan, fader, meters), master limiter and loudness normalization to −14/−16/−23/−24 LUFS; clip gain, fades and volume automation; waveform editor (cut/copy/paste, silence, gain, normalize, fades, reverse, noise gate, noise-profile noise reduction); export to MP4, WebM, MOV, MKV, TS or audio formats |
 | **Saving** | **Save** writes back to the file you opened, in its own format (documents, spreadsheets, PDFs, photos, Photoshop files, video and audio, Studio projects); **Save as / Convert** makes a copy or changes the format. **Auto-save** (on by default; status bar or desktop File menu) saves every change to the file a moment after you stop. **Recent** (and the desktop File ▸ Open Recent menu and the start screen) reopens recently used files; the × beside a file (or File ▸ Open Recent ▸ Remove from List) takes it off the list |
+| **Appearance** (desktop app) | **View ▸ Appearance**: Use System Setting, Light or Dark (remembered), and **Switch to Light / Dark Mode** (Ctrl+Shift+L). The whole app follows it at once, including native menus and dialogs and the spreadsheet grid |
 | **Tabs** | Every file opens in its own tab (open or drop several at once); switching tabs keeps each file's undo history and position. A dot on a tab means unsaved changes; closing it asks first. Middle-click closes a tab; on the desktop Ctrl+W closes and Ctrl+Tab / Ctrl+Shift+Tab switch. The **File Editor** logo goes to the home screen without closing anything, and the home screen lists the open files |
 | **Convert** | Documents ↔ documents (incl. PDF ↔ DOCX); spreadsheets ↔ .xlsx, CSV, TSV; photos ↔ any photo format or PDF; video ↔ MP4 (H.264/HEVC/AV1/VP9), WebM, MOV, MKV, TS, animated GIF, AVI, WMV, FLV, MPEG, 3GP, OGV; video or audio → MP3, M4A, WAV, FLAC, OGG, Opus, AAC |
 | **Passwords** | Open Word, Excel and PDF files protected by Office, Acrobat or other tools (with the password); save password-protected DOCX and XLSX (Office AES-256) and PDF (AES-256, with optional permission restrictions) |
@@ -123,13 +127,37 @@ What the build does to harden the app:
   signature before installing it. Set `build.publish` in `package.json` to your repository.
 - At runtime the renderer is sandboxed, can only reach files the user picked, cannot navigate
   away or open new windows, and is blocked from making any network request. The only network
-  traffic besides updates is license activation (below), made by the main process.
+  traffic besides updates is license activation and the coding agent (below), both made by the
+  main process and both to the license server, plus what the user does with Git (below).
+
+### Git (desktop only)
+
+The Git panel (`src/ui/git/`) runs the **git installed on the computer** from the main process
+(`electron/git.ts`, `electron/git-runner.ts`); without git it says how to install it.
+
+- The renderer names a repository only by an opened folder's id or an opened file's token,
+  like every other file call. Clone destinations and worktree folders are picked in native
+  dialogs in the main process.
+- git is started without a shell, with argument lists the main process builds. Branch, tag,
+  remote and stash names, URLs and paths are checked first (`src/core/git/parse.ts`); paths go
+  after `--` as literal pathspecs. `ext::`/`fd::` transports are refused, `core.fsmonitor` is
+  off and diffs never use an external diff tool, so a repository's config can't run programs
+  during routine refreshes. Hooks still run on commit, as in any git client.
+- **Run git command** shows the exact command in a native confirmation dialog before running
+  it, so only the user can run an arbitrary command.
+- git never waits on a terminal prompt. Sign-in uses the system's credential helper (Git
+  Credential Manager, SSH keys) or, for github.com, the **GitHub token** the user connects: it is
+  checked against `api.github.com`, encrypted with the OS keychain (`safeStorage`) and handed to
+  git through a credential helper that reads it from the environment (never the command line).
+  GitHub API calls use their own session limited to `api.github.com`.
+- After a checkout, pull, stash or discard, open code tabs without unsaved changes are re-read
+  from disk.
 
 ### Licenses (desktop only)
 
 The desktop app can be activated with a lifetime license bought at
-`license.bretttomita.com` (one license, one device, for life). **Nothing is locked without a
-license**; activation only records that the computer holds one. The web version never asks.
+`license.bretttomita.com` (one license, one device, for life). The **coding agent** is the only
+feature that needs a license; everything else works without one. The web version never asks.
 
 - **Help → Enter License Key…** opens the license dialog (`src/ui/license/LicenseDialog.tsx`).
 - `electron/license.ts` (main process) sends the key and a device id to
@@ -151,6 +179,38 @@ license**; activation only records that the computer holds one. The web version 
 - For local testing, `FILE_EDITOR_LICENSE_API=http://localhost:3000` points an unpackaged dev
   build at a local portfolio server (packaged builds ignore it). The server side is documented
   in the portfolio repo's `docs/license.md`.
+
+### Coding agent (licensed desktop copies)
+
+The **Agent** panel (`src/ui/agent/`) runs coding sessions against
+[OpenUncensored](https://openuncensored.com/agents.md)'s OpenAI-compatible API
+(`https://api.openuncensored.com/v1`). Licensed users pick the model from a dropdown filled from
+`GET /v1/models`.
+
+- **Through the license server.** The app holds **no API key**. `electron/agent.ts` (main
+  process) sends each request to the license server (`/api/agent/models`, `/api/agent/chat`)
+  with this computer's activation token and device id. The server checks the license, applies
+  the usage limits, adds the OpenUncensored key and streams the answer back. The key lives only
+  in the server's `OPENUNCENSORED_API_KEY` environment variable; rotating it needs no app
+  update. Setup, limits and the admin view are in the portfolio repo's `docs/license.md`.
+- **Licensed copies only.** The app also refuses to send anything without an active license
+  on this computer, so unlicensed copies make no requests; the server's check is the one that
+  can't be bypassed. When the server says a license is gone, the app re-checks it at once.
+- **Limits.** Set per license in Admin → Licenses on the server: requests and tokens per day,
+  requests per minute, requests running at once, output tokens per request, plus a monthly
+  spending cap across all licenses and a kill switch. A single license can have the agent
+  turned off. The app shows the server's message when a limit is reached.
+- **Network.** Agent requests go through their own in-memory Electron session that can reach
+  only the license server. The app also checks and caps requests itself (16K output tokens, 3
+  running and 40 a minute, 25 tool steps per turn), so a runaway loop stops before the server
+  has to refuse it. `FILE_EDITOR_LICENSE_API` points a dev build at a local server, as for
+  activation.
+- **What the agent can do.** List, read and search the opened folder (dependency folders such as
+  `node_modules` are skipped), edit files by exact string replacement, and create files. Each
+  change is shown as a diff to **Apply** or **Reject** (or applied straight away with *Apply
+  changes without asking*). A file open in a code tab is changed in the tab (one undo step, saved
+  as usual); other files are written in place. It cannot delete or rename files, run commands or
+  reach the internet.
 
 Publish `SHA256SUMS` next to the downloads so users can verify them:
 
