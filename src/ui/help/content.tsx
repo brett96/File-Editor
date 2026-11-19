@@ -190,8 +190,9 @@ export const SECTIONS: GuideSection[] = [
           <li>Some models can't use tools. If one fails in Agent mode, switch to Chat or pick another model.</li>
         </ul>
         <Note>
-          Everything else in File Editor stays on your computer. The agent is the exception: your messages, and the files it reads, are sent to
-          OpenUncensored so the model can answer.
+          Everything else in File Editor stays on your computer. The agent is the exception: your messages, and the files it reads, go through
+          File Editor’s license server to OpenUncensored so the model can answer. They aren’t stored. Each license has a daily allowance; when it
+          runs out, the agent says so and is back the next day (midnight UTC).
         </Note>
       </>
     ),

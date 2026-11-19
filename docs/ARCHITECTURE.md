@@ -241,7 +241,8 @@ on OpenUncensored's OpenAI-compatible chat API.
 | Wire format | `core/agent/protocol.ts` | Model list parsing, request checking and capping (`buildChatBody`), SSE parsing and assembly of streamed text, reasoning and tool calls. Shared by both processes. |
 | Edits and diffs | `core/agent/edits.ts` | Exact-string replacement (must match once), the smallest single change for the editor, line diffs for review. |
 | Context window | `core/agent/context.ts` | File and history budgets from the chosen model's context length; trimming drops whole turns, so a tool call is never sent without its result. |
-| Requests | `electron/agent.ts` | Main process only: license check on every call, the API key, a network session limited to the API host, concurrency and rate limits, cancellation. Streams pieces to the renderer as `agent-delta` events. |
+| Requests | `electron/agent.ts` | Main process only: sends each request to the license server with this computer's activation token (no API key in the app), a network session limited to that server, local concurrency and rate limits, cancellation. Streams pieces to the renderer as `agent-delta` events. |
+| Gateway | Portfolio-Website `src/lib/license/agent.ts`, `/api/agent/*` | Checks the token and the license, enforces the per-license and monthly limits, adds the OpenUncensored key, streams the answer back and records tokens and cost. |
 | Tools | `ui/agent/tools.ts` | `list_files`, `read_file`, `search_files`, `edit_file`, `write_file`, run in the renderer over the `OpenedFolder` interface, so they reach only the folder the user opened. |
 | Code tabs | `ui/agent/editors.ts` | Open code tabs register their editor, so the agent reads unsaved text and applies edits in the tab as one undo step. |
 

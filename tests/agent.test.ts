@@ -252,37 +252,49 @@ describe('agent tools', () => {
   });
 });
 
-// ── the main process refuses unlicensed copies ─────────────────────────────
-describe('agent license gate (main process)', () => {
-  it('sends nothing without an active license', async () => {
+// ── the main process: licensed copies only, through the license server ──────
+describe('agent requests (main process)', () => {
+  it('sends nothing without a license, then goes to the license server with the token', async () => {
     vi.resetModules();
     const fetch = vi.fn();
     vi.doMock('electron', () => ({
       app: { isPackaged: false, getVersion: () => '0.0.0' },
       session: { fromPartition: () => ({ fetch, setPermissionRequestHandler: () => undefined, webRequest: { onBeforeRequest: () => undefined } }) },
     }));
-    const state = { status: 'unlicensed' as 'unlicensed' | 'active' };
-    vi.doMock('../electron/license', () => ({ getLicenseState: async () => ({ ...state, purchaseUrl: 'https://example.test' }) }));
-    process.env.OPENUNCENSORED_API_KEY = 'ou-test';
+    const state = { active: false };
+    const refresh = vi.fn(async () => undefined);
+    vi.doMock('../electron/license', () => ({
+      apiBase: () => 'https://license.example.test',
+      getLicenseState: async () => ({ status: state.active ? 'active' : 'unlicensed', purchaseUrl: 'https://license.example.test' }),
+      licenseCredentials: async () => (state.active ? { token: 'FE1.tok.sig', deviceId: 'd'.repeat(64) } : null),
+      refreshLicenseStatus: refresh,
+    }));
     const agent = await import('../electron/agent');
     const sender = { send: vi.fn(), isDestroyed: () => false } as never;
-    const req = { model: 'm', messages: [{ role: 'user', content: 'hi' }] };
+    const req = { model: 'm', messages: [{ role: 'user', content: 'hi' }], maxTokens: 999999 };
 
-    expect(await agent.agentStatus()).toMatchObject({ licensed: false, configured: true });
+    expect(await agent.agentStatus()).toEqual({ licensed: false, purchaseUrl: 'https://license.example.test' });
     expect(await agent.chat(sender, 'r1', req)).toMatchObject({ ok: false, code: 'unlicensed' });
     expect(await agent.listModels()).toMatchObject({ ok: false, code: 'unlicensed' });
     expect(fetch).not.toHaveBeenCalled();
 
-    // licensed: the request goes out with the key, and the stream comes back
-    state.status = 'active';
+    state.active = true;
     const sse = 'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
-    fetch.mockResolvedValue(new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+    fetch.mockResolvedValueOnce(new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } }));
     const res = await agent.chat(sender, 'r2', req);
     expect(res).toMatchObject({ ok: true, message: { content: 'Hi' }, finishReason: 'stop' });
     const [url, init] = fetch.mock.calls[0] as [string, RequestInit & { headers: Record<string, string> }];
-    expect(url).toBe('https://api.openuncensored.com/v1/chat/completions');
-    expect(init.headers.Authorization).toBe('Bearer ou-test');
+    expect(url).toBe('https://license.example.test/api/agent/chat');
+    expect(init.headers).not.toHaveProperty('Authorization');
+    const sent = JSON.parse(String(init.body));
+    expect(sent).toMatchObject({ token: 'FE1.tok.sig', deviceId: 'd'.repeat(64), request: { model: 'm', maxTokens: 16384 } });
     expect((sender as unknown as { send: ReturnType<typeof vi.fn> }).send).toHaveBeenCalledWith('agent-delta', 'r2', { content: 'Hi' });
-    delete process.env.OPENUNCENSORED_API_KEY;
+
+    // the server's refusals are shown as it words them; a lost license is re-checked
+    fetch.mockResolvedValueOnce(Response.json({ error: "You've reached today's limit.", code: 'daily-limit' }, { status: 429 }));
+    expect(await agent.chat(sender, 'r3', req)).toEqual({ ok: false, code: 'quota', error: "You've reached today's limit." });
+    fetch.mockResolvedValueOnce(Response.json({ error: 'This license was revoked.', code: 'revoked' }, { status: 403 }));
+    expect(await agent.chat(sender, 'r4', req)).toMatchObject({ ok: false, code: 'unlicensed' });
+    expect(refresh).toHaveBeenCalledWith(true);
   });
 });

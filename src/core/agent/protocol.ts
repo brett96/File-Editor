@@ -1,16 +1,17 @@
 /**
  * The coding agent's wire format, shared by the renderer (src/ui/agent) and the desktop main
- * process (electron/agent.ts), which is the only place that talks to OpenUncensored.
+ * process (electron/agent.ts), which sends the requests.
  *
- * OpenUncensored (https://openuncensored.com/agents.md) serves an OpenAI-compatible API at
- * https://api.openuncensored.com/v1: GET /models (no key) lists the text models, and
- * POST /chat/completions takes OpenAI's `messages` / `tools` / `stream` and streams
- * `chat.completion.chunk` server-sent events ending in `data: [DONE]`.
+ * The models come from OpenUncensored (https://openuncensored.com/agents.md), an
+ * OpenAI-compatible API. The app reaches it through the license server
+ * (Portfolio-Website: /api/agent/models and /api/agent/chat), which checks the license,
+ * applies the usage limits and holds the API key. Both pass OpenUncensored's shapes through:
+ * the model list as GET /v1/models returns it, and the answer as `chat.completion.chunk`
+ * server-sent events ending in `data: [DONE]`.
  *
  * No React and no Node APIs here, so the stream parser is unit-tested on its own.
  */
 
-export const OU_API_BASE = 'https://api.openuncensored.com/v1';
 /** The model the service recommends as a default (agents.md). */
 export const DEFAULT_AGENT_MODEL = 'deepseek-v4.1-flash-1017-uncensored';
 
@@ -69,7 +70,6 @@ export interface AgentChatResult {
 
 export type AgentErrorCode =
   | 'unlicensed'
-  | 'not-configured'
   | 'network'
   | 'timeout'
   | 'cancelled'
@@ -86,8 +86,6 @@ export type AgentResponse<T> = ({ ok: true } & T) | { ok: false; code: AgentErro
 export interface AgentStatus {
   /** this computer holds an active File Editor license */
   licensed: boolean;
-  /** this build has an OpenUncensored key */
-  configured: boolean;
   purchaseUrl: string;
 }
 
@@ -146,13 +144,36 @@ export function formatContext(tokens: number): string {
 }
 
 // ── errors ─────────────────────────────────────────────────────────────────
-/** A user-facing error for a non-2xx answer (body is the parsed JSON, when there was any). */
+/** How the license server's refusals ({ error, code }) are handled by the app. */
+const SERVER_CODES: Record<string, AgentErrorCode> = {
+  unlicensed: 'unlicensed',
+  revoked: 'unlicensed',
+  'daily-limit': 'quota',
+  budget: 'quota',
+  'rate-limited': 'rate-limited',
+  busy: 'rate-limited',
+  'agent-disabled': 'unavailable',
+  'agent-blocked': 'unavailable',
+  unavailable: 'unavailable',
+  model: 'model',
+  'invalid-request': 'invalid-request',
+};
+
+/**
+ * A user-facing error for a non-2xx answer (body is the parsed JSON, when there was any).
+ * The license server's own refusals carry a message written for the user, shown as is;
+ * OpenUncensored's errors ({ error: { message, code } }) are passed through it and explained here.
+ */
 export function errorFromResponse(status: number, body: unknown): { code: AgentErrorCode; error: string } {
+  const own = body as { error?: unknown; code?: unknown } | null;
+  if (own && typeof own.error === 'string' && typeof own.code === 'string') {
+    return { code: SERVER_CODES[own.code] ?? 'error', error: own.error.slice(0, 500) };
+  }
   const detail = (body as { error?: { message?: unknown; code?: unknown } | string; detail?: unknown })?.error;
   const message = typeof detail === 'string' ? detail : typeof detail?.message === 'string' ? detail.message : '';
   const code = typeof detail === 'object' && detail ? String(detail.code ?? '') : '';
   const said = message ? ` (${message.length > 300 ? `${message.slice(0, 300)}…` : message})` : '';
-  if (status === 401 || code === 'invalid_api_key') return { code: 'auth', error: 'The agent service did not accept this build’s API key. Please update File Editor.' };
+  if (status === 401 || code === 'invalid_api_key') return { code: 'auth', error: 'The agent service is not available right now. Please try again later.' };
   if (status === 402 || code === 'insufficient_quota') return { code: 'quota', error: 'The agent service is out of credits right now. Please try again later.' };
   if (status === 404 || code === 'model_not_found') return { code: 'model', error: `That model is not available any more. Pick another one from the list.${said}` };
   if (status === 429) return { code: 'rate-limited', error: 'The agent service is busy. Wait a few seconds and try again.' };

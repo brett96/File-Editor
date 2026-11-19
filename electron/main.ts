@@ -501,7 +501,7 @@ function buildMenu() {
               type: 'info',
               title: 'About',
               message: `File Editor ${app.getVersion()}`,
-              detail: `Documents are processed locally on this computer and are never uploaded. The coding agent (licensed copies) sends your messages, and the files it reads, to OpenUncensored.\n\n${licensed}`,
+              detail: `Documents are processed locally on this computer and are never uploaded. The coding agent (licensed copies) sends your messages, and the files it reads, through the license server to OpenUncensored.\n\n${licensed}`,
             });
           },
         },
@@ -815,7 +815,7 @@ function registerIpc() {
     return res;
   });
 
-  // coding agent: requests to OpenUncensored are made (and license-checked) here only (see agent.ts)
+  // coding agent: requests go from here to the license server, which holds the key (see agent.ts)
   ipcMain.handle('agent-status', (e) => {
     assertSender(e);
     return agentStatus();

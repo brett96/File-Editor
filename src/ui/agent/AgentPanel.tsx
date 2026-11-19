@@ -7,9 +7,9 @@
  * - **Chat** mode sends the file on screen (and the selection) as context; code in an answer
  *   can be inserted into the editor with one click.
  *
- * Licensed desktop copies only: requests go through the main process (electron/agent.ts),
- * which checks the license each time and holds the API key. Without a license this panel only
- * says how to get one.
+ * Licensed desktop copies only: requests go from the main process (electron/agent.ts) to the
+ * license server, which checks the license and usage limits and holds the API key. Without a
+ * license this panel only says how to get one.
  */
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 import {
@@ -311,7 +311,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
   const autoApplyRef = useRef(autoApply);
   autoApplyRef.current = autoApply;
 
-  const usable = !!status?.licensed && !!status.configured;
+  const usable = !!status?.licensed;
 
   // ── license / service status, then the model list ──
   const refreshStatus = useCallback(async () => {
@@ -625,14 +625,6 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
         </div>
       </div>
     );
-  } else if (!status.configured) {
-    body = (
-      <div className="agent-gate">
-        <AlertTriangle size={28} />
-        <h3>The agent isn’t available in this build</h3>
-        <p>This copy of File Editor was built without access to the agent service. Updating to the latest version should turn it on.</p>
-      </div>
-    );
   } else {
     body = (
       <>
@@ -749,7 +741,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
               </button>
             )}
           </div>
-          <p className="agent-privacy">Your messages, and the files the agent reads, are sent to OpenUncensored to be answered.</p>
+          <p className="agent-privacy">Your messages, and the files the agent reads, go through File Editor’s license server to OpenUncensored to be answered. They aren’t stored.</p>
         </div>
       </>
     );

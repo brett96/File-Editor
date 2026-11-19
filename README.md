@@ -13,7 +13,7 @@ copies, which sends what you ask it, and the files it reads, to the model you pi
 | **Presentations** | Open and save PowerPoint (`.pptx`; `.ppsx` and `.potx` open too), including Google Slides and Keynote decks exported as PowerPoint; start one with **New → Blank presentation**. PowerPoint-style editor: slide list with drag to reorder, six layouts, rich text with bullets, numbering and links, 24 shapes, pictures, lines and arrows, tables, column / bar / line / pie charts with editable data, fills, outlines, shadows, rotate / align / distribute with snap guides, seven themes, slide sizes and backgrounds, speaker notes, slide transitions and a full-screen slide show (F5). **Save as** PowerPoint, PowerPoint show, PDF or PNG pictures. Opens and saves password-protected presentations. Find and replace, slide sorter. SmartArt, media, special chart types and object animations are not edited (shown as placeholders and left out on save) |
 | **Databases** | Open SQLite files (`.sqlite`, `.sqlite3`, `.db`, `.db3`, up to 2 GB); browse tables and views, edit cells, add/delete rows, run SQL. The file is edited in memory on this device and written back on Save. LiteDB `.db` files open with collections as tables; LiteDB 3/4 files are saved back in place in LiteDB's own format (untouched documents byte for byte, field types kept, indexes rebuilt, `.bak` of the original on first save), LiteDB 5 files open as a copy saved as SQLite |
 | **PDF editing** | Edit existing text, add text, images, links, shapes, lines, freehand drawing/signature, highlights, white-out; insert blank pages or pages from another document at any position; delete, duplicate, reorder (drag) and rotate pages |
-| **Coding agent** (licensed desktop app) | An AI agent beside the code editor and opened folders (**Agent** button, View ▸ Coding Agent, Ctrl+Shift+A). Pick any of OpenUncensored's 60+ models from a dropdown. **Agent** mode reads, searches and changes the project's files, showing each change as a diff to apply or reject; **Chat** mode answers questions about the file on screen (or the selection) with code you can insert in one click. Requires an activated license; messages and the files the agent reads are sent to OpenUncensored |
+| **Coding agent** (licensed desktop app) | An AI agent beside the code editor and opened folders (**Agent** button, View ▸ Coding Agent, Ctrl+Shift+A). Pick any of OpenUncensored's 60+ models from a dropdown. **Agent** mode reads, searches and changes the project's files, showing each change as a diff to apply or reject; **Chat** mode answers questions about the file on screen (or the selection) with code you can insert in one click. Requires an activated license; messages and the files the agent reads go through File Editor's license server to OpenUncensored, with daily limits per license |
 | **Folders & code** | **Open ▸ Open folder** (Ctrl+Shift+O) opens a whole folder or code repository with a file tree beside the tabs: open, create, rename and delete files (the desktop app deletes to the recycle bin / Trash). Source and config files (TypeScript, Python, JSON, YAML, Go, Rust, Java, C/C++, C#, PHP, Ruby, SQL, shell, Dockerfile and many more) open in the code editor with syntax highlighting and are saved as text under their own extension. **Preview / Split** on an HTML, CSS or JS file runs the page with everything it references in the folder (stylesheets and their imports, scripts, ES modules, images, fonts, media), including unsaved changes in open tabs; stylesheets and scripts are previewed in the page they belong to, and links between pages work. The preview is sandboxed and offline |
 | **Photos** | Open JPEG, PNG, WebP, AVIF, HEIC/HEIF (iPhone), JPEG XL, GIF, TIFF, BMP, ICO and SVG. Crop (with aspect presets), rotate, flip, straighten, resize; exposure, contrast, highlights/shadows, saturation, warmth, hue, vignette, sharpen, blur; one-click filters; text, arrows, shapes, freehand drawing, stickers; redact faces, plates or text (pixelate / blur / black box) |
 | **Video & audio** | Open MP4, MOV, WebM, MKV, TS, MP3, M4A, WAV, FLAC, OGG/Opus, AAC, plus legacy AVI, WMV, FLV, MPEG, 3GP, OGV, WMA, AIFF, AMR. Trim, crop, rotate, flip, resize, change frame rate; colour look and filters; text overlays with timing; fade in/out; volume or mute; save a frame as a picture or edit it in the photo editor |
@@ -126,7 +126,7 @@ What the build does to harden the app:
 - At runtime the renderer is sandboxed, can only reach files the user picked, cannot navigate
   away or open new windows, and is blocked from making any network request. The only network
   traffic besides updates is license activation and the coding agent (below), both made by the
-  main process.
+  main process and both to the license server.
 
 ### Licenses (desktop only)
 
@@ -162,26 +162,24 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
 (`https://api.openuncensored.com/v1`). Licensed users pick the model from a dropdown filled from
 `GET /v1/models`.
 
-- **License check.** `electron/agent.ts` (main process) calls `getLicenseState()` before every
-  model list and chat request and refuses unless the license is active. The renderer only shows
-  the lock screen; the check that matters is in the main process.
-- **API key.** Set `OPENUNCENSORED_API_KEY` when building; `scripts/build-electron.mjs` compiles it
-  into the main-process bundle only (never the preload script or the renderer, and it is never
-  sent over IPC). In CI, add it as the `OPENUNCENSORED_API_KEY` repository secret (the release
-  workflow passes it to `npm run electron:build`). Without it the agent says it isn't available
-  in this build. An unpackaged dev build also reads it from the environment:
-
-  ```bash
-  OPENUNCENSORED_API_KEY=ou-... npm run electron:dev
-  ```
-
-  Anything shipped inside an installer can be extracted by someone who unpacks it, so treat the
-  key as recoverable: watch its usage and balance (`GET /v1/credits`), and rotate it if needed. To
-  keep the key off users' machines entirely, proxy requests through the license server, which can
-  check the license token itself and add the key on the server side.
-- **Network.** Requests go through their own in-memory Electron session that can reach only
-  `api.openuncensored.com`. Requests are size-checked and capped at 16K output tokens; at most 3
-  run at once and 40 per minute; an agent turn stops after 25 tool steps.
+- **Through the license server.** The app holds **no API key**. `electron/agent.ts` (main
+  process) sends each request to the license server (`/api/agent/models`, `/api/agent/chat`)
+  with this computer's activation token and device id. The server checks the license, applies
+  the usage limits, adds the OpenUncensored key and streams the answer back. The key lives only
+  in the server's `OPENUNCENSORED_API_KEY` environment variable; rotating it needs no app
+  update. Setup, limits and the admin view are in the portfolio repo's `docs/license.md`.
+- **Licensed copies only.** The app also refuses to send anything without an active license
+  on this computer, so unlicensed copies make no requests; the server's check is the one that
+  can't be bypassed. When the server says a license is gone, the app re-checks it at once.
+- **Limits.** Set per license in Admin → Licenses on the server: requests and tokens per day,
+  requests per minute, requests running at once, output tokens per request, plus a monthly
+  spending cap across all licenses and a kill switch. A single license can have the agent
+  turned off. The app shows the server's message when a limit is reached.
+- **Network.** Agent requests go through their own in-memory Electron session that can reach
+  only the license server. The app also checks and caps requests itself (16K output tokens, 3
+  running and 40 a minute, 25 tool steps per turn), so a runaway loop stops before the server
+  has to refuse it. `FILE_EDITOR_LICENSE_API` points a dev build at a local server, as for
+  activation.
 - **What the agent can do.** List, read and search the opened folder (dependency folders such as
   `node_modules` are skipped), edit files by exact string replacement, and create files. Each
   change is shown as a diff to **Apply** or **Reject** (or applied straight away with *Apply
