@@ -70,6 +70,7 @@ const bridge = {
     createDir: (id: string, path: string): Promise<void> => ipcRenderer.invoke('folder-create-dir', id, path),
     rename: (id: string, path: string, newName: string): Promise<string> => ipcRenderer.invoke('folder-rename', id, path, newName),
     remove: (id: string, path: string): Promise<void> => ipcRenderer.invoke('folder-remove', id, path),
+    write: (id: string, path: string, bytes: Uint8Array): Promise<void> => ipcRenderer.invoke('folder-write', id, path, bytes),
   },
   readSibling: (token: string, path: string): Promise<Uint8Array | null> => ipcRenderer.invoke('sibling-read', token, path),
   preview: {
@@ -83,6 +84,18 @@ const bridge = {
       const listener = (_e: IpcRendererEvent, state: { status: string; message?: string; purchaseUrl: string }) => callback(state);
       ipcRenderer.on('license-changed', listener);
       return () => ipcRenderer.removeListener('license-changed', listener);
+    },
+  },
+  // coding agent (licensed copies; the main process checks the license on every call)
+  agent: {
+    status: () => ipcRenderer.invoke('agent-status'),
+    models: (force?: boolean) => ipcRenderer.invoke('agent-models', force === true),
+    chat: (id: string, request: unknown) => ipcRenderer.invoke('agent-chat', id, request),
+    cancel: (id: string) => ipcRenderer.send('agent-cancel', id),
+    onDelta: (callback: (id: string, delta: unknown) => void) => {
+      const listener = (_e: IpcRendererEvent, id: string, delta: unknown) => callback(id, delta);
+      ipcRenderer.on('agent-delta', listener);
+      return () => ipcRenderer.removeListener('agent-delta', listener);
     },
   },
   setDirty: (dirty: boolean) => ipcRenderer.send('set-dirty', dirty),

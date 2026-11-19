@@ -30,6 +30,8 @@ export interface OpenedFolder {
   /** Reads a file's content without opening it (the web preview); null when it does not exist. */
   read(path: string): Promise<Blob | null>;
   createFile(path: string, content?: Uint8Array): Promise<void>;
+  /** Replaces the content of an existing file (the coding agent's edits); absent where the folder is read-only. */
+  write?(path: string, content: Uint8Array): Promise<void>;
   createDir(path: string): Promise<void>;
   /** Renames the entry at `path` in place; resolves to its new path. */
   rename(path: string, newName: string): Promise<string>;
@@ -110,6 +112,12 @@ export function handleFolder(root: FileSystemDirectoryHandle, canWrite: boolean)
       if (content?.length) await w.write(content as unknown as FileSystemWriteChunkType);
       await w.close();
     },
+    async write(path, content) {
+      const handle = await (await dirAt(dirOf(path))).getFileHandle(leafOf(path));
+      const w = await handle.createWritable();
+      await w.write(content as unknown as FileSystemWriteChunkType);
+      await w.close();
+    },
     async createDir(path) {
       const dir = await dirAt(dirOf(path));
       const name = checkName(leafOf(path));
@@ -176,6 +184,11 @@ export function memoryFolder(name: string, files: Map<string, Blob>, canWrite: b
       if (files.has(path) || dirs.has(path)) throw new Error(`${leafOf(path)} already exists.`);
       files.set(path, new Blob([(content ?? new Uint8Array()) as BlobPart]));
       addDirs(path);
+    },
+    async write(path, content) {
+      readOnly();
+      if (!files.has(path)) throw new Error(`${leafOf(path)} is not in the folder.`);
+      files.set(path, new Blob([content as BlobPart]));
     },
     async createDir(path) {
       readOnly();
@@ -289,6 +302,7 @@ export function desktopFolder(bridge: NonNullable<DesktopBridge['folder']>, id: 
     },
     createFile: (path, content) => bridge.createFile(id, path, content ?? new Uint8Array()),
     createDir: (path) => bridge.createDir(id, path),
+    ...(bridge.write ? { write: (path: string, content: Uint8Array) => bridge.write!(id, path, content) } : {}),
     rename: (path, newName) => bridge.rename(id, path, checkName(newName)),
     remove: (path) => bridge.remove(id, path),
   };

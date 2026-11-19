@@ -23,6 +23,7 @@ import { constants as fsConstants } from 'node:fs';
 import { appendFile, copyFile, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { agentStatus, cancelAllChats, cancelChat, chat as agentChat, listModels } from './agent';
 import { activateLicense, getLicenseState, refreshLicenseStatus } from './license';
 import { CODE_EXTENSIONS, isCodeFileName } from '../src/core/code/languages';
 import { isSafeName, safeSegments } from '../src/core/web/paths';
@@ -463,6 +464,8 @@ function buildMenu() {
     {
       label: 'View',
       submenu: [
+        { label: 'Coding Agent', accelerator: 'CmdOrCtrl+Shift+A', click: () => send('agent') },
+        { type: 'separator' },
         { role: 'togglefullscreen' },
         ...(!app.isPackaged ? [{ type: 'separator' as const }, { role: 'reload' as const }, { role: 'toggleDevTools' as const }] : []),
       ],
@@ -498,7 +501,7 @@ function buildMenu() {
               type: 'info',
               title: 'About',
               message: `File Editor ${app.getVersion()}`,
-              detail: `Documents are processed locally on this computer and are never uploaded.\n\n${licensed}`,
+              detail: `Documents are processed locally on this computer and are never uploaded. The coding agent (licensed copies) sends your messages, and the files it reads, to OpenUncensored.\n\n${licensed}`,
             });
           },
         },
@@ -675,6 +678,17 @@ function registerIpc() {
     });
   });
 
+  // the coding agent's edits: replaces the content of a file that is already in the folder
+  ipcMain.handle('folder-write', async (e, id: unknown, rel: unknown, data: unknown) => {
+    assertSender(e);
+    const path = await pathInside(folderRoot(id), rel);
+    const info = await stat(path).catch(() => null);
+    if (!info?.isFile()) throw new Error(`${basename(path)} is not a file in the folder.`);
+    const bytes = toBytes(data);
+    if (bytes.length > MAX_FILE_BYTES) throw new Error('That is too large to write.');
+    await writeFile(path, bytes);
+  });
+
   ipcMain.handle('folder-create-dir', async (e, id: unknown, rel: unknown) => {
     assertSender(e);
     const path = await pathInside(folderRoot(id), rel);
@@ -799,6 +813,31 @@ function registerIpc() {
     const res = await activateLicense(typeof key === 'string' ? key.slice(0, 100) : '');
     void refreshLicenseMenu();
     return res;
+  });
+
+  // coding agent: requests to OpenUncensored are made (and license-checked) here only (see agent.ts)
+  ipcMain.handle('agent-status', (e) => {
+    assertSender(e);
+    return agentStatus();
+  });
+
+  ipcMain.handle('agent-models', (e, force: unknown) => {
+    assertSender(e);
+    return listModels(force === true);
+  });
+
+  ipcMain.handle('agent-chat', (e, id: unknown, req: unknown) => {
+    assertSender(e);
+    return agentChat(e.sender, id, req);
+  });
+
+  ipcMain.on('agent-cancel', (e, id: unknown) => {
+    try {
+      assertSender(e);
+      cancelChat(id);
+    } catch {
+      /* ignore */
+    }
   });
 
   ipcMain.on('set-dirty', (e, value: boolean) => {
@@ -1043,6 +1082,7 @@ app.whenReady().then(async () => {
 });
 
 app.on('window-all-closed', () => {
+  cancelAllChats();
   if (process.platform !== 'darwin') app.quit();
 });
 

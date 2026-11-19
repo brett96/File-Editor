@@ -2,7 +2,8 @@
 
 Create, edit, convert and password-protect documents, spreadsheets, presentations, SQLite databases, photos, video and audio, in the browser or as an installed desktop
 app for Windows and macOS. Everything runs on the user's device: no file is ever uploaded, and
-there is no server to run.
+there is no server to run. (The one exception is the optional coding agent in licensed desktop
+copies, which sends what you ask it, and the files it reads, to the model you pick.)
 
 | | |
 |---|---|
@@ -12,6 +13,7 @@ there is no server to run.
 | **Presentations** | Open and save PowerPoint (`.pptx`; `.ppsx` and `.potx` open too), including Google Slides and Keynote decks exported as PowerPoint; start one with **New → Blank presentation**. PowerPoint-style editor: slide list with drag to reorder, six layouts, rich text with bullets, numbering and links, 24 shapes, pictures, lines and arrows, tables, column / bar / line / pie charts with editable data, fills, outlines, shadows, rotate / align / distribute with snap guides, seven themes, slide sizes and backgrounds, speaker notes, slide transitions and a full-screen slide show (F5). **Save as** PowerPoint, PowerPoint show, PDF or PNG pictures. Opens and saves password-protected presentations. Find and replace, slide sorter. SmartArt, media, special chart types and object animations are not edited (shown as placeholders and left out on save) |
 | **Databases** | Open SQLite files (`.sqlite`, `.sqlite3`, `.db`, `.db3`, up to 2 GB); browse tables and views, edit cells, add/delete rows, run SQL. The file is edited in memory on this device and written back on Save. LiteDB `.db` files open with collections as tables; LiteDB 3/4 files are saved back in place in LiteDB's own format (untouched documents byte for byte, field types kept, indexes rebuilt, `.bak` of the original on first save), LiteDB 5 files open as a copy saved as SQLite |
 | **PDF editing** | Edit existing text, add text, images, links, shapes, lines, freehand drawing/signature, highlights, white-out; insert blank pages or pages from another document at any position; delete, duplicate, reorder (drag) and rotate pages |
+| **Coding agent** (licensed desktop app) | An AI agent beside the code editor and opened folders (**Agent** button, View ▸ Coding Agent, Ctrl+Shift+A). Pick any of OpenUncensored's 60+ models from a dropdown. **Agent** mode reads, searches and changes the project's files, showing each change as a diff to apply or reject; **Chat** mode answers questions about the file on screen (or the selection) with code you can insert in one click. Requires an activated license; messages and the files the agent reads are sent to OpenUncensored |
 | **Folders & code** | **Open ▸ Open folder** (Ctrl+Shift+O) opens a whole folder or code repository with a file tree beside the tabs: open, create, rename and delete files (the desktop app deletes to the recycle bin / Trash). Source and config files (TypeScript, Python, JSON, YAML, Go, Rust, Java, C/C++, C#, PHP, Ruby, SQL, shell, Dockerfile and many more) open in the code editor with syntax highlighting and are saved as text under their own extension. **Preview / Split** on an HTML, CSS or JS file runs the page with everything it references in the folder (stylesheets and their imports, scripts, ES modules, images, fonts, media), including unsaved changes in open tabs; stylesheets and scripts are previewed in the page they belong to, and links between pages work. The preview is sandboxed and offline |
 | **Photos** | Open JPEG, PNG, WebP, AVIF, HEIC/HEIF (iPhone), JPEG XL, GIF, TIFF, BMP, ICO and SVG. Crop (with aspect presets), rotate, flip, straighten, resize; exposure, contrast, highlights/shadows, saturation, warmth, hue, vignette, sharpen, blur; one-click filters; text, arrows, shapes, freehand drawing, stickers; redact faces, plates or text (pixelate / blur / black box) |
 | **Video & audio** | Open MP4, MOV, WebM, MKV, TS, MP3, M4A, WAV, FLAC, OGG/Opus, AAC, plus legacy AVI, WMV, FLV, MPEG, 3GP, OGV, WMA, AIFF, AMR. Trim, crop, rotate, flip, resize, change frame rate; colour look and filters; text overlays with timing; fade in/out; volume or mute; save a frame as a picture or edit it in the photo editor |
@@ -123,13 +125,14 @@ What the build does to harden the app:
   signature before installing it. Set `build.publish` in `package.json` to your repository.
 - At runtime the renderer is sandboxed, can only reach files the user picked, cannot navigate
   away or open new windows, and is blocked from making any network request. The only network
-  traffic besides updates is license activation (below), made by the main process.
+  traffic besides updates is license activation and the coding agent (below), both made by the
+  main process.
 
 ### Licenses (desktop only)
 
 The desktop app can be activated with a lifetime license bought at
-`license.bretttomita.com` (one license, one device, for life). **Nothing is locked without a
-license**; activation only records that the computer holds one. The web version never asks.
+`license.bretttomita.com` (one license, one device, for life). The **coding agent** is the only
+feature that needs a license; everything else works without one. The web version never asks.
 
 - **Help → Enter License Key…** opens the license dialog (`src/ui/license/LicenseDialog.tsx`).
 - `electron/license.ts` (main process) sends the key and a device id to
@@ -151,6 +154,40 @@ license**; activation only records that the computer holds one. The web version 
 - For local testing, `FILE_EDITOR_LICENSE_API=http://localhost:3000` points an unpackaged dev
   build at a local portfolio server (packaged builds ignore it). The server side is documented
   in the portfolio repo's `docs/license.md`.
+
+### Coding agent (licensed desktop copies)
+
+The **Agent** panel (`src/ui/agent/`) runs coding sessions against
+[OpenUncensored](https://openuncensored.com/agents.md)'s OpenAI-compatible API
+(`https://api.openuncensored.com/v1`). Licensed users pick the model from a dropdown filled from
+`GET /v1/models`.
+
+- **License check.** `electron/agent.ts` (main process) calls `getLicenseState()` before every
+  model list and chat request and refuses unless the license is active. The renderer only shows
+  the lock screen; the check that matters is in the main process.
+- **API key.** Set `OPENUNCENSORED_API_KEY` when building; `scripts/build-electron.mjs` compiles it
+  into the main-process bundle only (never the preload script or the renderer, and it is never
+  sent over IPC). In CI, add it as the `OPENUNCENSORED_API_KEY` repository secret (the release
+  workflow passes it to `npm run electron:build`). Without it the agent says it isn't available
+  in this build. An unpackaged dev build also reads it from the environment:
+
+  ```bash
+  OPENUNCENSORED_API_KEY=ou-... npm run electron:dev
+  ```
+
+  Anything shipped inside an installer can be extracted by someone who unpacks it, so treat the
+  key as recoverable: watch its usage and balance (`GET /v1/credits`), and rotate it if needed. To
+  keep the key off users' machines entirely, proxy requests through the license server, which can
+  check the license token itself and add the key on the server side.
+- **Network.** Requests go through their own in-memory Electron session that can reach only
+  `api.openuncensored.com`. Requests are size-checked and capped at 16K output tokens; at most 3
+  run at once and 40 per minute; an agent turn stops after 25 tool steps.
+- **What the agent can do.** List, read and search the opened folder (dependency folders such as
+  `node_modules` are skipped), edit files by exact string replacement, and create files. Each
+  change is shown as a diff to **Apply** or **Reject** (or applied straight away with *Apply
+  changes without asking*). A file open in a code tab is changed in the tab (one undo step, saved
+  as usual); other files are written in place. It cannot delete or rename files, run commands or
+  reach the internet.
 
 Publish `SHA256SUMS` next to the downloads so users can verify them:
 

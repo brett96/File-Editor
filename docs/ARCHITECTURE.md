@@ -7,6 +7,8 @@
 - Open, edit, save and convert the common document formats; edit PDFs page-by-page.
 - Password-protect documents and open documents protected by Word / PDF tools (with the password).
 - **Documents never leave the device.** Every parser, converter and cipher runs client-side.
+  The one opt-in exception is the coding agent (licensed desktop copies), which sends the
+  user's messages and the files it reads to the model they pick.
   There is no backend, which is also what makes Vercel hosting free and trivial.
 
 ## Shape
@@ -228,6 +230,26 @@ So the bundled page is served from a URL that carries its own policy (`ui/code/p
 `Content-Security-Policy: sandbox allow-scripts allow-forms allow-modals; default-src data: blob: 'unsafe-inline' 'unsafe-eval'`,
 which gives the page an opaque origin (no access to the app or its storage) and no network.
 The development server has no CSP and uses a sandboxed `srcdoc` frame.
+
+### Coding agent (licensed desktop copies)
+
+A chat panel beside the editor (`ui/agent/AgentPanel`) that runs model-assisted coding sessions
+on OpenUncensored's OpenAI-compatible chat API.
+
+| Piece | File | Notes |
+|---|---|---|
+| Wire format | `core/agent/protocol.ts` | Model list parsing, request checking and capping (`buildChatBody`), SSE parsing and assembly of streamed text, reasoning and tool calls. Shared by both processes. |
+| Edits and diffs | `core/agent/edits.ts` | Exact-string replacement (must match once), the smallest single change for the editor, line diffs for review. |
+| Context window | `core/agent/context.ts` | File and history budgets from the chosen model's context length; trimming drops whole turns, so a tool call is never sent without its result. |
+| Requests | `electron/agent.ts` | Main process only: license check on every call, the API key, a network session limited to the API host, concurrency and rate limits, cancellation. Streams pieces to the renderer as `agent-delta` events. |
+| Tools | `ui/agent/tools.ts` | `list_files`, `read_file`, `search_files`, `edit_file`, `write_file`, run in the renderer over the `OpenedFolder` interface, so they reach only the folder the user opened. |
+| Code tabs | `ui/agent/editors.ts` | Open code tabs register their editor, so the agent reads unsaved text and applies edits in the tab as one undo step. |
+
+The tool loop runs in the renderer: ask the model, run the tool calls it makes (asking the user
+to approve each edit), send the results back, and repeat until it answers without tools (25
+steps at most). The main process never touches files for the agent: edits to files that aren't
+open use the folder's own `write` (desktop: `folder-write`, with the same path checks as every
+other folder call).
 
 ## Technology choices
 

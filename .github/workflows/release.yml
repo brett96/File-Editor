@@ -83,6 +83,9 @@ jobs:
         run: npm test
 
       - run: npm run electron:build
+        env:
+          # The coding agent's key (licensed copies only). Built into the main process, never the renderer.
+          OPENUNCENSORED_API_KEY: ${{ secrets.OPENUNCENSORED_API_KEY }}
 
       - name: Build, sign and upload installers
         shell: bash

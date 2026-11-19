@@ -128,6 +128,26 @@ export function Explorer({
     void load('');
   }, [folder, load]);
 
+  // files made elsewhere (the coding agent) show up in folders already listed
+  const childrenRef = useRef(children);
+  childrenRef.current = children;
+  useEffect(() => {
+    const onChanged = (e: Event) => {
+      const d = (e as CustomEvent<{ folderId?: string; dir?: string }>).detail;
+      if (!d || d.folderId !== folder.id) return;
+      // reload the deepest listed folder above the change (a new subfolder appears in its parent)
+      for (let dir = d.dir ?? ''; ; dir = dirOf(dir)) {
+        if (childrenRef.current.has(dir)) {
+          void load(dir);
+          break;
+        }
+        if (!dir) break;
+      }
+    };
+    window.addEventListener('fe:folder-changed', onChanged);
+    return () => window.removeEventListener('fe:folder-changed', onChanged);
+  }, [folder, load]);
+
   // show the active tab's file in the tree: open the folders above it
   useEffect(() => {
     if (!activePath) return;

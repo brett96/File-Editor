@@ -16,6 +16,7 @@ import {
   FolderOpen,
   FolderTree,
   PanelLeft,
+  Sparkles,
   Sheet as SheetIcon,
   Lock,
   LockOpen,
@@ -68,6 +69,9 @@ import {
 } from './ui/dialogs';
 import { RichEditor, type RichEditorHandle } from './ui/rich/RichEditor';
 import { LicenseDialog } from './ui/license/LicenseDialog';
+import { AgentPanel } from './ui/agent/AgentPanel';
+import { codeEditorForTab, onCodeEditorsChange, registerCodeEditor } from './ui/agent/editors';
+import type { AgentWorkspace } from './ui/agent/tools';
 import { PdfEditor, type PdfEditorHandle } from './ui/pdf/PdfEditor';
 import { ImageEditor, type ImageEditorHandle } from './ui/image/ImageEditor';
 import type { ProImageEditorHandle } from './ui/pro-image/ProImageEditor';
@@ -400,6 +404,20 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       return codeRef.current?.getText() ?? (d?.kind === 'code' ? d.text : '');
     });
   }, [previewSource]);
+
+  // the coding agent reads and edits code tabs through their editor (src/ui/agent)
+  const codeName = doc?.kind === 'code' ? doc.name : null;
+  useEffect(() => {
+    if (!codeName) return;
+    return registerCodeEditor({
+      tabId,
+      name: codeName,
+      getText: () => codeRef.current?.getText() ?? '',
+      getSelection: () => codeRef.current?.getSelection() ?? null,
+      setText: (text) => codeRef.current?.setText(text),
+      insert: (text) => codeRef.current?.insert(text),
+    });
+  }, [codeName, docKeyValue, tabId]);
 
   // a tab sent to the background stops playing (Studio, the video editor, previews)
   useEffect(() => {
@@ -2812,6 +2830,49 @@ export default function App() {
   const activeOrigin = activeTab?.origin;
   const activeFolderPath = folder && activeOrigin?.folderId === folder.id ? activeOrigin.path : null;
 
+  // ── the coding agent (licensed desktop copies; see src/ui/agent) ─────────
+  const [agentOpen, setAgentOpen] = useState(false);
+  /** mounted once opened, so closing the panel keeps the session */
+  const [agentMounted, setAgentMounted] = useState(false);
+  const [licenseVersion, setLicenseVersion] = useState(0);
+  const toggleAgent = useCallback(() => {
+    setAgentMounted(true);
+    setAgentOpen((v) => !v);
+  }, []);
+  /** a code tab's editor, with where its file sits in the opened folder */
+  const editorWithOrigin = (tab: TabEntry | undefined) => {
+    const ed = tab ? codeEditorForTab(tab.id) : null;
+    if (!ed || !tab) return null;
+    const f = folderRef.current;
+    return tab.origin && f && tab.origin.folderId === f.id ? { ...ed, folderId: f.id, path: tab.origin.path } : { ...ed, folderId: undefined, path: undefined };
+  };
+  const getAgentWorkspace = useCallback((): AgentWorkspace => {
+    const f = folderRef.current;
+    const inFolder = (path: string) => tabsRef.current.find((t) => f && t.origin?.folderId === f.id && t.origin.path === path);
+    return {
+      folder: f,
+      active: editorWithOrigin(tabsRef.current.find((t) => t.id === activeIdRef.current)),
+      editorFor: (path) => editorWithOrigin(inFolder(path)),
+      openElsewhere: (path) => {
+        const t = inFolder(path);
+        return !!t && !codeEditorForTab(t.id);
+      },
+      folderChanged: (dir) => window.dispatchEvent(new CustomEvent('fe:folder-changed', { detail: { folderId: f?.id, dir } })),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // the panel's context line follows the tab on screen and its code editor coming and going
+  const [editorsSeq, setEditorsSeq] = useState(0);
+  useEffect(() => onCodeEditorsChange(() => setEditorsSeq((n) => n + 1)), []);
+  const agentContext = useMemo(
+    () => {
+      const isCode = activeId !== null && !!codeEditorForTab(activeId);
+      return { file: isCode ? (activeFolderPath ?? activeTab?.info.name ?? null) : null, folder: folder?.name ?? null, code: isCode };
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [activeId, activeFolderPath, activeTab?.info.name, folder, editorsSeq],
+  );
+
   // development: open a folder held in memory, to try the file tree and the preview without a picker
   useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -2913,6 +2974,7 @@ export default function App() {
   // License check-ins run with each update check; surface a revoke/refund when the title flips.
   useEffect(() => {
     const off = window.desktop?.license?.onChange?.((state) => {
+      setLicenseVersion((n) => n + 1);
       if (state.status === 'active') return;
       toast(state.message ?? 'This license was revoked (for example after a refund). Enter a different key under Help if you have one.', 'info');
     });
@@ -2920,8 +2982,8 @@ export default function App() {
   }, [toast]);
 
   // ── shortcuts, OS file-open events, native menu ──────────────────────────
-  const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, newPresentation, openFile, closeTab, activate, openFolder, showFolder });
-  shell.current = { pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, newPresentation, openFile, closeTab, activate, openFolder, showFolder };
+  const shell = useRef({ pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, newPresentation, openFile, closeTab, activate, openFolder, showFolder, toggleAgent });
+  shell.current = { pickAndOpen, newDocument, newSpreadsheet, newDatabase, newVector, newPresentation, openFile, closeTab, activate, openFolder, showFolder, toggleAgent };
 
   useEffect(() => {
     const cycle = (step: number) => {
@@ -2972,6 +3034,7 @@ export default function App() {
       else if (cmd === 'open') void s.pickAndOpen();
       else if (cmd === 'open-folder') void s.openFolder();
       else if (cmd === 'license') setLicenseOpen(true);
+      else if (cmd === 'agent') s.toggleAgent();
       else if (cmd === 'toggle-autosave') setAutoSave((v) => !v);
       else if (cmd === 'help' || cmd === 'help:context') {
         const kind = tabsRef.current.find((t) => t.id === activeIdRef.current)?.info.kind ?? null;
@@ -3122,6 +3185,11 @@ export default function App() {
               )}
             </Popover>
           )}
+          {host.kind === 'desktop' && (
+            <IconButton label="Agent" text active={agentOpen} onClick={toggleAgent} className="agent-toggle">
+              <Sparkles size={16} />
+            </IconButton>
+          )}
           {/* the active tab's own buttons (Save, Print, zoom…) are rendered here */}
           <span className="topbar-doc-actions" ref={setActionsSlot} />
           <Popover label="Help" text align="right" button={<><CircleHelp size={16} /><span>Help</span></>}>
@@ -3135,6 +3203,7 @@ export default function App() {
                   <div className="menu-sep" role="separator" />
                   {item('Opening, saving & auto-save', 'saving')}
                   {item('Folders, code & web preview', 'folders')}
+                  {host.kind === 'desktop' && item('Coding agent', 'agent', 'License')}
                   {item('Documents & PDFs', 'documents')}
                   {item('Photos', 'photo-quick')}
                   {item('Video & audio', 'video-quick')}
@@ -3264,6 +3333,16 @@ export default function App() {
         />
       ))}
       </div>
+      {host.kind === 'desktop' && agentMounted && (
+        <AgentPanel
+          hidden={!agentOpen}
+          onClose={() => setAgentOpen(false)}
+          getWorkspace={getAgentWorkspace}
+          context={agentContext}
+          licenseVersion={licenseVersion}
+          onOpenLicense={() => setLicenseOpen(true)}
+        />
+      )}
       </div>
 
       {dragging && (
@@ -3337,7 +3416,15 @@ export default function App() {
           </div>
         ))}
       </div>
-      {licenseOpen && host.kind === 'desktop' && <LicenseDialog onClose={() => setLicenseOpen(false)} />}
+      {licenseOpen && host.kind === 'desktop' && (
+        <LicenseDialog
+          onClose={() => {
+            setLicenseOpen(false);
+            setLicenseVersion((n) => n + 1);
+          }}
+          onActivated={() => setLicenseVersion((n) => n + 1)}
+        />
+      )}
       {help && (
         <Suspense fallback={<div className="busy" role="status"><span className="spinner" /> Opening the guide…</div>}>
           <HelpGuide section={help.section} desktop={host.kind === 'desktop'} onClose={() => setHelp(null)} />

@@ -33,11 +33,18 @@ import { languageLabel } from '../../core/code/languages';
 import { WARNING_TEXT, bundleHtml, nearestPage, type BundleWarning } from '../../core/web/bundle';
 import { referenceKind, resolveReference } from '../../core/web/paths';
 import { bufferChanged, liveBuffer, onBufferChange } from '../workspace/buffers';
+import { minimalChange } from '../../core/agent/edits';
 import { cx } from '../components';
 import { disposePreview, publishPreview, type PreviewTarget } from './preview-host';
 
 export interface CodeEditorHandle {
   getText(): string;
+  /** the selected text and the lines it spans (the coding agent's context) */
+  getSelection(): { text: string; fromLine: number; toLine: number; empty: boolean; cursorLine: number } | null;
+  /** Replaces the whole text as the smallest single change (one undo step). */
+  setText(text: string): void;
+  /** Replaces the selection, or inserts at the cursor. */
+  insert(text: string): void;
 }
 
 type ViewMode = 'edit' | 'preview' | 'split';
@@ -272,7 +279,34 @@ export const CodeEditor = forwardRef<CodeEditorHandle, {
   const ownPath = source?.path ?? fileName;
 
   const getText = () => viewRef.current?.state.doc.toString() ?? initialText;
-  useImperativeHandle(ref, () => ({ getText }));
+  useImperativeHandle(ref, () => ({
+    getText,
+    getSelection() {
+      const view = viewRef.current;
+      if (!view) return null;
+      const { state } = view;
+      const sel = state.selection.main;
+      return {
+        text: state.sliceDoc(sel.from, sel.to),
+        fromLine: state.doc.lineAt(sel.from).number,
+        toLine: state.doc.lineAt(sel.to).number,
+        empty: sel.empty,
+        cursorLine: state.doc.lineAt(sel.head).number,
+      };
+    },
+    setText(text: string) {
+      const view = viewRef.current;
+      if (!view) return;
+      const change = minimalChange(view.state.doc.toString(), text);
+      if (change) view.dispatch({ changes: change, userEvent: 'input.agent' });
+    },
+    insert(text: string) {
+      const view = viewRef.current;
+      if (!view) return;
+      view.dispatch(view.state.replaceSelection(text), { userEvent: 'input.agent', scrollIntoView: true });
+      view.focus();
+    },
+  }));
 
   const language = useMemo(() => new Compartment(), []);
   const extensions = useMemo(

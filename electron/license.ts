@@ -1,6 +1,7 @@
 /**
- * Desktop license activation (main process only). Nothing in the app is locked behind a
- * license; this only records that this computer holds one.
+ * Desktop license activation (main process only). Records that this computer holds a license.
+ * The only feature that needs one is the coding agent (electron/agent.ts checks
+ * getLicenseState before every request); everything else works without.
  *
  * - Activation: the key the user enters is sent, with a device id, to
  *   https://license.bretttomita.com/api/license/activate (Portfolio-Website). The server binds

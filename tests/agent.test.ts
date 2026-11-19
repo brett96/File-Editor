@@ -1,0 +1,288 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { trimHistory } from '../src/core/agent/context';
+import { applyEdit, lineDiff, minimalChange } from '../src/core/agent/edits';
+import { ChatAssembler, SseParser, buildChatBody, errorFromResponse, formatContext, parseModels, type AgentMessage } from '../src/core/agent/protocol';
+import { memoryFolder } from '../src/platform/folders';
+import type { CodeEditorAccess } from '../src/ui/agent/editors';
+import { runTool, type AgentWorkspace, type EditProposal } from '../src/ui/agent/tools';
+
+describe('agent stream parsing', () => {
+  it('splits server-sent events across chunk boundaries and skips comments', () => {
+    const p = new SseParser();
+    expect(p.push(': keep-alive\n\ndata: {"a"')).toEqual([]);
+    expect(p.push(':1}\n\ndata: [DO')).toEqual(['{"a":1}']);
+    expect(p.push('NE]\r\n\r\n')).toEqual(['[DONE]']);
+    expect(p.push('data: tail')).toEqual([]);
+    expect(p.end()).toEqual(['tail']);
+  });
+
+  it('assembles streamed content, reasoning and tool calls', () => {
+    const a = new ChatAssembler();
+    a.push({ model: 'm', choices: [{ delta: { role: 'assistant', content: 'Hel' } }] });
+    a.push({ choices: [{ delta: { content: 'lo', reasoning_content: 'hmm' } }] });
+    const first = a.push({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', function: { name: 'read_file', arguments: '{"pa' } }] } }] });
+    expect(first?.tool).toBe('read_file');
+    a.push({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: 'th":"a.ts"}' } }] } }] });
+    a.push({ choices: [{ delta: {}, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 10, completion_tokens: 5 }, ou: { model: 'm2', cost_usd: 0.001 } });
+    const r = a.result();
+    expect(r.message.content).toBe('Hello');
+    expect(r.message.reasoning).toBe('hmm');
+    expect(r.message.toolCalls).toEqual([{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }]);
+    expect(r.finishReason).toBe('tool_calls');
+    expect(r.usage).toEqual({ promptTokens: 10, completionTokens: 5 });
+    expect(r.model).toBe('m2');
+    expect(r.costUsd).toBe(0.001);
+  });
+
+  it('reads a whole (non-streamed) completion and inline <think> blocks', () => {
+    const a = new ChatAssembler();
+    a.push({ choices: [{ message: { role: 'assistant', content: '<think>plan</think>\nAnswer' }, finish_reason: 'stop' }] });
+    expect(a.result().message).toEqual({ content: 'Answer', reasoning: 'plan', toolCalls: [] });
+  });
+
+  it('records an error sent inside the stream', () => {
+    const a = new ChatAssembler();
+    a.push({ error: { message: 'provider failed' } });
+    expect(a.error).toBe('provider failed');
+  });
+});
+
+describe('agent models and requests', () => {
+  it('lists available text models with prices per million tokens', () => {
+    const models = parseModels({
+      data: [
+        { id: 'zeta', context_length: 1048576, pricing: { prompt: '0.000001', completion: '0.000002' }, tags: ['vision'], available: true, modality: 'text', base_model: 'x/Y' },
+        { id: 'alpha-thinking', context_length: 8192, available: true },
+        { id: 'gone', available: false },
+        { id: 'pic', modality: 'image' },
+        { id: 'bad id with spaces' },
+      ],
+    });
+    expect(models.map((m) => m.id)).toEqual(['alpha-thinking', 'zeta']);
+    expect(models[1]).toMatchObject({ contextLength: 1048576, promptPrice: 1, completionPrice: 2, vision: true, baseModel: 'x/Y', thinking: false });
+    expect(models[0].thinking).toBe(true);
+    expect(formatContext(1048576)).toBe('1M');
+    expect(formatContext(262144)).toBe('262K');
+  });
+
+  it('checks and caps what is sent', () => {
+    expect('error' in buildChatBody({ model: 'x y', messages: [{ role: 'user', content: 'hi' }] })).toBe(true);
+    expect('error' in buildChatBody({ model: 'm', messages: [] })).toBe(true);
+    expect('error' in buildChatBody({ model: 'm', messages: [{ role: 'admin', content: 'hi' }] })).toBe(true);
+    const ok = buildChatBody({ model: 'm', messages: [{ role: 'user', content: 'hi', extra: 'dropped' }], maxTokens: 999999, tools: [{ type: 'function', function: { name: 'f', description: '', parameters: {} } }] });
+    if ('error' in ok) throw new Error(ok.error);
+    expect(ok.body).toMatchObject({ model: 'm', stream: true, max_tokens: 16384, tool_choice: 'auto', messages: [{ role: 'user', content: 'hi' }] });
+    expect((ok.body.messages as object[])[0]).not.toHaveProperty('extra');
+  });
+
+  it('turns service errors into messages', () => {
+    expect(errorFromResponse(402, { error: { message: 'x', code: 'insufficient_quota' } }).code).toBe('quota');
+    expect(errorFromResponse(404, {}).code).toBe('model');
+    expect(errorFromResponse(400, { error: { message: 'tools unsupported' } }).error).toContain('tools unsupported');
+    expect(errorFromResponse(503, null).code).toBe('unavailable');
+  });
+});
+
+describe('agent edits', () => {
+  it('replaces a unique string, and refuses missing or ambiguous ones', () => {
+    expect(applyEdit('a b a', 'b', 'c')).toEqual({ text: 'a c a', count: 1 });
+    expect('error' in applyEdit('a b a', 'a', 'c')).toBe(true);
+    expect(applyEdit('a b a', 'a', 'c', true)).toEqual({ text: 'c b c', count: 2 });
+    expect('error' in applyEdit('abc', 'x', 'y')).toBe(true);
+    // "$&" in the replacement is literal text, not a pattern
+    expect(applyEdit('x', 'x', '$&$&')).toEqual({ text: '$&$&', count: 1 });
+  });
+
+  it('matches a file with Windows line endings', () => {
+    expect(applyEdit('one\r\ntwo\r\n', 'one\ntwo', 'uno\ndos')).toEqual({ text: 'uno\r\ndos\r\n', count: 1 });
+  });
+
+  it('finds the smallest change', () => {
+    expect(minimalChange('hello world', 'hello there world')).toEqual({ from: 6, to: 6, insert: 'there ' });
+    expect(minimalChange('same', 'same')).toBeNull();
+  });
+
+  it('diffs lines with context and gaps', () => {
+    const before = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`).join('\n');
+    const after = before.replace('line 10', 'line ten');
+    const d = lineDiff(before, after, 2);
+    expect(d.added).toBe(1);
+    expect(d.removed).toBe(1);
+    expect(d.lines[0].kind).toBe('gap');
+    expect(d.lines.filter((l) => l.kind !== 'gap').map((l) => `${l.kind}:${l.text}`)).toEqual([
+      'same:line 8',
+      'same:line 9',
+      'del:line 10',
+      'add:line ten',
+      'same:line 11',
+      'same:line 12',
+    ]);
+    expect(lineDiff('', 'a\nb\n').added).toBe(2);
+    expect(lineDiff('x', 'x').lines).toEqual([]);
+  });
+});
+
+describe('agent context', () => {
+  it('drops the oldest turns first and keeps tool calls with their results', () => {
+    const big = 'x'.repeat(1000);
+    const history: AgentMessage[] = [
+      { role: 'user', content: big },
+      { role: 'assistant', content: big },
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'c', type: 'function', function: { name: 'read_file', arguments: '{}' } }] },
+      { role: 'tool', tool_call_id: 'c', content: 'ok' },
+    ];
+    const { messages, dropped } = trimHistory(history, 500);
+    expect(dropped).toBe(2);
+    expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool']);
+  });
+});
+
+// ── tools against an in-memory folder and a fake code tab ──────────────────
+function fakeEditor(name: string, text: string, extra: Partial<CodeEditorAccess> = {}): CodeEditorAccess & { text: string } {
+  const ed: CodeEditorAccess & { text: string } = {
+    tabId: 1,
+    name,
+    text,
+    getText: (): string => ed.text,
+    getSelection: () => null,
+    setText: (t: string) => {
+      ed.text = t;
+    },
+    insert: () => undefined,
+    ...extra,
+  };
+  return ed;
+}
+
+const call = (name: string, args: unknown) => ({ id: 'c1', type: 'function' as const, function: { name, arguments: JSON.stringify(args) } });
+
+describe('agent tools', () => {
+  let files: Map<string, Blob>;
+  let ws: AgentWorkspace;
+  let open: (CodeEditorAccess & { text: string }) | null;
+  let approved: EditProposal[];
+  let answer: boolean;
+  const host = () => ({
+    ws: () => ws,
+    budget: 50_000,
+    confirm: async (p: EditProposal) => {
+      approved.push(p);
+      return answer;
+    },
+  });
+  const text = async (path: string) => (await files.get(path)?.text()) ?? null;
+
+  beforeEach(() => {
+    files = new Map([
+      ['src/a.ts', new Blob(['export const a = 1;\n'])],
+      ['src/b.ts', new Blob(['import { a } from "./a";\nconsole.log(a);\n'])],
+      ['node_modules/x/index.js', new Blob(['const a = 1;'])],
+      ['logo.png', new Blob([new Uint8Array([0x89, 0x50, 0, 0])])],
+    ]);
+    const folder = memoryFolder('proj', files, true);
+    open = fakeEditor('b.ts', 'import { a } from "./a";\nconsole.log(a); // unsaved\n', { folderId: folder.id, path: 'src/b.ts' });
+    approved = [];
+    answer = true;
+    ws = {
+      folder,
+      active: open,
+      editorFor: (p) => (p === 'src/b.ts' ? open : null),
+      openElsewhere: () => false,
+      folderChanged: () => undefined,
+    };
+  });
+
+  it('lists the folder without entering dependency folders', async () => {
+    const { result } = await runTool(call('list_files', {}), host());
+    expect(result).toContain('node_modules/ (not listed)');
+    expect(result).toContain('  a.ts');
+    expect(result).not.toContain('index.js');
+  });
+
+  it('reads files from disk, or from the open tab with unsaved changes', async () => {
+    expect((await runTool(call('read_file', { path: 'src/a.ts' }), host())).result).toContain('export const a = 1;');
+    expect((await runTool(call('read_file', { path: './src/b.ts' }), host())).result).toContain('// unsaved');
+    expect((await runTool(call('read_file', { path: 'logo.png' }), host())).result).toMatch(/not a text file/);
+    expect((await runTool(call('read_file', { path: '../etc/passwd' }), host())).result).toMatch(/^Error/);
+  });
+
+  it('searches text files, skipping dependencies', async () => {
+    const { result } = await runTool(call('search_files', { query: 'const a' }), host());
+    expect(result).toBe('src/a.ts:1: export const a = 1;');
+  });
+
+  it('edits a file on disk only once the user approves', async () => {
+    answer = false;
+    const rejected = await runTool(call('edit_file', { path: 'src/a.ts', old_string: '= 1', new_string: '= 2' }), host());
+    expect(rejected.result).toMatch(/rejected/);
+    expect(await text('src/a.ts')).toBe('export const a = 1;\n');
+    answer = true;
+    const ok = await runTool(call('edit_file', { path: 'src/a.ts', old_string: '= 1', new_string: '= 2' }), host());
+    expect(ok.activity.error).toBeUndefined();
+    expect(approved[1].diff.added).toBe(1);
+    expect(await text('src/a.ts')).toBe('export const a = 2;\n');
+  });
+
+  it('edits an open file in its tab, not on disk', async () => {
+    await runTool(call('edit_file', { path: 'src/b.ts', old_string: '// unsaved', new_string: '// edited' }), host());
+    expect(open!.text).toContain('// edited');
+    expect(await text('src/b.ts')).not.toContain('edited');
+  });
+
+  it('creates new files and their folders', async () => {
+    const r = await runTool(call('write_file', { path: 'src/util/new.ts', content: 'export {};\n' }), host());
+    expect(r.result).toMatch(/^Created src\/util\/new.ts/);
+    expect(approved[0].isNew).toBe(true);
+    expect(await text('src/util/new.ts')).toBe('export {};\n');
+  });
+
+  it('reports a bad edit to the model instead of applying it', async () => {
+    const r = await runTool(call('edit_file', { path: 'src/a.ts', old_string: 'nope', new_string: 'x' }), host());
+    expect(r.result).toMatch(/not found/);
+    expect(approved).toHaveLength(0);
+  });
+
+  it('works on the one open file when no folder is open', async () => {
+    const solo = fakeEditor('notes.py', 'print(1)\n');
+    ws = { folder: null, active: solo, editorFor: () => null, openElsewhere: () => false, folderChanged: () => undefined };
+    await runTool(call('edit_file', { path: 'notes.py', old_string: '1', new_string: '2' }), host());
+    expect(solo.text).toBe('print(2)\n');
+    expect((await runTool(call('read_file', { path: 'other.py' }), host())).result).toMatch(/Only the open file/);
+  });
+});
+
+// ── the main process refuses unlicensed copies ─────────────────────────────
+describe('agent license gate (main process)', () => {
+  it('sends nothing without an active license', async () => {
+    vi.resetModules();
+    const fetch = vi.fn();
+    vi.doMock('electron', () => ({
+      app: { isPackaged: false, getVersion: () => '0.0.0' },
+      session: { fromPartition: () => ({ fetch, setPermissionRequestHandler: () => undefined, webRequest: { onBeforeRequest: () => undefined } }) },
+    }));
+    const state = { status: 'unlicensed' as 'unlicensed' | 'active' };
+    vi.doMock('../electron/license', () => ({ getLicenseState: async () => ({ ...state, purchaseUrl: 'https://example.test' }) }));
+    process.env.OPENUNCENSORED_API_KEY = 'ou-test';
+    const agent = await import('../electron/agent');
+    const sender = { send: vi.fn(), isDestroyed: () => false } as never;
+    const req = { model: 'm', messages: [{ role: 'user', content: 'hi' }] };
+
+    expect(await agent.agentStatus()).toMatchObject({ licensed: false, configured: true });
+    expect(await agent.chat(sender, 'r1', req)).toMatchObject({ ok: false, code: 'unlicensed' });
+    expect(await agent.listModels()).toMatchObject({ ok: false, code: 'unlicensed' });
+    expect(fetch).not.toHaveBeenCalled();
+
+    // licensed: the request goes out with the key, and the stream comes back
+    state.status = 'active';
+    const sse = 'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n';
+    fetch.mockResolvedValue(new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } }));
+    const res = await agent.chat(sender, 'r2', req);
+    expect(res).toMatchObject({ ok: true, message: { content: 'Hi' }, finishReason: 'stop' });
+    const [url, init] = fetch.mock.calls[0] as [string, RequestInit & { headers: Record<string, string> }];
+    expect(url).toBe('https://api.openuncensored.com/v1/chat/completions');
+    expect(init.headers.Authorization).toBe('Bearer ou-test');
+    expect((sender as unknown as { send: ReturnType<typeof vi.fn> }).send).toHaveBeenCalledWith('agent-delta', 'r2', { content: 'Hi' });
+    delete process.env.OPENUNCENSORED_API_KEY;
+  });
+});

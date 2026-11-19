@@ -148,6 +148,55 @@ export const SECTIONS: GuideSection[] = [
     ),
   },
   {
+    id: 'agent',
+    group: 'Getting started',
+    title: 'Coding agent',
+    desktop: true,
+    keywords: 'ai agent assistant chat model llm openuncensored code fix refactor explain license copilot',
+    body: (
+      <>
+        <p>
+          The coding agent is an AI assistant that works beside the code editor and opened folders. It is part of <strong>licensed</strong> copies
+          of the desktop app: enter your key under <Ui>Help ▸ License…</Ui>. Without a license the panel shows how to get one.
+        </p>
+        <h3>Open the agent</h3>
+        <p>
+          Click <Ui>Agent</Ui> in the top bar, or use <Ui>View ▸ Coding Agent</Ui> (<Keys k="Ctrl+Shift+A" />). The panel opens on the right;
+          drag its left edge to make it wider. Closing it keeps the conversation; <Ui>New session</Ui> (the pencil button) starts over.
+        </p>
+        <h3>Pick a model</h3>
+        <p>
+          The list under the title has every model the agent service offers, with the size of its context window (how much it can read at
+          once). Point at a model for its price and what it is based on. Models whose names end in <Ui>thinking</Ui> reason before answering:
+          slower, often better at hard problems. Your choice is remembered.
+        </p>
+        <h3>Agent and Chat</h3>
+        <Defs
+          rows={[
+            [
+              <Ui>Agent</Ui>,
+              <>
+                The agent looks through the opened folder (or the one open file), reads what it needs and changes files. Each change appears as
+                a diff: <Ui>Apply</Ui> or <Ui>Reject</Ui> it. Tick <Ui>Apply changes without asking</Ui> to skip the review.
+              </>,
+            ],
+            [<Ui>Chat</Ui>, <>Ask about the file on screen. Select lines first to ask about just those. <Ui>Insert</Ui> on a code block puts it in the editor (replacing the selection).</>],
+          ]}
+        />
+        <ul>
+          <li>A change to a file that is open in a tab is made in the tab: <Keys k="Ctrl+Z" /> undoes it, and it is saved like any other edit.</li>
+          <li>Changes to other files of the folder are written to the file. New files (and their folders) are created as needed.</li>
+          <li>The agent cannot delete or rename files, run commands or tests, or go online. <Ui>Stop</Ui> ends a turn at any time.</li>
+          <li>Some models can't use tools. If one fails in Agent mode, switch to Chat or pick another model.</li>
+        </ul>
+        <Note>
+          Everything else in File Editor stays on your computer. The agent is the exception: your messages, and the files it reads, are sent to
+          OpenUncensored so the model can answer.
+        </Note>
+      </>
+    ),
+  },
+  {
     id: 'saving',
     group: 'Getting started',
     title: 'Saving, auto-save and converting',
@@ -1455,6 +1504,7 @@ export const SECTIONS: GuideSection[] = [
             ['Ctrl+Z / Ctrl+Y', 'Undo / Redo'],
             ['Ctrl+Tab / Ctrl+Shift+Tab', 'Next / previous tab (desktop app)'],
             ['Ctrl+W', 'Close tab (desktop app)'],
+            ['Ctrl+Shift+A', 'Show or hide the coding agent (licensed desktop app)'],
             ['Ctrl+= / Ctrl+-', 'Zoom documents and PDFs in / out (Ctrl+0: 100%)'],
           ]}
         />
