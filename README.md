@@ -200,6 +200,14 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   requests per minute, requests running at once, output tokens per request, plus a monthly
   spending cap across all licenses and a kill switch. A single license can have the agent
   turned off. The app shows the server's message when a limit is reached.
+- **Documents.** The agent also works on Word-style documents: a .txt, .docx, .odt, .rtf, .md or
+  .doc open in the document editor, and Word / OpenDocument / RTF files in the opened folder. It
+  reads a document as text, one line per paragraph, with its headings and list items noted
+  (`src/core/agent/doc-text.ts`). Its edits change only the words that differ, inside the
+  document, so formatting around them is kept and each is one undo step; a full rewrite is
+  written in Markdown and becomes headings, lists, bold and tables. A closed Word file it changes
+  is opened in a tab first (saved like any other edit), and `write_file` to a new .docx / .odt /
+  .rtf creates a real file of that format.
 - **Usage meter.** Under the model list: today's requests and tokens against the license's
   daily limits, a bar that turns amber at 80% and red when used up, and when it resets. It
   updates while an answer streams (estimated) and with the server's figure after each request.

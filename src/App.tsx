@@ -74,6 +74,7 @@ import { AgentPanel } from './ui/agent/AgentPanel';
 import { GitPanel } from './ui/git/GitPanel';
 import { git as runGitOp, gitAvailable, type GitContext } from './ui/git/git-client';
 import { codeEditorForTab, onCodeEditorsChange, registerCodeEditor } from './ui/agent/editors';
+import { documentAccess } from './ui/rich/agent-doc';
 import type { AgentWorkspace } from './ui/agent/tools';
 import { PdfEditor, type PdfEditorHandle } from './ui/pdf/PdfEditor';
 import { ImageEditor, type ImageEditorHandle } from './ui/image/ImageEditor';
@@ -430,6 +431,27 @@ function DocumentTab({ id: tabId, active, start, toast, autoSave, onToggleAutoSa
       insert: (text) => codeRef.current?.insert(text),
     });
   }, [codeName, docKeyValue, tabId]);
+
+  // …and Word-style document tabs (txt, docx, odt, rtf, md…) through the rich editor
+  const flowName = doc?.kind === 'flow' ? doc.name : null;
+  const flowFormat = doc?.kind === 'flow' ? FORMATS[doc.format]?.label : undefined;
+  useEffect(() => {
+    if (!flowName) return;
+    let off: (() => void) | null = null;
+    let live = true;
+    // the editor appears a moment after the document mounts
+    const attach = () => {
+      if (!live) return;
+      const ed = richRef.current?.getEditor();
+      if (!ed) return void setTimeout(attach, 100);
+      off = registerCodeEditor({ tabId, name: flowName, kind: 'document', format: flowFormat, ...documentAccess(ed) });
+    };
+    attach();
+    return () => {
+      live = false;
+      off?.();
+    };
+  }, [flowName, flowFormat, docKeyValue, tabId]);
 
   // ── Git: the repository this file is in (desktop), and keeping a clean code tab in step with it ──
   const gitHandle = doc?.handle;
@@ -2889,6 +2911,7 @@ export default function App() {
   };
   /** files being read for a tab right now, so a double click doesn't open one twice */
   const opening = useRef(new Set<string>());
+  const openFolderFileRef = useRef<(path: string) => Promise<void>>(async () => undefined);
   const openFolderFile = async (path: string) => {
     const f = folderRef.current;
     if (!f) return;
@@ -2909,7 +2932,8 @@ export default function App() {
     } finally {
       opening.current.delete(key);
     }
-  };
+  };  openFolderFileRef.current = openFolderFile;
+
   /** A renamed file's tab keeps answering to the tree under its new path. */
   const onFolderRenamed = (from: string, to: string) => {
     const id = folderRef.current?.id;
@@ -2971,6 +2995,27 @@ export default function App() {
         return !!t && !codeEditorForTab(t.id);
       },
       folderChanged: (dir) => window.dispatchEvent(new CustomEvent('fe:folder-changed', { detail: { folderId: f?.id, dir } })),
+      // a Word file the agent changes: open it in a tab, then wait for its editor
+      openInTab: (path) =>
+        new Promise((resolve) => {
+          const ready = () => editorWithOrigin(inFolder(path));
+          const now = ready();
+          if (now) return resolve(now);
+          let done = false;
+          const finish = (v: ReturnType<typeof ready>) => {
+            if (done) return;
+            done = true;
+            off();
+            clearTimeout(timer);
+            resolve(v);
+          };
+          const off = onCodeEditorsChange(() => {
+            const ed = ready();
+            if (ed) finish(ed);
+          });
+          const timer = setTimeout(() => finish(ready()), 30_000);
+          void openFolderFileRef.current(path);
+        }),
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

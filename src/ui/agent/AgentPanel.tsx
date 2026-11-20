@@ -123,6 +123,14 @@ function systemPrompt(mode: Mode, ws: AgentWorkspace, budget: number): string {
   if (ws.active && path) {
     const sel = ws.active.getSelection();
     parts.push(`The file on screen is ${path}${sel ? `; the cursor is on line ${sel.cursorLine}` : ''}.`);
+    if (ws.active.kind === 'document') {
+      parts.push(
+        `${path} is a ${ws.active.format ?? 'Word-style document'} open in the document editor, not code: you see it as text, one line per paragraph. ` +
+          (mode === 'agent'
+            ? 'Change wording with edit_file (formatting around the change is kept; a newline starts a new paragraph). To restructure it, use write_file with the whole document in Markdown.'
+            : 'When you suggest new text for it, give plain paragraphs rather than code blocks unless the user asks for code.'),
+      );
+    }
     if (mode === 'chat') {
       const { text, clipped } = clip(ws.active.getText(), budget);
       const fence = fenceFor(text);
@@ -753,8 +761,8 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
                 {mode === 'agent'
                   ? hasWork
                     ? `Ask the agent to explain, fix or change ${context.folder ? `the files in ${context.folder}` : context.file}. It reads what it needs and shows each change for you to apply.`
-                    : 'Open a folder (Open ▸ Open folder) or a code file, then ask the agent to work on it.'
-                  : 'Ask about the code on screen. Select lines first to ask about just those.'}
+                    : 'Open a folder (Open ▸ Open folder), a code file or a document, then ask the agent to work on it.'
+                  : 'Ask about the file on screen. Select text first to ask about just that.'}
               </p>
             </div>
           )}
