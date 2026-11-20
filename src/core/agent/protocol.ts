@@ -37,9 +37,27 @@ export interface AgentToolCall {
 
 export type AgentMessage =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
+  | { role: 'user'; content: string | AgentContentPart[] }
   | { role: 'assistant'; content: string | null; tool_calls?: AgentToolCall[] }
   | { role: 'tool'; tool_call_id: string; content: string };
+
+/** A piece of a user message: text, or a picture (a data URL) for models that can see images. */
+export type AgentContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
+
+/** Pictures in prompts: PNG, JPEG or WebP data URLs, a few per request, each a bounded size. */
+export const IMAGE_DATA_URL = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/;
+export const MAX_IMAGE_CHARS = 1_500_000;
+export const MAX_IMAGES_PER_REQUEST = 8;
+
+/** The text of a message's content, pictures left out. */
+export function contentText(content: string | AgentContentPart[] | null): string {
+  if (content === null) return '';
+  if (typeof content === 'string') return content;
+  return content.map((p) => (p.type === 'text' ? p.text : '')).join('\n');
+}
+
+/** How many pictures a message's content has. */
+export const contentImages = (content: string | AgentContentPart[] | null): number => (Array.isArray(content) ? content.filter((p) => p.type === 'image_url').length : 0);
 
 export interface AgentToolSpec {
   type: 'function';
@@ -65,6 +83,8 @@ export interface AgentUsageToday {
   /** AI pictures made today, and the daily allowance (0 when the server has none) */
   images: number;
   dailyImages: number;
+  /** the longest answer the license server allows per request (0 when it doesn't say) */
+  maxOutputTokens: number;
   /** ISO time the daily counts restart */
   resetsAt: string;
   /** the service-wide monthly budget is used up */
@@ -84,6 +104,7 @@ export function parseUsageToday(v: unknown): AgentUsageToday | null {
     dailyTokens: n(u.dailyTokens),
     images: n(u.images),
     dailyImages: n(u.dailyImages),
+    maxOutputTokens: n(u.maxOutputTokens),
     resetsAt: typeof u.resetsAt === 'string' ? u.resetsAt : '',
     paused: u.paused === true,
   };
@@ -92,6 +113,8 @@ export function parseUsageToday(v: unknown): AgentUsageToday | null {
 export interface AgentUsage {
   promptTokens: number;
   completionTokens: number;
+  /** prompt tokens the provider served from its prompt cache (cheaper), when it says */
+  cachedTokens?: number;
 }
 
 export interface AgentChatResult {
@@ -125,6 +148,8 @@ export interface AgentStatus {
   /** this computer holds an active File Editor license */
   licensed: boolean;
   purchaseUrl: string;
+  /** why the license isn't usable now (a subscription that isn't paid) */
+  message?: string;
 }
 
 /** A streamed piece of the answer, sent while a request is under way. */
@@ -186,6 +211,7 @@ export function formatContext(tokens: number): string {
 const SERVER_CODES: Record<string, AgentErrorCode> = {
   unlicensed: 'unlicensed',
   revoked: 'unlicensed',
+  expired: 'unlicensed',
   'daily-limit': 'quota',
   budget: 'quota',
   'rate-limited': 'rate-limited',
@@ -306,8 +332,13 @@ export class ChatAssembler {
     const ou = c.ou as { model?: unknown; cost_usd?: unknown } | undefined;
     if (ou && typeof ou.model === 'string') this.model = ou.model;
     if (ou && typeof ou.cost_usd === 'number') this.cost = ou.cost_usd;
-    const u = c.usage as { prompt_tokens?: unknown; completion_tokens?: unknown } | undefined;
-    if (u && typeof u === 'object') this.usage = { promptTokens: Number(u.prompt_tokens) || 0, completionTokens: Number(u.completion_tokens) || 0 };
+    const u = c.usage as
+      | { prompt_tokens?: unknown; completion_tokens?: unknown; prompt_tokens_details?: { cached_tokens?: unknown }; prompt_cache_hit_tokens?: unknown; cache_read_input_tokens?: unknown }
+      | undefined;
+    if (u && typeof u === 'object') {
+      const cached = Number(u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? u.cache_read_input_tokens) || 0;
+      this.usage = { promptTokens: Number(u.prompt_tokens) || 0, completionTokens: Number(u.completion_tokens) || 0, ...(cached ? { cachedTokens: cached } : {}) };
+    }
     const choice = (Array.isArray(c.choices) ? c.choices[0] : null) as Record<string, unknown> | null;
     if (!choice) return null;
     if (typeof choice.finish_reason === 'string') this.finish = choice.finish_reason;
@@ -363,8 +394,10 @@ export class ChatAssembler {
 }
 
 // ── checking what the renderer asks for ────────────────────────────────────
-export const MAX_REQUEST_CHARS = 3_000_000;
-export const MAX_OUTPUT_TOKENS = 16_384;
+/** Stays under the license server's 4.5 MB request limit with room for the envelope. */
+export const MAX_REQUEST_CHARS = 4_000_000;
+/** The most output tokens the app asks for in one request (the license server may set less). */
+export const MAX_OUTPUT_TOKENS = 131_072;
 const ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 
 /**
@@ -377,6 +410,7 @@ export function buildChatBody(req: unknown): { body: Record<string, unknown> } |
   if (!isModelId(r.model)) return { error: 'Pick a model first.' };
   if (!Array.isArray(r.messages) || r.messages.length === 0 || r.messages.length > 400) return { error: 'The conversation is empty or too long. Start a new session.' };
   const messages: Record<string, unknown>[] = [];
+  let images = 0;
   for (const m of r.messages as unknown[]) {
     const msg = m as Record<string, unknown>;
     if (!msg || !ROLES.has(String(msg.role))) return { error: 'The conversation has a message the model cannot take.' };
@@ -394,6 +428,19 @@ export function buildChatBody(req: unknown): { body: Record<string, unknown> } |
         }));
       }
       messages.push(out);
+    } else if (msg.role === 'user' && Array.isArray(msg.content)) {
+      // text and pictures: only well-formed parts go out
+      const parts: AgentContentPart[] = [];
+      for (const raw of msg.content as Record<string, unknown>[]) {
+        if (raw?.type === 'text' && typeof raw.text === 'string') parts.push({ type: 'text', text: raw.text });
+        else if (raw?.type === 'image_url') {
+          const url = (raw.image_url as { url?: unknown } | undefined)?.url;
+          if (typeof url !== 'string' || !IMAGE_DATA_URL.test(url) || url.length > MAX_IMAGE_CHARS) return { error: 'A picture in the conversation is too large or not a PNG, JPEG or WebP.' };
+          if (++images > MAX_IMAGES_PER_REQUEST) return { error: `Up to ${MAX_IMAGES_PER_REQUEST} pictures fit in one conversation. Start a new session to send more.` };
+          parts.push({ type: 'image_url', image_url: { url } });
+        } else return { error: 'The conversation has a message part the model cannot take.' };
+      }
+      messages.push({ role: 'user', content: parts });
     } else {
       messages.push({ role: msg.role, content: content ?? '' });
     }

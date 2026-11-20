@@ -2944,6 +2944,8 @@ export default function App() {
       }),
     );
   };
+  const onFolderRenamedRef = useRef(onFolderRenamed);
+  onFolderRenamedRef.current = onFolderRenamed;
   const activeOrigin = activeTab?.origin;
   const activeFolderPath = folder && activeOrigin?.folderId === folder.id ? activeOrigin.path : null;
 
@@ -2995,6 +2997,7 @@ export default function App() {
         return !!t && !codeEditorForTab(t.id);
       },
       folderChanged: (dir) => window.dispatchEvent(new CustomEvent('fe:folder-changed', { detail: { folderId: f?.id, dir } })),
+      renamed: (from, to) => onFolderRenamedRef.current(from, to),
       // a Word file the agent changes: open it in a tab, then wait for its editor
       openInTab: (path) =>
         new Promise((resolve) => {

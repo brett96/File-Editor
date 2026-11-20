@@ -233,19 +233,28 @@ export const SECTIONS: GuideSection[] = [
                 a diff: <Ui>Apply</Ui> or <Ui>Reject</Ui> it. Tick <Ui>Apply changes without asking</Ui> to skip the review.
               </>,
             ],
-            [<Ui>Chat</Ui>, <>Ask about the file on screen. Select lines first to ask about just those. <Ui>Insert</Ui> on a code block puts it in the editor (replacing the selection).</>],
+            [<Ui>Chat</Ui>, <>Ask questions. It can read the opened folder's files but doesn't change them: switch to Agent for changes. Ask about the file on screen, or select lines first to ask about just those. <Ui>Insert</Ui> on a code block puts it in the editor (replacing the selection).</>],
           ]}
         />
         <ul>
           <li>A change to a file that is open in a tab is made in the tab: <Keys k="Ctrl+Z" /> undoes it, and it is saved like any other edit.</li>
           <li>Changes to other files of the folder are written to the file. New files (and their folders) are created as needed.</li>
-          <li>The agent cannot delete or rename files, run commands or tests, or go online. <Ui>Stop</Ui> ends a turn at any time.</li>
+          <li>
+            The shield button sets what else it may do: delete and rename files, run commands and tests in the opened folder, and search the web. Each can be
+            off, ask every time, ask once per session, or be allowed without asking. <Ui>Stop</Ui> ends a turn (and a running command) at any time.
+          </li>
           <li>
             It works on documents too: a text, Word, OpenDocument or Rich Text file open in a tab, or one in the opened folder. Its changes keep
             the formatting around them; a Word file it changes is opened in a tab first, so you review and save it as usual. Ask it to create
             a <Ui>.docx</Ui> and it makes a real Word file.
           </li>
           <li>Some models can't use tools. If one fails in Agent mode, switch to Chat or pick another model.</li>
+          <li>
+            The paperclip adds files to your message: the file on screen, a file of the folder, or files and pictures from your computer. You
+            can also paste a screenshot or drop files on the message box. Pictures need a model marked <Ui>sees images</Ui>.
+          </li>
+          <li>The ring next to the usage meter shows how much of the model's memory (its context window) the conversation fills.</li>
+          <li>The clock button lists earlier sessions, kept on this computer: open one to read it or carry on where you left off.</li>
           <li>
             In the photo editor, the <Ui>AI edit</Ui> button (✨) changes a picture from a description, or makes a new one, with an image
             model you pick. Check the result, then <Ui>Apply</Ui> it (<Keys k="Ctrl+Z" /> takes it back). Each license has a daily number of AI

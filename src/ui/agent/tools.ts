@@ -1,7 +1,8 @@
 /**
  * What the coding agent can do: list, read and search the opened folder (or the one open
  * file), and propose edits. Nothing is changed without the user's OK (unless they turned on
- * "Apply changes without asking"); it cannot delete, rename, run anything or go online.
+ * "Apply changes without asking"). Deleting and renaming, commands and the web are in
+ * actions.ts, each behind the permissions the user sets in the panel.
  *
  * Edits to a file that is open in a code tab are made in that tab (one undo step, saved like
  * any other change); edits to other files of the folder are written to the file.
@@ -11,6 +12,8 @@ import type { AgentToolCall, AgentToolSpec } from '../../core/agent/protocol';
 import { dirOf, leafOf, safeSegments } from '../../core/web/paths';
 import { IGNORED_DIRS, type OpenedFolder } from '../../platform/folders';
 import type { CodeEditorAccess } from './editors';
+import { runAction, type ActionHost } from './actions';
+import { toolCapability } from '../../core/agent/permissions';
 
 /** What the agent is working on, as the app shell sees it right now. */
 export interface AgentWorkspace {
@@ -23,6 +26,8 @@ export interface AgentWorkspace {
   openElsewhere(path: string): boolean;
   /** the folder's file list should show a new file */
   folderChanged(dir: string): void;
+  /** a file or folder of the folder was renamed or moved (tabs follow it) */
+  renamed?(from: string, to: string): void;
   /** opens a file of the folder in a tab and resolves to its editor once it is ready (Word files the agent changes) */
   openInTab?(path: string): Promise<CodeEditorAccess | null>;
 }
@@ -51,6 +56,15 @@ export interface ToolHost {
   confirm(proposal: EditProposal): Promise<boolean>;
   /** characters of one file / result the chosen model can take */
   budget: number;
+  /** Chat mode: the files can be looked at but not changed */
+  readOnly?: boolean;
+  /**
+   * What read_file returned earlier in this turn (by path and lines). Reading the same unchanged
+   * text again then answers with a short note instead, as the text is already in the conversation.
+   */
+  readCache?: Map<string, string>;
+  /** asking permission, commands and the web, for the tools in actions.ts */
+  actions?: ActionHost;
 }
 
 const MAX_READ_BYTES = 4 * 1024 * 1024;
@@ -237,16 +251,40 @@ export async function runTool(call: AgentToolCall, host: ToolHost): Promise<{ re
     switch (call.function.name) {
       case 'list_files':
         return await listFiles(ws, cleanPath(args.path), int(args.depth));
-      case 'read_file':
-        return await readFile(ws, args.path, int(args.start_line), int(args.end_line), host.budget);
+      case 'read_file': {
+        const got = await readFile(ws, args.path, int(args.start_line), int(args.end_line), host.budget);
+        if (!host.readCache || got.activity.error) return got;
+        const key = `${cleanPath(args.path)}:${int(args.start_line) ?? ''}-${int(args.end_line) ?? ''}`;
+        if (host.readCache.get(key) === got.result) {
+          return { result: `${cleanPath(args.path)} is unchanged since you read it earlier in this turn (same lines): use that text above.`, activity: got.activity };
+        }
+        host.readCache.set(key, got.result);
+        return got;
+      }
       case 'search_files':
         return await searchFiles(ws, str(args.query), cleanPath(args.path), args.regex === true, args.case_sensitive === true);
       case 'edit_file':
-        return await editFile(ws, host, args.path, str(args.old_string), str(args.new_string), args.replace_all === true);
       case 'write_file':
-        return await writeFile(ws, host, args.path, str(args.content));
-      default:
+        if (host.readOnly) {
+          return fail(
+            `Can't change ${cleanPath(args.path) || 'files'} in Chat mode`,
+            'Files can’t be changed in Chat mode. Show the change in your answer, and tell the user to switch to Agent mode (the Agent button at the top of this panel) to have it applied.',
+          );
+        }
+        if (call.function.name === 'write_file') return await writeFile(ws, host, args.path, str(args.content));
+        return await editFile(ws, host, args.path, str(args.old_string), str(args.new_string), args.replace_all === true);
+      default: {
+        const cap = toolCapability(call.function.name);
+        if (cap && host.actions) {
+          if (host.readOnly && cap !== 'web') {
+            return fail(`Can't ${call.function.name.replace(/_/g, ' ')} in Chat mode`, 'That can’t be done in Chat mode. Tell the user to switch to Agent mode (the Agent button at the top of this panel).');
+          }
+          const done = await runAction(call.function.name, args, ws, host.actions);
+          if (done) return done;
+        }
+        if (cap) return fail(`${call.function.name.replace(/_/g, ' ')} isn't available`, `${call.function.name} isn't available here: it is turned off in the agent's permissions, or this folder can't do it.`);
         return fail(`Unknown tool ${call.function.name}`, `There is no tool called ${call.function.name}. Use list_files, read_file, search_files, edit_file or write_file.`);
+      }
     }
   } catch (err) {
     return fail(`${call.function.name} failed`, err instanceof Error ? err.message : 'It did not work.');
@@ -466,4 +504,68 @@ async function writeFile(ws: AgentWorkspace, host: ToolHost, rawPath: unknown, c
     });
   }
   return propose(ws, host, t, got ? got.text : null, content, (isNew) => writeText(ws, t, content, isNew, got ? got.bom : false));
+}
+
+/**
+ * A file of the folder (or the one on screen) for attaching to a message: its text as the agent
+ * would read it (open tabs with unsaved changes, Word files as text), or a picture's bytes.
+ */
+export async function readForContext(ws: AgentWorkspace, rawPath: string): Promise<{ text: string; path: string } | { image: Blob; path: string } | { error: string }> {
+  const t = resolveTarget(ws, rawPath);
+  if ('error' in t) return t;
+  if (t.kind === 'folder' && /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(t.path)) {
+    const blob = await t.folder.read(t.path);
+    return blob ? { image: blob, path: t.path } : { error: `${t.path} does not exist.` };
+  }
+  const got = await readText(t);
+  if (!got) return { error: `${t.path} does not exist.` };
+  if ('error' in got) return got;
+  return { text: got.text, path: t.path };
+}
+
+/** The files of the folder, for choosing one to attach (dependency folders left out). */
+export async function folderFiles(folder: OpenedFolder, limit = 3000): Promise<string[]> {
+  const out: string[] = [];
+  const queue = [''];
+  while (queue.length && out.length < limit) {
+    const dir = queue.shift()!;
+    for (const e of await folder.list(dir).catch(() => [])) {
+      if (e.kind === 'dir') {
+        if (!e.ignored && !IGNORED_DIRS.includes(e.name)) queue.push(e.path);
+      } else if (out.length < limit) out.push(e.path);
+    }
+  }
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
+/** The tools for looking only (Chat mode): list, read and search. */
+export const READ_TOOLS = AGENT_TOOLS.filter((t) => ['list_files', 'read_file', 'search_files'].includes(t.function.name));
+
+const overviews = new Map<string, { at: number; text: string }>();
+
+/**
+ * A short map of the folder for the model's instructions (two levels, dependency folders not
+ * entered), so it knows the files are there and what they are called before it reads any.
+ */
+export async function folderOverview(folder: OpenedFolder, maxEntries = 150): Promise<string> {
+  const hit = overviews.get(folder.id);
+  if (hit && Date.now() - hit.at < 30_000) return hit.text;
+  const out: string[] = [];
+  let more = false;
+  const walk = async (dir: string, level: number, indent: string) => {
+    for (const e of await folder.list(dir).catch(() => [])) {
+      if (out.length >= maxEntries) {
+        more = true;
+        return;
+      }
+      if (e.kind === 'dir') {
+        out.push(`${indent}${e.name}/${e.ignored ? ' (dependencies; not listed)' : ''}`);
+        if (!e.ignored && level < 2) await walk(e.path, level + 1, `${indent}  `);
+      } else out.push(`${indent}${e.name}`);
+    }
+  };
+  await walk('', 1, '');
+  const text = `${out.join('\n')}${more ? '\n… (more; use list_files)' : ''}`;
+  overviews.set(folder.id, { at: Date.now(), text });
+  return text;
 }

@@ -36,13 +36,19 @@ const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const REQUEST_TIMEOUT_MS = 20_000;
 const KEY_ALPHABET = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
 
-export type LicenseStatus = 'unlicensed' | 'active' | 'revoked';
+/** "expired": a monthly / yearly license whose subscription isn't paid; it comes back when it is. */
+export type LicenseStatus = 'unlicensed' | 'active' | 'revoked' | 'expired';
+export type LicensePlan = 'lifetime' | 'monthly' | 'yearly';
 
 export interface LicenseState {
   status: LicenseStatus;
   email?: string;
   keyHint?: string;
   activatedAt?: string;
+  plan?: LicensePlan;
+  /** subscriptions: when it renews, or when it ends after a cancellation (ISO) */
+  renewsAt?: string | null;
+  endsAt?: string | null;
   /** Why a license stopped being valid (shown when status is "revoked"). */
   message?: string;
   purchaseUrl: string;
@@ -52,11 +58,22 @@ export type ActivateResult = { ok: true; state: LicenseState } | { ok: false; er
 
 interface StoredLicense {
   token: string;
-  status: 'active' | 'revoked';
+  status: 'active' | 'revoked' | 'expired';
   activatedAt?: string;
   revokedMessage?: string;
+  /** why a subscription license is paused */
+  expiredMessage?: string;
+  plan?: LicensePlan;
+  renewsAt?: string | null;
+  endsAt?: string | null;
   checkedAt: number;
 }
+
+const PLANS: LicensePlan[] = ['lifetime', 'monthly', 'yearly'];
+const planOf = (v: unknown): LicensePlan | undefined => (PLANS.includes(v as LicensePlan) ? (v as LicensePlan) : undefined);
+const isoOrNull = (v: unknown) => (typeof v === 'string' && !Number.isNaN(Date.parse(v)) ? v : null);
+/** A lapsed subscription is checked more often, so a renewal shows up soon. */
+const EXPIRED_CHECK_MS = 10 * 60 * 1000;
 
 interface TokenPayload {
   typ: string;
@@ -192,10 +209,14 @@ export async function getLicenseState(): Promise<LicenseState> {
     return { status: 'unlicensed', purchaseUrl: PURCHASE_URL };
   }
   return {
-    status: 'active',
+    status: stored.status === 'expired' ? 'expired' : 'active',
     email: payload.email,
     keyHint: payload.hint,
     activatedAt: stored.activatedAt ?? new Date(payload.iat * 1000).toISOString(),
+    plan: stored.plan ?? 'lifetime',
+    renewsAt: stored.renewsAt ?? null,
+    endsAt: stored.endsAt ?? null,
+    ...(stored.status === 'expired' ? { message: stored.expiredMessage ?? 'Your subscription has ended.' } : {}),
     purchaseUrl: PURCHASE_URL,
   };
 }
@@ -258,8 +279,8 @@ export async function activateLicense(rawKey: unknown): Promise<ActivateResult> 
   }
   const payload = verifyToken(data.token, device);
   if (!payload) return { ok: false, code: 'bad-token', error: 'The license server sent an activation this app could not verify. Please update File Editor and try again.' };
-  const lic = (data.license ?? {}) as { activatedAt?: string };
-  await writeStored({ token: data.token, status: 'active', activatedAt: lic.activatedAt, checkedAt: Date.now() });
+  const lic = (data.license ?? {}) as { activatedAt?: string; plan?: unknown; renewsAt?: unknown; endsAt?: unknown };
+  await writeStored({ token: data.token, status: 'active', activatedAt: lic.activatedAt, plan: planOf(lic.plan), renewsAt: isoOrNull(lic.renewsAt), endsAt: isoOrNull(lic.endsAt), checkedAt: Date.now() });
   return { ok: true, state: await getLicenseState() };
 }
 
@@ -276,7 +297,7 @@ export async function refreshLicenseStatus(force = false): Promise<void> {
     await writeStored(null);
     return;
   }
-  if (!force && Date.now() - (stored.checkedAt ?? 0) < CHECK_INTERVAL_MS) return;
+  if (!force && Date.now() - (stored.checkedAt ?? 0) < (stored.status === 'expired' ? EXPIRED_CHECK_MS : CHECK_INTERVAL_MS)) return;
   const device = await deviceId();
   if (!verifyToken(stored.token, device)) {
     // Token no longer verifies for this device — drop it.
@@ -289,8 +310,20 @@ export async function refreshLicenseStatus(force = false): Promise<void> {
     if (data.status === 'revoked' || data.status === 'inactive') {
       // Refund / revoke / moved to another device: this computer no longer holds the license.
       await writeStored(null);
+    } else if (data.status === 'expired') {
+      // a subscription that isn't paid: keep the activation, so renewing brings it back
+      const message = typeof data.message === 'string' ? data.message.slice(0, 300) : undefined;
+      await writeStored({ ...stored, status: 'expired', expiredMessage: message, checkedAt: Date.now() });
     } else if (data.status === 'active') {
-      await writeStored({ token: stored.token, status: 'active', activatedAt: stored.activatedAt, checkedAt: Date.now() });
+      await writeStored({
+        token: stored.token,
+        status: 'active',
+        activatedAt: stored.activatedAt,
+        plan: planOf(data.plan) ?? stored.plan,
+        renewsAt: isoOrNull(data.renewsAt),
+        endsAt: isoOrNull(data.endsAt),
+        checkedAt: Date.now(),
+      });
     }
   } catch {
     /* offline: try again next start */

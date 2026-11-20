@@ -220,6 +220,34 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   Layer from AI Edit**: it sends the whole picture or only the active layer, and the result is
   added as a new layer above the active one, named after the description, so the original stays
   untouched (a picture larger than the canvas is scaled to fit and centred).
+- **Chat and Agent modes.** Both see the opened folder: each request carries a two-level map of
+  its files, and the model can list, read and search them. Agent mode also changes files (each
+  change reviewed); Chat mode only looks, and points to Agent mode when asked for changes.
+- **Attachments.** The 📎 button adds the file on screen, a file of the opened folder (searchable
+  list) or files from the computer (text, Word / OpenDocument / RTF documents, pictures); pasting a
+  screenshot or dropping files on the message box works too. Files go into the message as text;
+  pictures go as images to models marked *sees images* (the panel warns before sending pictures to
+  one that can't). Pictures are scaled to at most 1568 px, and only the newest 4 are resent with
+  later turns (`src/ui/agent/attachments.ts`).
+- **Context ring.** Beside the usage meter, a ring shows how much of the model's context window
+  the conversation takes (instructions, files read, history and what is about to be sent),
+  corrected by the model's own token counts as answers come in. When it fills, the oldest turns
+  are left out.
+- **Token use.** The chat API is stateless, so every request carries the conversation. The
+  panel keeps that cheap (`compactHistory`/`trimHistory` in `src/core/agent/context.ts`):
+  the instructions are built once per turn, and the cursor line travels with the message, so
+  every request starts with the same text and providers can serve it from their prompt cache.
+  Cached prompt tokens are shown on each answer and counted at a tenth by the license server.
+  Once a turn is over, what tools returned and the text of applied edits become one-line notes
+  (the agent reads a file again if it needs it). Reading the same unchanged file twice in a
+  turn answers with a note. When the context fills, the oldest turns are dropped with a 25%
+  margin, so the start of the prompt stays put for a while.
+- **Answer length.** The panel asks for the license server's per-request output limit
+  (`maxOutputTokens`, default 32,768, up to 131,072), but at most a quarter of the model's
+  context. If a provider refuses that, it asks again for 8,192. Only tokens actually written
+  are paid for.
+- **Earlier sessions.** Sessions are saved on this computer (IndexedDB, newest 100). The history
+  button lists them with search; open one to read it and carry on, or delete it.
 - **Usage meter.** Under the model list: today's requests and tokens against the license's
   daily limits, a bar that turns amber at 80% and red when used up, and when it resets. It
   updates while an answer streams (estimated) and with the server's figure after each request.
@@ -229,7 +257,7 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   (which also stops it, and its token use, on the server), and the panel retries once with a
   repetition penalty. A second loop is reported with a suggestion to pick another model.
 - **Network.** Agent requests go through their own in-memory Electron session that can reach
-  only the license server. The app also checks and caps requests itself (16K output tokens, 3
+  only the license server. The app also checks and caps requests itself (128K output tokens, 3
   running and 40 a minute, 25 tool steps per turn), so a runaway loop stops before the server
   has to refuse it. `FILE_EDITOR_LICENSE_API` points a dev build at a local server, as for
   activation.
@@ -237,8 +265,22 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   `node_modules` are skipped), edit files by exact string replacement, and create files. Each
   change is shown as a diff to **Apply** or **Reject** (or applied straight away with *Apply
   changes without asking*). A file open in a code tab is changed in the tab (one undo step, saved
-  as usual); other files are written in place. It cannot delete or rename files, run commands or
-  reach the internet.
+  as usual); other files are written in place.
+- **Permissions** (shield button under the message box, `src/core/agent/permissions.ts`). Three
+  more capabilities, each *Off*, *Ask every time* (default), *Ask once per session* or *Allowed
+  without asking*; a tool that is off isn't offered to the model at all, and the instructions
+  say what it may and may not do. Asking shows a card with the exact file, command or address,
+  and Allow / Deny; a denial goes back to the model as such.
+  - *Delete and rename files*: `delete_file` (to the recycle bin / Trash in the desktop app),
+    `rename_file` (rename, or move a file; open tabs follow). Agent mode only.
+  - *Run commands and tests*: `run_command` runs a shell command in a folder opened in the desktop
+    app (`electron/agent-actions.ts`): the user's shell (cmd.exe on Windows), the folder's id and
+    a relative directory only (checked to stay inside it), stdin closed, `CI=1`, a time limit
+    (default 120 s, at most 900), output streamed into the chat and capped (start and end kept),
+    and Stop kills the whole process tree. Agent mode only.
+  - *Go online*: `web_search` (DuckDuckGo's HTML results) and `fetch_url` (a page as text, with
+    its links, read on in parts). Addresses on this computer or the local network are refused,
+    checked on the address actually connected to and on every redirect. Chat mode too.
 
 Publish `SHA256SUMS` next to the downloads so users can verify them:
 

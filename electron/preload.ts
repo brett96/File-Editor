@@ -95,6 +95,16 @@ const bridge = {
     imageModels: () => ipcRenderer.invoke('agent-image-models'),
     image: (id: string, request: unknown) => ipcRenderer.invoke('agent-image', id, request),
     cancel: (id: string) => ipcRenderer.send('agent-cancel', id),
+    // commands and the web, when the user allows them (electron/agent-actions.ts)
+    run: (opId: string, request: unknown) => ipcRenderer.invoke('agent-run', opId, request),
+    cancelRun: (opId: string) => ipcRenderer.send('agent-run-cancel', opId),
+    onRunOutput: (callback: (opId: string, chunk: string) => void) => {
+      const listener = (_e: IpcRendererEvent, opId: string, chunk: string) => callback(opId, chunk);
+      ipcRenderer.on('agent-run-output', listener);
+      return () => ipcRenderer.removeListener('agent-run-output', listener);
+    },
+    webSearch: (query: string) => ipcRenderer.invoke('agent-web-search', query),
+    fetchUrl: (url: string) => ipcRenderer.invoke('agent-fetch-url', url),
     onDelta: (callback: (id: string, delta: unknown) => void) => {
       const listener = (_e: IpcRendererEvent, id: string, delta: unknown) => callback(id, delta);
       ipcRenderer.on('agent-delta', listener);

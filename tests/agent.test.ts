@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { trimHistory } from '../src/core/agent/context';
+import { compactHistory, trimHistory } from '../src/core/agent/context';
 import { applyEdit, lineDiff, minimalChange } from '../src/core/agent/edits';
 import { ChatAssembler, RepetitionDetector, SseParser, buildChatBody, errorFromResponse, formatContext, parseModels, parseUsageToday, type AgentMessage } from '../src/core/agent/protocol';
 import { memoryFolder } from '../src/platform/folders';
 import type { CodeEditorAccess } from '../src/ui/agent/editors';
-import { runTool, type AgentWorkspace, type EditProposal } from '../src/ui/agent/tools';
+import { READ_TOOLS, folderOverview, runTool, type AgentWorkspace, type EditProposal } from '../src/ui/agent/tools';
 
 describe('agent stream parsing', () => {
   it('splits server-sent events across chunk boundaries and skips comments', () => {
@@ -32,6 +32,9 @@ describe('agent stream parsing', () => {
     expect(r.usage).toEqual({ promptTokens: 10, completionTokens: 5 });
     expect(r.model).toBe('m2');
     expect(r.costUsd).toBe(0.001);
+    const b = new ChatAssembler();
+    b.push({ choices: [{ delta: { content: 'x' }, finish_reason: 'stop' }], usage: { prompt_tokens: 900, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 800 } } });
+    expect(b.result().usage).toEqual({ promptTokens: 900, completionTokens: 5, cachedTokens: 800 });
   });
 
   it('reads a whole (non-streamed) completion and inline <think> blocks', () => {
@@ -71,6 +74,7 @@ describe('stuck models', () => {
   it('reads today’s usage and passes a repetition penalty on', () => {
     expect(parseUsageToday({ requests: 3, tokens: 1200, dailyRequests: 300, dailyTokens: 2e6, resetsAt: '2026-11-21T00:00:00.000Z', paused: false })).toMatchObject({ requests: 3, dailyRequests: 300 });
     expect(parseUsageToday({ requests: 1 })).toBeNull();
+    expect(parseUsageToday({ requests: 0, tokens: 0, dailyRequests: 1, dailyTokens: 1, resetsAt: 'x', maxOutputTokens: 32768 })?.maxOutputTokens).toBe(32768);
     const a = new ChatAssembler();
     a.push({ choices: [{ delta: { content: 'x' } }] });
     a.push({ fe_usage: { requests: 4, tokens: 10, dailyRequests: 300, dailyTokens: 1000, resetsAt: '', paused: false } });
@@ -104,7 +108,7 @@ describe('agent models and requests', () => {
     expect('error' in buildChatBody({ model: 'm', messages: [{ role: 'admin', content: 'hi' }] })).toBe(true);
     const ok = buildChatBody({ model: 'm', messages: [{ role: 'user', content: 'hi', extra: 'dropped' }], maxTokens: 999999, tools: [{ type: 'function', function: { name: 'f', description: '', parameters: {} } }] });
     if ('error' in ok) throw new Error(ok.error);
-    expect(ok.body).toMatchObject({ model: 'm', stream: true, max_tokens: 16384, tool_choice: 'auto', messages: [{ role: 'user', content: 'hi' }] });
+    expect(ok.body).toMatchObject({ model: 'm', stream: true, max_tokens: 131072, tool_choice: 'auto', messages: [{ role: 'user', content: 'hi' }] });
     expect((ok.body.messages as object[])[0]).not.toHaveProperty('extra');
   });
 
@@ -169,6 +173,46 @@ describe('agent context', () => {
     expect(dropped).toBe(2);
     expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool']);
   });
+
+  it('frees a margin when it trims, so the start stays the same for a while', () => {
+    const turn = (n: number): AgentMessage[] => [
+      { role: 'user', content: `q${n}` + 'x'.repeat(95) },
+      { role: 'assistant', content: 'y'.repeat(100) },
+    ];
+    const history = [1, 2, 3, 4, 5].flatMap(turn); // ~1000 characters
+    const plain = trimHistory(history, 900);
+    const roomy = trimHistory(history, 900, 0.25);
+    expect(plain.dropped).toBeGreaterThan(0);
+    expect(roomy.dropped).toBeGreaterThan(plain.dropped);
+    expect(JSON.stringify(roomy.messages).length).toBeLessThan(JSON.stringify(plain.messages).length * 0.85);
+    expect(roomy.messages[0].role).toBe('user');
+    expect(trimHistory(history, 2000, 0.25).dropped).toBe(0); // under the limit: untouched
+  });
+
+  it('compacts finished turns: tool results and applied edit text become notes', () => {
+    const file = 'line\n'.repeat(400);
+    const edit = JSON.stringify({ path: 'a.ts', old_string: 'o'.repeat(500), new_string: 'n'.repeat(500) });
+    const history: AgentMessage[] = [
+      { role: 'user', content: 'fix it' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'r', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }] },
+      { role: 'tool', tool_call_id: 'r', content: `a.ts: 400 lines\n\n${file}` },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'e', type: 'function', function: { name: 'edit_file', arguments: edit } }] },
+      { role: 'tool', tool_call_id: 'e', content: 'Applied.' },
+      { role: 'assistant', content: 'Done.' },
+      { role: 'user', content: 'now this' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'r2', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }] },
+      { role: 'tool', tool_call_id: 'r2', content: file },
+    ];
+    const { history: out, saved } = compactHistory(history);
+    expect(saved).toBeGreaterThan(2500);
+    expect(out[2].content).toMatch(/^\[earlier result, 2,\d{3} characters, left out.*a\.ts: 400 lines/);
+    const args = JSON.parse((out[3] as Extract<AgentMessage, { role: 'assistant' }>).tool_calls![0].function.arguments) as Record<string, string>;
+    expect(args).toEqual({ path: 'a.ts', old_string: '[500 characters, already applied]', new_string: '[500 characters, already applied]' });
+    expect(out[4].content).toBe('Applied.');
+    expect(out[8].content).toBe(file); // the current turn is whole
+    // compacting again changes nothing (the start of the conversation stays the same)
+    expect(compactHistory(out).saved).toBe(0);
+  });
 });
 
 // ── tools against an in-memory folder and a fake code tab ──────────────────
@@ -226,6 +270,64 @@ describe('agent tools', () => {
     };
   });
 
+  it('answers a repeated, unchanged read of the same turn with a short note', async () => {
+    const h = { ...host(), readCache: new Map<string, string>() };
+    const first = await runTool(call('read_file', { path: 'src/a.ts' }), h);
+    expect(first.result).toContain('export const a = 1;');
+    expect((await runTool(call('read_file', { path: 'src/a.ts' }), h)).result).toMatch(/unchanged since you read it/);
+    files.set('src/a.ts', new Blob(['export const a = 2;\n']));
+    expect((await runTool(call('read_file', { path: 'src/a.ts' }), h)).result).toContain('export const a = 2;');
+  });
+
+  it('deletes, renames and moves files only with permission', async () => {
+    const asked: string[] = [];
+    let allow = false;
+    const renamed: [string, string][] = [];
+    ws.renamed = (a, b) => renamed.push([a, b]);
+    const h = { ...host(), actions: { budget: 50_000, permit: async (r: { title: string }) => (asked.push(r.title), allow) } };
+    const denied = await runTool(call('delete_file', { path: 'src/a.ts' }), h);
+    expect(denied.result).toMatch(/did not allow/);
+    expect(files.has('src/a.ts')).toBe(true);
+    allow = true;
+    expect((await runTool(call('delete_file', { path: 'src/a.ts' }), h)).result).toMatch(/^Deleted src\/a\.ts/);
+    expect(files.has('src/a.ts')).toBe(false);
+    expect((await runTool(call('rename_file', { path: 'src/b.ts', new_path: 'src/main.ts' }), h)).result).toBe('Renamed src/b.ts to src/main.ts.');
+    expect((await runTool(call('rename_file', { path: 'src/main.ts', new_path: 'lib/deep/main.ts' }), h)).result).toBe('Moved src/main.ts to lib/deep/main.ts.');
+    expect(await text('lib/deep/main.ts')).toContain('console.log(a);');
+    expect(files.has('src/main.ts')).toBe(false);
+    expect(renamed).toEqual([['src/b.ts', 'src/main.ts'], ['src/main.ts', 'lib/deep/main.ts']]);
+    expect(asked).toEqual(['Delete src/a.ts', 'Delete src/a.ts', 'Rename src/b.ts to main.ts', 'Move src/main.ts to lib/deep/main.ts']);
+    expect((await runTool(call('delete_file', { path: 'nope.ts' }), h)).result).toMatch(/does not exist/);
+    // Chat mode, or permissions turned off
+    expect((await runTool(call('delete_file', { path: 'logo.png' }), { ...h, readOnly: true })).result).toMatch(/Chat mode/);
+    const off = { ...host(), actions: { budget: 1000, permit: () => Promise.reject(new Error('“Delete and rename files” is turned off')) } };
+    expect((await runTool(call('delete_file', { path: 'logo.png' }), off)).result).toMatch(/turned off/);
+    expect((await runTool(call('delete_file', { path: 'logo.png' }), host())).result).toMatch(/isn't available/);
+  });
+
+  it('runs commands and reads the web through the desktop bridge', async () => {
+    (ws.folder as { desktopId?: string }).desktopId = 'f1';
+    const runs: unknown[] = [];
+    const out: string[] = [];
+    const actions = {
+      run: async (_id: string, req: unknown) => (runs.push(req), { ok: true as const, exitCode: 1, signal: null, timedOut: false, cancelled: false, output: '1 failed\n', cut: 0, durationMs: 1234, shell: 'sh' }),
+      onRunOutput: (cb: (id: string, c: string) => void) => (cb('other', 'x'), () => undefined),
+      webSearch: async () => ({ ok: true as const, results: [{ title: 'Vitest', url: 'https://vitest.dev', snippet: 'fast' }] }),
+      fetchUrl: async () => ({ ok: true as const, url: 'https://vitest.dev/', status: 200, contentType: 'text/html', title: 'Vitest', text: 'x'.repeat(3000), links: [{ text: 'Guide', url: 'https://vitest.dev/guide' }], truncated: false }),
+    };
+    const h = { ...host(), actions: { budget: 1000, actions, onOutput: (c: string) => out.push(c), permit: async () => true } };
+    const ran = await runTool(call('run_command', { command: 'npm test', cwd: './src/', timeout_seconds: 30 }), h);
+    expect(runs).toEqual([{ folderId: 'f1', command: 'npm test', cwd: 'src', timeoutSeconds: 30 }]);
+    expect(ran.result).toBe('$ npm test\n(exit code 1, 1.2 s)\n\n1 failed');
+    expect(ran.activity).toMatchObject({ label: 'Ran npm test — exit code 1', error: true });
+    expect(out).toEqual([]); // output of another command isn't shown here
+    expect((await runTool(call('web_search', { query: 'vitest' }), h)).result).toBe('Results for “vitest”:\n1. Vitest\n   https://vitest.dev\n   fast');
+    const page = await runTool(call('fetch_url', { url: 'https://vitest.dev/' }), h);
+    expect(page.result).toMatch(/^Vitest\nhttps:\/\/vitest\.dev\/\n\nx+/);
+    expect(page.result).toMatch(/read on with start_char=\d+/);
+    expect(page.result).toContain('- Guide: https://vitest.dev/guide');
+  });
+
   it('lists the folder without entering dependency folders', async () => {
     const { result } = await runTool(call('list_files', {}), host());
     expect(result).toContain('node_modules/ (not listed)');
@@ -276,6 +378,20 @@ describe('agent tools', () => {
     expect(approved).toHaveLength(0);
   });
 
+  it('in Chat mode reads files but does not change them, and maps the folder', async () => {
+    expect(READ_TOOLS.map((t) => t.function.name)).toEqual(['list_files', 'read_file', 'search_files']);
+    const chat = { ...host(), readOnly: true };
+    expect((await runTool(call('read_file', { path: 'src/a.ts' }), chat)).result).toContain('export const a = 1;');
+    const refused = await runTool(call('edit_file', { path: 'src/a.ts', old_string: '= 1', new_string: '= 2' }), chat);
+    expect(refused.result).toMatch(/Chat mode.*Agent mode/s);
+    expect(approved).toHaveLength(0);
+    expect(await text('src/a.ts')).toBe('export const a = 1;\n');
+    const map = await folderOverview(ws.folder!);
+    expect(map).toContain('src/\n  a.ts');
+    expect(map).toContain('node_modules/ (dependencies; not listed)');
+    expect(map).not.toContain('index.js');
+  });
+
   it('works on the one open file when no folder is open', async () => {
     const solo = fakeEditor('notes.py', 'print(1)\n');
     ws = { folder: null, active: solo, editorFor: () => null, openElsewhere: () => false, folderChanged: () => undefined };
@@ -322,7 +438,7 @@ describe('agent requests (main process)', () => {
     expect(url).toBe('https://license.example.test/api/agent/chat');
     expect(init.headers).not.toHaveProperty('Authorization');
     const sent = JSON.parse(String(init.body));
-    expect(sent).toMatchObject({ token: 'FE1.tok.sig', deviceId: 'd'.repeat(64), request: { model: 'm', maxTokens: 16384 } });
+    expect(sent).toMatchObject({ token: 'FE1.tok.sig', deviceId: 'd'.repeat(64), request: { model: 'm', maxTokens: 131072 } });
     expect((sender as unknown as { send: ReturnType<typeof vi.fn> }).send).toHaveBeenCalledWith('agent-delta', 'r2', { content: 'Hi' });
 
     // the server's refusals are shown as it words them; a lost license is re-checked
@@ -363,5 +479,36 @@ describe('agent requests (main process)', () => {
     expect(JSON.parse(String(picInit.body))).toMatchObject({ token: 'FE1.tok.sig', request: { mode: 'edit', model: 'qwen-image-3-edit', prompt: 'purple sky', image: 'data:image/png;base64,AAAA' } });
     fetch.mockResolvedValueOnce(Response.json({ error: "You've reached today's limit of 20 AI images.", code: 'daily-limit' }, { status: 429 }));
     expect(await agent.makeImage('i2', { mode: 'generate', model: 'z', prompt: 'x' })).toMatchObject({ ok: false, code: 'quota', error: "You've reached today's limit of 20 AI images." });
+  });
+});
+
+describe('attachments and pictures', async () => {
+  const { composeMessage, fileAttachment } = await import('../src/ui/agent/attachments');
+  const { estimateTokens, limitImages, IMAGE_TOKENS } = await import('../src/core/agent/context');
+  const pic = 'data:image/png;base64,iVBORw0KGgo=';
+
+  it('puts attached files before the words, and pictures after them', () => {
+    expect(composeMessage('fix it', [fileAttachment('a.ts', 'let x = 1;', 'src/a.ts')], 1000)).toBe('Attached file src/a.ts:\n```\nlet x = 1;\n```\n\nfix it');
+    const withPic = composeMessage('what is this?', [{ id: 'i', kind: 'image', name: 'shot.png', dataUrl: pic }], 1000);
+    expect(withPic).toEqual([{ type: 'text', text: 'what is this?' }, { type: 'image_url', image_url: { url: pic } }]);
+    const long = composeMessage('x', [fileAttachment('big.txt', 'line\n'.repeat(1000))], 200);
+    expect(typeof long === 'string' && long).toContain('the rest was cut to fit');
+  });
+
+  it('sends well-formed pictures and refuses others', () => {
+    const ok = buildChatBody({ model: 'm', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }, { type: 'image_url', image_url: { url: pic } }] }] });
+    expect('body' in ok && (ok.body.messages as { content: unknown }[])[0].content).toEqual([{ type: 'text', text: 'hi' }, { type: 'image_url', image_url: { url: pic } }]);
+    expect('error' in buildChatBody({ model: 'm', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://x.test/a.png' } }] }] })).toBe(true);
+    expect('error' in buildChatBody({ model: 'm', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:text/html;base64,PGI+' } }] }] })).toBe(true);
+    const nine = Array.from({ length: 9 }, () => ({ type: 'image_url', image_url: { url: pic } }));
+    expect('error' in buildChatBody({ model: 'm', messages: [{ role: 'user', content: nine }] })).toBe(true);
+  });
+
+  it('keeps only the newest pictures, and counts pictures in the context estimate', () => {
+    const msg = (n: number): AgentMessage => ({ role: 'user', content: [{ type: 'text', text: `turn ${n}` }, { type: 'image_url', image_url: { url: pic } }] });
+    const limited = limitImages([msg(1), msg(2), msg(3)], 2);
+    expect(limited.map((m) => (m.content as { type: string }[]).map((p) => p.type).join(','))).toEqual(['text,text', 'text,image_url', 'text,image_url']);
+    const textOnly = estimateTokens('', [{ role: 'user', content: 'turn 1' }]);
+    expect(estimateTokens('', [msg(1)]) - textOnly).toBeGreaterThanOrEqual(IMAGE_TOKENS - 10);
   });
 });
