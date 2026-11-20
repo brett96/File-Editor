@@ -31,7 +31,10 @@ const size = (m: AgentMessage) =>
  * history fits `maxChars`. The latest turn is always kept whole, so a tool call is never sent
  * without its result. When even that is too big, long tool results in it are shortened.
  */
-export function trimHistory(history: AgentMessage[], maxChars: number, headroom = 0): { messages: AgentMessage[]; dropped: number } {
+/** Messages one request may carry besides the instructions (the license server's limit, less the system message). */
+export const MAX_HISTORY_MESSAGES = 1999;
+
+export function trimHistory(history: AgentMessage[], maxChars: number, headroom = 0, maxMessages = MAX_HISTORY_MESSAGES): { messages: AgentMessage[]; dropped: number } {
   const turns: AgentMessage[][] = [];
   for (const m of history) {
     if (m.role === 'user' || !turns.length) turns.push([m]);
@@ -42,9 +45,13 @@ export function trimHistory(history: AgentMessage[], maxChars: number, headroom 
   // once over, drop down to (1 - headroom) of the limit: the start of the conversation then stays
   // the same for the next several requests, which keeps the provider's prompt cache useful
   const goal = total > maxChars ? maxChars * (1 - headroom) : maxChars;
-  while (turns.length > 1 && total > goal) {
+  // the same for the number of messages (a request may carry at most maxMessages)
+  let count = history.length;
+  const countGoal = count > maxMessages ? Math.floor(maxMessages * (1 - headroom)) : maxMessages;
+  while (turns.length > 1 && (total > goal || count > countGoal)) {
     const t = turns.shift()!;
     total -= t.reduce((n, m) => n + size(m), 0);
+    count -= t.length;
     dropped += t.length;
   }
   let messages = turns.flat();

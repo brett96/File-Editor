@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { compactHistory, trimHistory } from '../src/core/agent/context';
+import { MAX_HISTORY_MESSAGES, compactHistory, trimHistory } from '../src/core/agent/context';
 import { applyEdit, lineDiff, minimalChange } from '../src/core/agent/edits';
-import { ChatAssembler, RepetitionDetector, SseParser, buildChatBody, errorFromResponse, formatContext, parseModels, parseUsageToday, type AgentMessage } from '../src/core/agent/protocol';
+import { MAX_MESSAGES, ChatAssembler, RepetitionDetector, SseParser, buildChatBody, errorFromResponse, formatContext, parseModels, parseUsageToday, type AgentMessage } from '../src/core/agent/protocol';
 import { memoryFolder } from '../src/platform/folders';
 import type { CodeEditorAccess } from '../src/ui/agent/editors';
 import { READ_TOOLS, folderOverview, runTool, type AgentWorkspace, type EditProposal } from '../src/ui/agent/tools';
@@ -195,6 +195,11 @@ describe('agent context', () => {
     expect(JSON.stringify(roomy.messages).length).toBeLessThan(JSON.stringify(plain.messages).length * 0.85);
     expect(roomy.messages[0].role).toBe('user');
     expect(trimHistory(history, 2000, 0.25).dropped).toBe(0); // under the limit: untouched
+    // and by number of messages: oldest turns go, whole
+    const many = trimHistory(history, 1e9, 0, 7);
+    expect(many.messages.length).toBeLessThanOrEqual(7);
+    expect(many.messages[0].role).toBe('user');
+    expect(MAX_HISTORY_MESSAGES + 1).toBe(MAX_MESSAGES);
   });
 
   it('compacts finished turns: tool results and applied edit text become notes', () => {
