@@ -359,6 +359,34 @@ Developer ID certificate.
   (`import React from 'react'`) are listed under "not loaded" instead. Modules that import each
   other in a circle are reported too. Syntax highlighting uses CodeMirror's language pack
   (MIT), each grammar loaded on first use.
+- **UiPath / Windows Workflow `.xaml`** (`src/core/workflow/`, designer `src/ui/workflow/`): a
+  `.xaml` whose root is a workflow `Activity` opens in a Studio-like designer (other XAML, such
+  as WPF windows, stays in the code editor). **Designer | XAML** switches between the designer
+  and the text, which are the same document: saving, Undo / Redo, the coding agent and Git all
+  work on it. The designer shows the workflow as nested activity cards (Sequence, If, While /
+  Do While, For Each / For Each Row, Try Catch with its catches and Finally, scopes such as
+  Open Browser and Excel Application Scope, and any other activity with its bodies), with a
+  one-line summary (Assign's `to = value`, conditions, selectors, file paths) and annotations.
+  - Activities panel: about 25 common activities (workflow, control flow, error handling, UI
+    automation, CSV / Excel, logging); click to add after the selected activity (or inside a
+    selected Sequence, or into an empty branch chosen with its +), or drag into place.
+  - Activities can be dragged to another place, moved up / down, duplicated (Ctrl+D, without
+    Studio's view-state ids) and deleted (Del). Putting a second activity where only one fits
+    (If.Then, a loop's body) wraps both in a Sequence, as Studio does.
+  - Properties: DisplayName, the activity's attributes, argument properties (Assign's To and
+    Value, Get Text's Value…), conditions written as VB expression elements, the target's
+    selector and settings, and the annotation.
+  - Variables (in scope of the selection, with their scope; added to the nearest Sequence),
+    Arguments (direction and type) and Imports panels. Types include String, Int32, Boolean,
+    DataTable, DataRow, List and Dictionary, or any typed XAML type.
+  - The XAML DOM is the model: whatever the designer doesn't show (view state, hint sizes,
+    selector settings, assembly references, activities from other packages) is kept, and an
+    unchanged file is written back byte for byte (line endings, `&#xA;` in multi-line
+    selectors). New prefixes an activity needs (`ui:`, `s:`, `sd:`…) are declared on the root.
+  - Not covered: Flowchart and State Machine layouts are shown as their activities, not as a
+    diagram; expressions aren't checked or completed; packages aren't managed (an activity
+    from a package the project doesn't reference will fail in Studio). New ▸ Blank workflow
+    starts a Main.xaml.
 - **Spreadsheets** (`src/core/sheet/`, editor `src/ui/sheet/`): the editor is
   [Univer](https://github.com/dream-num/univer) (Apache-2.0), loaded only when a spreadsheet is
   opened (≈6 MB); `.xlsx` is read and written with ExcelJS (MIT) and CSV/TSV with Papa Parse

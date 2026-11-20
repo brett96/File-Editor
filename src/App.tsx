@@ -34,7 +34,9 @@ import {
   Wand2,
   ZoomIn,
   ZoomOut,
+  Workflow as WorkflowIcon,
 } from 'lucide-react';
+import { BLANK_WORKFLOW } from './core/workflow/activities';
 import { baseName, exportFlow, extensionOf, FORMATS, OPEN_EXTENSIONS, openDocument, type OpenResult } from './core/registry';
 import { languageLabel } from './core/code/languages';
 import { leafOf } from './core/web/paths';
@@ -2880,6 +2882,8 @@ export default function App() {
   const newDatabase = () => openTab({ kind: 'new-db' });
   const newVector = () => openTab({ kind: 'new-vector' });
   const newPresentation = () => openTab({ kind: 'new-slides' });
+  // a UiPath / Windows Workflow .xaml, opened in the workflow designer (Save asks where to put it)
+  const newWorkflow = () => openTab({ kind: 'open', file: { name: 'Main.xaml', blob: new Blob([BLANK_WORKFLOW], { type: 'application/xml' }) } });
 
   const pickAndOpen = async () => {
     try {
@@ -3300,6 +3304,7 @@ export default function App() {
                 <MenuItem hint=".pptx" onClick={() => { close(); newPresentation(); }}>Blank presentation</MenuItem>
                 <MenuItem hint=".sqlite" onClick={() => { close(); newDatabase(); }}>Blank database</MenuItem>
                 {vectorAvailable() && <MenuItem hint=".svg / .ai" onClick={() => { close(); newVector(); }}>Blank drawing</MenuItem>}
+                <MenuItem hint=".xaml" onClick={() => { close(); newWorkflow(); }}>Blank workflow (UiPath)</MenuItem>
               </div>
             )}
           </Popover>
@@ -3476,6 +3481,7 @@ export default function App() {
             onNewDatabase={newDatabase}
             onNewVector={vectorAvailable() ? newVector : null}
             onNewPresentation={newPresentation}
+            onNewWorkflow={newWorkflow}
             onOpen={pickAndOpen}
             onOpenFolder={() => void openFolder()}
             recents={host.recent ? recents : null}
@@ -3634,6 +3640,7 @@ function StartScreen({
   onNewDatabase,
   onNewVector,
   onNewPresentation,
+  onNewWorkflow,
   onOpen,
   onOpenFolder,
   recents,
@@ -3651,6 +3658,7 @@ function StartScreen({
   /** null where Vector Studio is not available (the web app) */
   onNewVector: (() => void) | null;
   onNewPresentation: () => void;
+  onNewWorkflow: () => void;
   onOpen: () => void;
   onOpenFolder: () => void;
   recents: RecentEntry[] | null;
@@ -3721,7 +3729,7 @@ function StartScreen({
           <button type="button" className="start-card start-new" onClick={() => setChoosing(true)} aria-haspopup="dialog">
             <FilePlus size={28} />
             <strong>New file</strong>
-            <span>A document, spreadsheet, presentation, database{onNewVector ? ' or drawing' : ''}: pick what to create</span>
+            <span>A document, spreadsheet, presentation, database{onNewVector ? ', drawing' : ''} or workflow: pick what to create</span>
           </button>
           <button type="button" className="start-card start-small" onClick={onOpen}>
             <FolderOpen size={22} />
@@ -3743,6 +3751,7 @@ function StartScreen({
                 { icon: <Presentation size={24} />, name: 'Presentation', hint: 'PowerPoint (.pptx): slides, shapes, pictures, tables, themes and a slide show', run: onNewPresentation },
                 { icon: <Database size={24} />, name: 'Database', hint: 'SQLite (.sqlite): tables, rows and SQL', run: onNewDatabase },
                 ...(onNewVector ? [{ icon: <PenTool size={24} />, name: 'Drawing', hint: 'Vector Studio: pen, shapes, gradients, type and artboards; saves SVG, .ai and PDF', run: onNewVector }] : []),
+                { icon: <WorkflowIcon size={24} />, name: 'Workflow', hint: 'A UiPath workflow (.xaml) in a Studio-like designer: activities, variables and arguments', run: onNewWorkflow },
               ].map((t) => (
                 <button
                   key={t.name}

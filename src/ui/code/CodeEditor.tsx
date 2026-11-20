@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
+import { Suspense, forwardRef, lazy, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { Compartment, EditorState, type Extension } from '@codemirror/state';
 import {
   EditorView,
@@ -11,7 +11,7 @@ import {
   rectangularSelection,
   crosshairCursor,
 } from '@codemirror/view';
-import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands';
+import { defaultKeymap, history, historyKeymap, indentWithTab, redo, undo } from '@codemirror/commands';
 import {
   bracketMatching,
   foldGutter,
@@ -36,6 +36,10 @@ import { bufferChanged, liveBuffer, onBufferChange } from '../workspace/buffers'
 import { minimalChange } from '../../core/agent/edits';
 import { cx } from '../components';
 import { disposePreview, publishPreview, type PreviewTarget } from './preview-host';
+import { isWorkflowXaml } from '../../core/workflow/xaml';
+
+// the workflow designer (UiPath / Windows Workflow .xaml) loads the first time one is opened
+const WorkflowDesigner = lazy(() => import('../workflow/WorkflowDesigner').then((m) => ({ default: m.WorkflowDesigner })));
 
 export interface CodeEditorHandle {
   getText(): string;
@@ -275,6 +279,10 @@ export const CodeEditor = forwardRef<CodeEditorHandle, {
   const [error, setError] = useState<string | null>(null);
   const previewId = useMemo(() => `p${Date.now().toString(36)}-${previewSeq++}`, []);
   const canPreview = format !== 'code';
+  /** a UiPath / Windows Workflow .xaml: shown in the designer, with its XAML a click away */
+  const isWorkflow = useMemo(() => /\.xaml$/i.test(fileName) && isWorkflowXaml(initialText), [fileName, initialText]);
+  const [workflowView, setWorkflowView] = useState<'designer' | 'xaml'>('designer');
+  const designer = isWorkflow && workflowView === 'designer';
   const sourceId = source?.id ?? null;
   const ownPath = source?.path ?? fileName;
 
@@ -496,6 +504,25 @@ export const CodeEditor = forwardRef<CodeEditorHandle, {
   return (
     <div className="code-editor">
       <div className="code-toolbar" role="toolbar" aria-label="Code view">
+        {isWorkflow && (
+          <div className="code-mode-toggle" role="tablist" aria-label="Workflow view">
+            {([
+              ['designer', 'Designer'],
+              ['xaml', 'XAML'],
+            ] as const).map(([id, text]) => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                className={cx('code-mode-btn', workflowView === id && 'is-active')}
+                aria-selected={workflowView === id}
+                onClick={() => setWorkflowView(id)}
+              >
+                {text}
+              </button>
+            ))}
+          </div>
+        )}
         {canPreview && (
           <div className="code-mode-toggle" role="tablist">
             {([
@@ -516,7 +543,7 @@ export const CodeEditor = forwardRef<CodeEditorHandle, {
             ))}
           </div>
         )}
-        <span className="code-lang-pill">{label}</span>
+        <span className="code-lang-pill">{isWorkflow ? 'Workflow (XAML)' : label}</span>
         {showPreview && source?.pages && pageChoices.length > 0 && (
           <label className="code-page-pick">
             <span>Page</span>
@@ -561,7 +588,23 @@ export const CodeEditor = forwardRef<CodeEditorHandle, {
         </div>
       )}
       <div className={cx('code-panes', canPreview && mode === 'split' && 'is-split')}>
-        <div className={cx('code-pane', 'code-source', !showEdit && 'is-hidden')} ref={hostRef} />
+        <div className={cx('code-pane', 'code-source', (!showEdit || designer) && 'is-hidden')} ref={hostRef} />
+        {designer && (
+          <Suspense fallback={<div className="code-pane code-preview-wait">Loading the workflow designer…</div>}>
+            <WorkflowDesigner
+              // the text as it is now: the designer reads it again when it changed elsewhere
+              text={tick >= 0 ? getText() : initialText}
+              onEdit={(next) => {
+                const view = viewRef.current;
+                if (!view) return;
+                const change = minimalChange(view.state.doc.toString(), next);
+                if (change) view.dispatch({ changes: change, userEvent: 'input.designer' });
+              }}
+              onUndo={() => viewRef.current && undo(viewRef.current)}
+              onRedo={() => viewRef.current && redo(viewRef.current)}
+            />
+          </Suspense>
+        )}
         {showPreview && target && ('url' in target ? (
           // served with its own sandboxing policy (see preview-host.ts)
           <iframe ref={frameRef} key="url" className="code-pane code-preview" title="Preview" sandbox={window.desktop ? 'allow-scripts allow-forms allow-modals' : undefined} src={target.url} />
