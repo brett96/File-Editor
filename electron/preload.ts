@@ -91,6 +91,7 @@ const bridge = {
     status: () => ipcRenderer.invoke('agent-status'),
     models: (force?: boolean) => ipcRenderer.invoke('agent-models', force === true),
     chat: (id: string, request: unknown) => ipcRenderer.invoke('agent-chat', id, request),
+    usage: () => ipcRenderer.invoke('agent-usage'),
     cancel: (id: string) => ipcRenderer.send('agent-cancel', id),
     onDelta: (callback: (id: string, delta: unknown) => void) => {
       const listener = (_e: IpcRendererEvent, id: string, delta: unknown) => callback(id, delta);

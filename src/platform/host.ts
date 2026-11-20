@@ -4,7 +4,7 @@
  * Electron preload bridge (native dialogs; paths stay in the main process).
  */
 
-import type { AgentChatRequest, AgentChatResult, AgentDelta, AgentModel, AgentResponse, AgentStatus } from '../core/agent/protocol';
+import type { AgentChatRequest, AgentChatResult, AgentDelta, AgentModel, AgentResponse, AgentStatus, AgentUsageToday } from '../core/agent/protocol';
 import { saveNameProblem, type DocKind } from '../core/conversions';
 import { desktopFolder, pickWebFolder, type OpenedFolder } from './folders';
 
@@ -162,7 +162,8 @@ export interface DesktopBridge {
   /** The coding agent: licensed copies only, checked by the main process (see electron/agent.ts). */
   agent?: {
     status(): Promise<AgentStatus>;
-    models(force?: boolean): Promise<AgentResponse<{ models: AgentModel[] }>>;
+    models(force?: boolean): Promise<AgentResponse<{ models: AgentModel[]; usage?: AgentUsageToday }>>;
+    usage(): Promise<AgentResponse<{ usage: AgentUsageToday }>>;
     chat(id: string, request: AgentChatRequest): Promise<AgentResponse<AgentChatResult>>;
     cancel(id: string): void;
     onDelta(callback: (id: string, delta: AgentDelta) => void): () => void;

@@ -52,6 +52,36 @@ export interface AgentChatRequest {
   tools?: AgentToolSpec[];
   temperature?: number;
   maxTokens?: number;
+  /** discourages repeating the same words (used when retrying an answer that got stuck in a loop) */
+  frequencyPenalty?: number;
+}
+
+/** Today's agent use against this license's limits (the license server's agentUsageToday). */
+export interface AgentUsageToday {
+  requests: number;
+  tokens: number;
+  dailyRequests: number;
+  dailyTokens: number;
+  /** ISO time the daily counts restart */
+  resetsAt: string;
+  /** the service-wide monthly budget is used up */
+  paused: boolean;
+}
+
+/** The usage the server reports, or null when the value isn't one. */
+export function parseUsageToday(v: unknown): AgentUsageToday | null {
+  const u = v as Record<string, unknown> | null;
+  if (!u || typeof u !== 'object') return null;
+  const n = (x: unknown) => (Number.isFinite(Number(x)) ? Math.max(0, Number(x)) : 0);
+  if (!n(u.dailyRequests) || !n(u.dailyTokens)) return null;
+  return {
+    requests: n(u.requests),
+    tokens: n(u.tokens),
+    dailyRequests: n(u.dailyRequests),
+    dailyTokens: n(u.dailyTokens),
+    resetsAt: typeof u.resetsAt === 'string' ? u.resetsAt : '',
+    paused: u.paused === true,
+  };
 }
 
 export interface AgentUsage {
@@ -66,10 +96,13 @@ export interface AgentChatResult {
   /** the model that answered (the service may fall back to a sibling of the one asked for) */
   model?: string;
   costUsd?: number;
+  /** today's use after this answer, when the server sent it */
+  today?: AgentUsageToday;
 }
 
 export type AgentErrorCode =
   | 'unlicensed'
+  | 'loop'
   | 'network'
   | 'timeout'
   | 'cancelled'
@@ -244,6 +277,9 @@ export class ChatAssembler {
   private usage?: AgentUsage;
   private model?: string;
   private cost?: number;
+  private today?: AgentUsageToday;
+  /** the latest piece of tool-call arguments (watched for repetition, not shown) */
+  argsPiece = '';
   /** an error the stream itself reported (some providers send one as a data event) */
   error: string | null = null;
 
@@ -251,6 +287,11 @@ export class ChatAssembler {
   push(chunk: unknown): AgentDelta | null {
     const c = chunk as Record<string, unknown> | null;
     if (!c || typeof c !== 'object') return null;
+    this.argsPiece = '';
+    if (c.fe_usage) {
+      this.today = parseUsageToday(c.fe_usage) ?? this.today;
+      return null;
+    }
     if (c.error) {
       const e = c.error as { message?: unknown } | string;
       this.error = typeof e === 'string' ? e : typeof e?.message === 'string' ? e.message : 'The model stopped with an error.';
@@ -290,7 +331,10 @@ export class ChatAssembler {
           // most providers send the name once; a few repeat it in every piece
           if (!slot.name.endsWith(tc.function.name)) slot.name += tc.function.name;
         }
-        if (typeof tc.function?.arguments === 'string') slot.args += tc.function.arguments;
+        if (typeof tc.function?.arguments === 'string') {
+          slot.args += tc.function.arguments;
+          this.argsPiece += tc.function.arguments;
+        }
         else if (tc.function?.arguments && typeof tc.function.arguments === 'object') slot.args = JSON.stringify(tc.function.arguments);
       }
     }
@@ -309,7 +353,7 @@ export class ChatAssembler {
       reasoning = (reasoning ? `${reasoning}\n` : '') + think[1].trim();
       content = content.slice(think[0].length);
     }
-    return { message: { content, reasoning, toolCalls }, finishReason: this.finish, usage: this.usage, model: this.model, costUsd: this.cost };
+    return { message: { content, reasoning, toolCalls }, finishReason: this.finish, usage: this.usage, model: this.model, costUsd: this.cost, today: this.today };
   }
 }
 
@@ -357,10 +401,55 @@ export function buildChatBody(req: unknown): { body: Record<string, unknown> } |
     max_tokens: Math.max(256, Math.min(MAX_OUTPUT_TOKENS, Math.floor(Number(r.maxTokens) || 8192))),
   };
   if (typeof r.temperature === 'number' && Number.isFinite(r.temperature)) body.temperature = Math.max(0, Math.min(2, r.temperature));
+  if (typeof r.frequencyPenalty === 'number' && Number.isFinite(r.frequencyPenalty)) body.frequency_penalty = Math.max(0, Math.min(1.5, r.frequencyPenalty));
   if (Array.isArray(r.tools) && r.tools.length) {
     body.tools = r.tools.slice(0, 32);
     body.tool_choice = 'auto';
   }
   if (JSON.stringify(body).length > MAX_REQUEST_CHARS) return { error: 'This conversation has grown too large for one request. Start a new session.' };
   return { body };
+}
+
+// ── degenerate answers ─────────────────────────────────────────────────────
+/**
+ * Spots a model stuck repeating itself ("!!!!!!…", the same line or phrase over and over) while
+ * the answer streams, so the request can be stopped at once instead of running to the output
+ * limit. Feed it text as it arrives; `push` returns true once the end of the text is one unit
+ * (1–400 characters) repeated over at least `minSpan` characters and at least 4 times.
+ */
+export class RepetitionDetector {
+  private tail = '';
+  private sinceCheck = 0;
+
+  constructor(
+    private minSpan = 1200,
+    private maxUnit = 400,
+    private window = 4000,
+  ) {}
+
+  push(text: string): boolean {
+    if (!text) return false;
+    this.tail = (this.tail + text).slice(-this.window);
+    this.sinceCheck += text.length;
+    if (this.sinceCheck < 200 || this.tail.length < this.minSpan) return false;
+    this.sinceCheck = 0;
+    return repeatedTail(this.tail, this.minSpan, this.maxUnit);
+  }
+}
+
+/** Whether `s` ends in one unit repeated over at least `minSpan` characters (and 4+ times). */
+export function repeatedTail(s: string, minSpan: number, maxUnit: number): boolean {
+  const n = s.length;
+  for (let unit = 1; unit <= maxUnit && unit * 4 <= n; unit++) {
+    // how far back s[i] === s[i - unit] holds from the end
+    let i = n - 1;
+    while (i >= unit && s.charCodeAt(i) === s.charCodeAt(i - unit)) i--;
+    const span = n - 1 - i + unit;
+    if (span >= minSpan && span >= unit * 4) {
+      // a run of spaces or one repeated blank line is padding, not a loop
+      const piece = s.slice(n - unit);
+      if (!/^\s+$/.test(piece)) return true;
+    }
+  }
+  return false;
 }

@@ -200,6 +200,14 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   requests per minute, requests running at once, output tokens per request, plus a monthly
   spending cap across all licenses and a kill switch. A single license can have the agent
   turned off. The app shows the server's message when a limit is reached.
+- **Usage meter.** Under the model list: today's requests and tokens against the license's
+  daily limits, a bar that turns amber at 80% and red when used up, and when it resets. It
+  updates while an answer streams (estimated) and with the server's figure after each request.
+- **Stuck models.** Some models degenerate into repeating one character or line. The main
+  process watches the streamed answer, thinking and tool arguments (`RepetitionDetector`),
+  stops the request as soon as the end of the text is one unit repeated over 1,200+ characters
+  (which also stops it, and its token use, on the server), and the panel retries once with a
+  repetition penalty. A second loop is reported with a suggestion to pick another model.
 - **Network.** Agent requests go through their own in-memory Electron session that can reach
   only the license server. The app also checks and caps requests itself (16K output tokens, 3
   running and 40 a minute, 25 tool steps per turn), so a runaway loop stops before the server
