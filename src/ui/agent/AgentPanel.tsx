@@ -71,7 +71,7 @@ type Item =
   | { kind: 'edit'; id: string; path: string; diff: Diff; isNew: boolean; status: 'pending' | 'applied' | 'rejected' | 'failed' }
   | { kind: 'notice'; id: string; text: string; error?: boolean };
 
-const MAX_STEPS = 25;
+const MAX_STEPS = 50;
 /** Output tokens asked for when the license server doesn't say its limit, and the fallback when a provider refuses more. */
 const OUTPUT_TOKENS = 16_384;
 const SAFE_OUTPUT_TOKENS = 8192;
