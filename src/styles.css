@@ -3234,6 +3234,12 @@ button.brand:focus-visible {
   gap: 10px;
 }
 
+/* the list scrolls; its items keep their size (cards that clip their content, like a change or a
+   request waiting for approval, would otherwise be squashed to nothing in a long conversation) */
+.agent-messages > * {
+  flex-shrink: 0;
+}
+
 .agent-empty {
   margin: auto 0;
   display: flex;
@@ -3459,6 +3465,30 @@ button.brand:focus-visible {
   font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+/* Show (in the waiting banner) flashes the request or change it points to */
+.agent-permission.is-flash,
+.agent-edit.is-flash {
+  animation: agent-flash 1.5s ease-out;
+}
+
+@keyframes agent-flash {
+  0%,
+  40% {
+    box-shadow: 0 0 0 3px var(--accent);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-permission.is-flash,
+  .agent-edit.is-flash {
+    animation: none;
+    box-shadow: 0 0 0 3px var(--accent);
+  }
 }
 
 /* the agent asks to delete/rename, run a command or go online */

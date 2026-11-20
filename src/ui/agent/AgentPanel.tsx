@@ -857,6 +857,22 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
 
   const decide = (id: string, ok: boolean) => approvals.current.get(id)?.(ok);
 
+  /** Show (in the banner): bring a waiting request or change into view, flash it and focus its first button. */
+  const showItem = (id: string) => {
+    const list = listRef.current;
+    const card = list?.querySelector<HTMLElement>(`[data-item="${id}"]`);
+    if (!list || !card) return;
+    // stop following the end of the conversation while the user looks at this
+    stick.current = false;
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+    card.scrollIntoView({ block: 'center', behavior: reduce ? 'auto' : 'smooth' });
+    card.classList.remove('is-flash');
+    void card.offsetWidth; // restart the animation
+    card.classList.add('is-flash');
+    window.setTimeout(() => card.classList.remove('is-flash'), 1600);
+    card.querySelector<HTMLButtonElement>('.agent-edit-foot .btn-primary')?.focus({ preventScroll: true });
+  };
+
   // ── attachments ──
   const attachFailed = (err: unknown) => add({ kind: 'notice', id: uid('n'), text: err instanceof Error ? err.message : 'That couldn’t be added.', error: true });
   const addFiles = async (files: File[]) => {
@@ -1140,7 +1156,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
                   <>{pendingCount > 1 ? `${pendingCount} changes are` : 'A change is'} waiting for you: <strong>{pending.path}</strong></>
                 )}
               </span>
-              <button type="button" className="btn btn-text btn-sm" onClick={() => listRef.current?.querySelector(`[data-item="${pending.id}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })}>
+              <button type="button" className="btn btn-text btn-sm" onClick={() => showItem(pending.id)}>
                 Show
               </button>
               <button type="button" className="btn btn-primary btn-sm" onClick={() => decide(pending.id, true)}>
