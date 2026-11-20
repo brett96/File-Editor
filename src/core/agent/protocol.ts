@@ -77,9 +77,12 @@ export interface AgentChatRequest {
 /** Today's agent use against this license's limits (the license server's agentUsageToday). */
 export interface AgentUsageToday {
   requests: number;
-  tokens: number;
   dailyRequests: number;
-  dailyTokens: number;
+  /** US dollars of model use today, and the license's daily allowance (0 when the server doesn't say) */
+  costUsd: number;
+  dailyCostUsd: number;
+  /** tokens used today, for information */
+  tokens: number;
   /** AI pictures made today, and the daily allowance (0 when the server has none) */
   images: number;
   dailyImages: number;
@@ -96,12 +99,13 @@ export function parseUsageToday(v: unknown): AgentUsageToday | null {
   const u = v as Record<string, unknown> | null;
   if (!u || typeof u !== 'object') return null;
   const n = (x: unknown) => (Number.isFinite(Number(x)) ? Math.max(0, Number(x)) : 0);
-  if (!n(u.dailyRequests) || !n(u.dailyTokens)) return null;
+  if (!n(u.dailyRequests)) return null;
   return {
     requests: n(u.requests),
-    tokens: n(u.tokens),
     dailyRequests: n(u.dailyRequests),
-    dailyTokens: n(u.dailyTokens),
+    costUsd: n(u.costUsd),
+    dailyCostUsd: n(u.dailyCostUsd),
+    tokens: n(u.tokens),
     images: n(u.images),
     dailyImages: n(u.dailyImages),
     maxOutputTokens: n(u.maxOutputTokens),

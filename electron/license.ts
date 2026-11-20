@@ -308,8 +308,10 @@ export async function refreshLicenseStatus(force = false): Promise<void> {
     const { status, data } = await post('/api/license/status', { token: stored.token, deviceId: device });
     if (status !== 200) return;
     if (data.status === 'revoked' || data.status === 'inactive') {
-      // Refund / revoke / moved to another device: this computer no longer holds the license.
-      await writeStored(null);
+      // Refund / revoke / released on the license page / moved to another device: this computer
+      // no longer holds the license. With the server's reason, keep a note for the app to show once.
+      const why = typeof data.message === 'string' ? data.message : typeof data.reason === 'string' ? data.reason : '';
+      await writeStored(why ? { token: stored.token, status: 'revoked', revokedMessage: why.slice(0, 300), checkedAt: Date.now() } : null);
     } else if (data.status === 'expired') {
       // a subscription that isn't paid: keep the activation, so renewing brings it back
       const message = typeof data.message === 'string' ? data.message.slice(0, 300) : undefined;
