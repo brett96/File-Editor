@@ -258,7 +258,7 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   repetition penalty. A second loop is reported with a suggestion to pick another model.
 - **Network.** Agent requests go through their own in-memory Electron session that can reach
   only the license server. The app also checks and caps requests itself (128K output tokens, 3
-  running and 40 a minute, 25 tool steps per turn), so a runaway loop stops before the server
+  running and 40 a minute, 50 tool steps per turn), so a runaway loop stops before the server
   has to refuse it. `FILE_EDITOR_LICENSE_API` points a dev build at a local server, as for
   activation.
 - **What the agent can do.** List, read and search the opened folder (dependency folders such as
