@@ -159,6 +159,14 @@ describe('agent edits', () => {
   });
 });
 
+describe('agent panel layout', () => {
+  it('never squashes the items of the conversation (a waiting request collapsed to its border, so Show showed nothing)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const css = readFileSync('src/styles.css', 'utf8');
+    expect(css).toMatch(/\.agent-messages > \*\s*\{\s*flex-shrink: 0;/);
+  });
+});
+
 describe('agent context', () => {
   it('drops the oldest turns first and keeps tool calls with their results', () => {
     const big = 'x'.repeat(1000);
