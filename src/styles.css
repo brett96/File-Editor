@@ -1116,10 +1116,70 @@ body {
   font-size: 15px;
 }
 
+/* New file across the top; Open file and Open folder side by side below, as wide together */
 .start-cards {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  grid-template-columns: 1fr 1fr;
   gap: 16px;
+}
+
+.start-card.start-new {
+  grid-column: 1 / -1;
+}
+
+.start-card.start-small {
+  padding: 16px 18px;
+  gap: 6px;
+}
+
+.start-card.start-small strong {
+  font-size: 15px;
+}
+
+.start-card.start-small span {
+  font-size: 13px;
+}
+
+/* the New file menu */
+.new-file-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.new-file-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.new-file-option > svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.new-file-option:hover,
+.new-file-option:focus-visible {
+  border-color: var(--accent);
+}
+
+.new-file-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.new-file-text span {
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.4;
 }
 
 .start-card {

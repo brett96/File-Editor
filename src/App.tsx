@@ -3663,6 +3663,8 @@ function StartScreen({
   onToast: (text: string, kind?: 'error' | 'info') => void;
 }) {
   const [downloadBusy, setDownloadBusy] = useState(false);
+  /** the New file menu is open */
+  const [choosing, setChoosing] = useState(false);
   const [installerChoices, setInstallerChoices] = useState<{ version: string; options: InstallerOption[] } | null>(null);
 
   const downloadDesktop = async () => {
@@ -3716,44 +3718,52 @@ function StartScreen({
           )}
         </div>
         <div className="start-cards">
-          <button type="button" className="start-card" onClick={onNew}>
+          <button type="button" className="start-card start-new" onClick={() => setChoosing(true)} aria-haspopup="dialog">
             <FilePlus size={28} />
-            <strong>Blank document</strong>
-            <span>Starts as Word (.docx) — use the format label in the status bar to switch to a spreadsheet (Excel, CSV), a database, text, HTML, CSS, JS, PDF or a blank canvas</span>
+            <strong>New file</strong>
+            <span>A document, spreadsheet, presentation, database{onNewVector ? ' or drawing' : ''}: pick what to create</span>
           </button>
-          <button type="button" className="start-card" onClick={onNewSheet}>
-            <SheetIcon size={28} />
-            <strong>Blank spreadsheet</strong>
-            <span>An Excel workbook (.xlsx) with formulas, formatting, sorting and filters — save as CSV, TSV or a database</span>
-          </button>
-          <button type="button" className="start-card" onClick={onNewPresentation}>
-            <Presentation size={28} />
-            <strong>Blank presentation</strong>
-            <span>A PowerPoint deck (.pptx): slides, text, shapes, pictures, tables, themes, transitions and a slide show — also opens Google Slides files downloaded as PowerPoint</span>
-          </button>
-          <button type="button" className="start-card" onClick={onNewDatabase}>
-            <Database size={28} />
-            <strong>Blank database</strong>
-            <span>A SQLite database (.sqlite): make tables, add rows and run SQL</span>
-          </button>
-          {onNewVector && (
-            <button type="button" className="start-card" onClick={onNewVector}>
-              <PenTool size={28} />
-              <strong>Blank drawing</strong>
-              <span>Vector Studio: pen and shape tools, pathfinder, gradients and meshes, type and artboards — saves SVG, Illustrator (.ai) and PDF</span>
-            </button>
-          )}
-          <button type="button" className="start-card" onClick={onOpen}>
-            <FolderOpen size={28} />
-            <strong>Open a file</strong>
+          <button type="button" className="start-card start-small" onClick={onOpen}>
+            <FolderOpen size={22} />
+            <strong>Open file</strong>
             <span>Documents, spreadsheets, photos, video, audio or code — or drag one onto this window</span>
           </button>
-          <button type="button" className="start-card" onClick={onOpenFolder}>
-            <FolderTree size={28} />
-            <strong>Open a folder</strong>
-            <span>Work with every file in a folder or code repository: a file tree, syntax highlighting, and a web preview that uses the whole project</span>
+          <button type="button" className="start-card start-small" onClick={onOpenFolder}>
+            <FolderTree size={22} />
+            <strong>Open folder</strong>
+            <span>Every file in a folder or code repository, with a file tree and a web preview</span>
           </button>
         </div>
+        {choosing && (
+          <Modal title="New file" width={640} onClose={() => setChoosing(false)}>
+            <div className="new-file-grid" role="list">
+              {[
+                { icon: <FilePlus size={24} />, name: 'Document', hint: 'Word (.docx). Switch it to text, HTML, PDF or a canvas from the format label in the status bar', run: onNew },
+                { icon: <SheetIcon size={24} />, name: 'Spreadsheet', hint: 'Excel (.xlsx) with formulas, formatting, sorting and filters; saves CSV and TSV too', run: onNewSheet },
+                { icon: <Presentation size={24} />, name: 'Presentation', hint: 'PowerPoint (.pptx): slides, shapes, pictures, tables, themes and a slide show', run: onNewPresentation },
+                { icon: <Database size={24} />, name: 'Database', hint: 'SQLite (.sqlite): tables, rows and SQL', run: onNewDatabase },
+                ...(onNewVector ? [{ icon: <PenTool size={24} />, name: 'Drawing', hint: 'Vector Studio: pen, shapes, gradients, type and artboards; saves SVG, .ai and PDF', run: onNewVector }] : []),
+              ].map((t) => (
+                <button
+                  key={t.name}
+                  type="button"
+                  role="listitem"
+                  className="new-file-option"
+                  onClick={() => {
+                    setChoosing(false);
+                    t.run();
+                  }}
+                >
+                  {t.icon}
+                  <span className="new-file-text">
+                    <strong>{t.name}</strong>
+                    <span>{t.hint}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </Modal>
+        )}
         {openTabs.length > 0 && (
           <div className="start-recent start-open">
             <h2><FileText size={15} /> Open files</h2>
