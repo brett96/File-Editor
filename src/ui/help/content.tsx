@@ -233,7 +233,7 @@ export const SECTIONS: GuideSection[] = [
                 a diff: <Ui>Apply</Ui> or <Ui>Reject</Ui> it. Tick <Ui>Apply changes without asking</Ui> to skip the review.
               </>,
             ],
-            [<Ui>Chat</Ui>, <>Ask about the file on screen. Select lines first to ask about just those. <Ui>Insert</Ui> on a code block puts it in the editor (replacing the selection).</>],
+            [<Ui>Chat</Ui>, <>Ask questions. It can read the opened folder's files but doesn't change them: switch to Agent for changes. Ask about the file on screen, or select lines first to ask about just those. <Ui>Insert</Ui> on a code block puts it in the editor (replacing the selection).</>],
           ]}
         />
         <ul>
