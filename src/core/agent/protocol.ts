@@ -83,6 +83,8 @@ export interface AgentUsageToday {
   /** AI pictures made today, and the daily allowance (0 when the server has none) */
   images: number;
   dailyImages: number;
+  /** the longest answer the license server allows per request (0 when it doesn't say) */
+  maxOutputTokens: number;
   /** ISO time the daily counts restart */
   resetsAt: string;
   /** the service-wide monthly budget is used up */
@@ -102,6 +104,7 @@ export function parseUsageToday(v: unknown): AgentUsageToday | null {
     dailyTokens: n(u.dailyTokens),
     images: n(u.images),
     dailyImages: n(u.dailyImages),
+    maxOutputTokens: n(u.maxOutputTokens),
     resetsAt: typeof u.resetsAt === 'string' ? u.resetsAt : '',
     paused: u.paused === true,
   };
@@ -110,6 +113,8 @@ export function parseUsageToday(v: unknown): AgentUsageToday | null {
 export interface AgentUsage {
   promptTokens: number;
   completionTokens: number;
+  /** prompt tokens the provider served from its prompt cache (cheaper), when it says */
+  cachedTokens?: number;
 }
 
 export interface AgentChatResult {
@@ -324,8 +329,13 @@ export class ChatAssembler {
     const ou = c.ou as { model?: unknown; cost_usd?: unknown } | undefined;
     if (ou && typeof ou.model === 'string') this.model = ou.model;
     if (ou && typeof ou.cost_usd === 'number') this.cost = ou.cost_usd;
-    const u = c.usage as { prompt_tokens?: unknown; completion_tokens?: unknown } | undefined;
-    if (u && typeof u === 'object') this.usage = { promptTokens: Number(u.prompt_tokens) || 0, completionTokens: Number(u.completion_tokens) || 0 };
+    const u = c.usage as
+      | { prompt_tokens?: unknown; completion_tokens?: unknown; prompt_tokens_details?: { cached_tokens?: unknown }; prompt_cache_hit_tokens?: unknown; cache_read_input_tokens?: unknown }
+      | undefined;
+    if (u && typeof u === 'object') {
+      const cached = Number(u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? u.cache_read_input_tokens) || 0;
+      this.usage = { promptTokens: Number(u.prompt_tokens) || 0, completionTokens: Number(u.completion_tokens) || 0, ...(cached ? { cachedTokens: cached } : {}) };
+    }
     const choice = (Array.isArray(c.choices) ? c.choices[0] : null) as Record<string, unknown> | null;
     if (!choice) return null;
     if (typeof choice.finish_reason === 'string') this.finish = choice.finish_reason;
@@ -383,7 +393,8 @@ export class ChatAssembler {
 // ── checking what the renderer asks for ────────────────────────────────────
 /** Stays under the license server's 4.5 MB request limit with room for the envelope. */
 export const MAX_REQUEST_CHARS = 4_000_000;
-export const MAX_OUTPUT_TOKENS = 16_384;
+/** The most output tokens the app asks for in one request (the license server may set less). */
+export const MAX_OUTPUT_TOKENS = 131_072;
 const ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 
 /**

@@ -53,6 +53,11 @@ export interface ToolHost {
   budget: number;
   /** Chat mode: the files can be looked at but not changed */
   readOnly?: boolean;
+  /**
+   * What read_file returned earlier in this turn (by path and lines). Reading the same unchanged
+   * text again then answers with a short note instead, as the text is already in the conversation.
+   */
+  readCache?: Map<string, string>;
 }
 
 const MAX_READ_BYTES = 4 * 1024 * 1024;
@@ -239,8 +244,16 @@ export async function runTool(call: AgentToolCall, host: ToolHost): Promise<{ re
     switch (call.function.name) {
       case 'list_files':
         return await listFiles(ws, cleanPath(args.path), int(args.depth));
-      case 'read_file':
-        return await readFile(ws, args.path, int(args.start_line), int(args.end_line), host.budget);
+      case 'read_file': {
+        const got = await readFile(ws, args.path, int(args.start_line), int(args.end_line), host.budget);
+        if (!host.readCache || got.activity.error) return got;
+        const key = `${cleanPath(args.path)}:${int(args.start_line) ?? ''}-${int(args.end_line) ?? ''}`;
+        if (host.readCache.get(key) === got.result) {
+          return { result: `${cleanPath(args.path)} is unchanged since you read it earlier in this turn (same lines): use that text above.`, activity: got.activity };
+        }
+        host.readCache.set(key, got.result);
+        return got;
+      }
       case 'search_files':
         return await searchFiles(ws, str(args.query), cleanPath(args.path), args.regex === true, args.case_sensitive === true);
       case 'edit_file':

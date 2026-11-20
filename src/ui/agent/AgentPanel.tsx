@@ -35,7 +35,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { estimateTokens, fileBudget, historyBudget, limitImages, trimHistory } from '../../core/agent/context';
+import { compactHistory, estimateTokens, fileBudget, historyBudget, limitImages, trimHistory } from '../../core/agent/context';
 import { attachmentFromFile, chipsOf, composeMessage, fileAttachment, imageAttachment, type Attachment, type AttachmentChip } from './attachments';
 import { loadSession, saveSession, sessionTitle, type SessionMeta } from './session-store';
 import { AttachmentChips, ContextRing, FilePicker, SessionHistory } from './panel-parts';
@@ -43,6 +43,7 @@ import { clip, type Diff } from '../../core/agent/edits';
 import {
   DEFAULT_AGENT_MODEL,
   formatContext,
+  MAX_OUTPUT_TOKENS,
   type AgentMessage,
   type AgentModel,
   type AgentStatus,
@@ -64,7 +65,18 @@ type Item =
   | { kind: 'notice'; id: string; text: string; error?: boolean };
 
 const MAX_STEPS = 25;
-const OUTPUT_TOKENS = 8192;
+/** Output tokens asked for when the license server doesn't say its limit, and the fallback when a provider refuses more. */
+const OUTPUT_TOKENS = 16_384;
+const SAFE_OUTPUT_TOKENS = 8192;
+
+/**
+ * The longest answer to ask for: the license server's limit, but at most a quarter of the
+ * model's context (the rest is for the conversation). Only what is written is paid for.
+ */
+function outputTokens(serverMax: number | undefined, contextLength: number): number {
+  const cap = Math.min(MAX_OUTPUT_TOKENS, serverMax || OUTPUT_TOKENS);
+  return contextLength > 0 ? Math.max(Math.min(cap, 4096), Math.min(cap, Math.floor(contextLength / 4))) : cap;
+}
 const STORE = { model: 'fe.agent.model', mode: 'fe.agent.mode', auto: 'fe.agent.autoApply', width: 'fe.agent.width' };
 
 function load(key: string): string | null {
@@ -134,8 +146,8 @@ function systemPrompt(mode: Mode, ws: AgentWorkspace, budget: number, overview?:
   }
   if (ws.folder && overview) parts.push(`Files in "${ws.folder.name}" (two levels):\n${overview}`);
   if (ws.active && path) {
-    const sel = ws.active.getSelection();
-    parts.push(`The file on screen is ${path}${sel ? `; the cursor is on line ${sel.cursorLine}` : ''}.`);
+    // (where the cursor is goes with the user's message, so this prompt stays the same between requests)
+    parts.push(`The file on screen is ${path}.`);
     if (ws.active.kind === 'document') {
       parts.push(
         `${path} is a ${ws.active.format ?? 'Word-style document'} open in the document editor, not code: you see it as text, one line per paragraph. ` +
@@ -385,6 +397,8 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
   const [picking, setPicking] = useState(false);
   /** the last answer's real prompt size against our estimate of it, to correct the context meter */
   const calibration = useRef(1);
+  /** the oldest turns of this session were left out to fit the context */
+  const trimmed = useRef(false);
   /** bumps on New session, so a turn still winding down can't write into the new one */
   const session = useRef(0);
   const run = useRef<{ cancelled: boolean; requestId: string | null } | null>(null);
@@ -515,6 +529,8 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
       const fence = fenceFor(picked);
       content = `Selected in ${path} (lines ${sel.fromLine}–${sel.toLine}):\n${fence}\n${picked}\n${fence}\n\n${text}`;
       note = `With the selection in ${ws.active!.name} (lines ${sel.fromLine}–${sel.toLine})`;
+    } else if (sel && ws.active) {
+      content = `(In ${activePath(ws) ?? ws.active.name}, the cursor is on line ${sel.cursorLine}.)\n\n${text}`;
     }
     const sent = attachments;
     // attached files go before the words (cut to what the model can take), pictures after them
@@ -530,21 +546,37 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
     };
     show({ kind: 'user', id: uid('u'), text, note, attachments: sent.length ? chipsOf(sent) : undefined });
     hist.push({ role: 'user', content });
+    // earlier turns get cheaper to resend: what tools returned and the text of applied edits become short notes
+    const compacted = compactHistory(hist);
+    if (compacted.saved > 0) hist.splice(0, hist.length, ...compacted.history);
     const me = { cancelled: false, requestId: null as string | null };
     run.current = me;
     setBusy(true);
     const ctx = chosen?.contextLength ?? 0;
     const budget = fileBudget(ctx);
+    let maxTokens = outputTokens(usage?.maxOutputTokens, ctx);
+    // files read this turn, so reading one again unchanged costs a line instead of the whole file
+    const readCache = new Map<string, string>();
+    // The instructions are made once per turn: every request of the turn then starts with the same
+    // text, which providers cache (the repeated start of a prompt is billed at a fraction).
+    const first = getWorkspace();
+    // a map of the folder, so the model knows its files are there (cached for a moment)
+    const overview = first.folder ? await folderOverview(first.folder).catch(() => undefined) : undefined;
+    const system = systemPrompt(mode, first, budget, overview);
     try {
       for (let step = 0; step < MAX_STEPS && !me.cancelled; step++) {
         const now = getWorkspace();
-        // a map of the folder, so the model knows its files are there (cached for a moment)
-        const overview = now.folder ? await folderOverview(now.folder).catch(() => undefined) : undefined;
-        const system = systemPrompt(mode, now, budget, overview);
         // Agent mode reads and changes files; Chat mode can look at them but not change them
         const tools = now.folder || now.active ? (mode === 'agent' ? AGENT_TOOLS : READ_TOOLS) : undefined;
         // older pictures become a note: a request carries a few at most
-        const { messages } = trimHistory(limitImages(hist, 4), historyBudget(ctx, OUTPUT_TOKENS) - system.length);
+        // when the conversation outgrows the context, the oldest turns go for good, with a margin, so
+        // the start of the prompt then stays the same for a while (and keeps being cached)
+        const fit = trimHistory(hist, historyBudget(ctx, maxTokens) - system.length, 0.25);
+        if (fit.dropped) {
+          hist.splice(0, hist.length, ...fit.messages);
+          trimmed.current = true;
+        }
+        const messages = limitImages(hist, 4);
         const chatMessages: AgentMessage[] = [{ role: 'system', content: system }, ...messages];
         const promptTokens = Math.round(JSON.stringify(chatMessages).length / 4);
         /** One request, its answer streamed into a new assistant item. */
@@ -571,7 +603,13 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
           });
           setLiveTokens(promptTokens);
           try {
-            const res = await bridge.chat(rid, { model, messages: chatMessages, tools, maxTokens: OUTPUT_TOKENS, ...extra });
+            let res = await bridge.chat(rid, { model, messages: chatMessages, tools, maxTokens, ...extra });
+            // a provider that refuses that long an answer: ask again for a shorter one (and keep to it)
+            if (!res.ok && res.code !== 'cancelled' && maxTokens > SAFE_OUTPUT_TOKENS && /max_tokens|max_completion_tokens|maximum (output|completion)|output tokens/i.test(res.error) && !me.cancelled) {
+              maxTokens = SAFE_OUTPUT_TOKENS;
+              buf.text = buf.reasoning = '';
+              res = await bridge.chat(rid, { model, messages: chatMessages, tools, maxTokens, ...extra });
+            }
             if (res.ok && res.today) setUsage(res.today);
             // how far off the context estimate was, so the meter shows real sizes
             if (res.ok && res.usage?.promptTokens) {
@@ -606,7 +644,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
           break;
         }
         const { content: answer, reasoning, toolCalls } = res.message;
-        const meta = [res.model && res.model !== model ? `answered by ${res.model}` : '', res.usage ? `${res.usage.promptTokens.toLocaleString()} → ${res.usage.completionTokens.toLocaleString()} tokens` : '']
+        const meta = [res.model && res.model !== model ? `answered by ${res.model}` : '', res.usage ? `${res.usage.promptTokens.toLocaleString()} → ${res.usage.completionTokens.toLocaleString()} tokens${res.usage.cachedTokens ? ` (${res.usage.cachedTokens.toLocaleString()} cached)` : ''}` : '']
           .filter(Boolean)
           .join(' · ');
         if (!answer.trim() && !reasoning && !toolCalls.length) {
@@ -634,6 +672,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
           const { result, activity } = await runTool(call, {
             ws: getWorkspace,
             budget,
+            readCache,
             readOnly: mode !== 'agent',
             confirm: (p: EditProposal) => {
               editId = uid('e');
@@ -713,6 +752,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
     session.current++;
     sessionMeta.current = { id: uid('s'), createdAt: Date.now() };
     history.current = [];
+    trimmed.current = false;
     calibration.current = 1;
     setItems([]);
     setAttachments([]);
@@ -727,6 +767,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
     session.current++;
     sessionMeta.current = { id: meta.id, createdAt: meta.createdAt };
     history.current = data.history;
+    trimmed.current = false;
     calibration.current = 1;
     setItems([...data.items, { kind: 'notice', id: uid('n'), text: `Reopened “${meta.title}”. The agent continues with the files open now${meta.where ? ` (it worked on ${meta.where})` : ''}.` }]);
     setAttachments([]);
@@ -776,8 +817,8 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
     const budget = fileBudget(total);
     const system = systemPrompt(mode, getWorkspace(), budget);
     const next: AgentMessage[] = attachments.length ? [{ role: 'user', content: composeMessage('', attachments, budget) }] : [];
-    const { messages, dropped } = trimHistory(limitImages([...history.current, ...next], 4), historyBudget(total, OUTPUT_TOKENS) - system.length);
-    return { used: Math.round(estimateTokens(system, messages) * calibration.current), total, dropped: dropped > 0 };
+    const { messages, dropped } = trimHistory(limitImages([...history.current, ...next], 4), historyBudget(total, outputTokens(usage?.maxOutputTokens, total)) - system.length);
+    return { used: Math.round(estimateTokens(system, messages) * calibration.current), total, dropped: dropped > 0 || trimmed.current };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [items, attachments, chosen, mode, context, usable, busy]);
 

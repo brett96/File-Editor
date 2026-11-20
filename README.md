@@ -233,6 +233,19 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   the conversation takes (instructions, files read, history and what is about to be sent),
   corrected by the model's own token counts as answers come in. When it fills, the oldest turns
   are left out.
+- **Token use.** The chat API is stateless, so every request carries the conversation. The
+  panel keeps that cheap (`compactHistory`/`trimHistory` in `src/core/agent/context.ts`):
+  the instructions are built once per turn, and the cursor line travels with the message, so
+  every request starts with the same text and providers can serve it from their prompt cache.
+  Cached prompt tokens are shown on each answer and counted at a tenth by the license server.
+  Once a turn is over, what tools returned and the text of applied edits become one-line notes
+  (the agent reads a file again if it needs it). Reading the same unchanged file twice in a
+  turn answers with a note. When the context fills, the oldest turns are dropped with a 25%
+  margin, so the start of the prompt stays put for a while.
+- **Answer length.** The panel asks for the license server's per-request output limit
+  (`maxOutputTokens`, default 32,768, up to 131,072), but at most a quarter of the model's
+  context. If a provider refuses that, it asks again for 8,192. Only tokens actually written
+  are paid for.
 - **Earlier sessions.** Sessions are saved on this computer (IndexedDB, newest 100). The history
   button lists them with search; open one to read it and carry on, or delete it.
 - **Usage meter.** Under the model list: today's requests and tokens against the license's
@@ -244,7 +257,7 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   (which also stops it, and its token use, on the server), and the panel retries once with a
   repetition penalty. A second loop is reported with a suggestion to pick another model.
 - **Network.** Agent requests go through their own in-memory Electron session that can reach
-  only the license server. The app also checks and caps requests itself (16K output tokens, 3
+  only the license server. The app also checks and caps requests itself (128K output tokens, 3
   running and 40 a minute, 25 tool steps per turn), so a runaway loop stops before the server
   has to refuse it. `FILE_EDITOR_LICENSE_API` points a dev build at a local server, as for
   activation.

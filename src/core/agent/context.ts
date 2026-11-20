@@ -31,7 +31,7 @@ const size = (m: AgentMessage) =>
  * history fits `maxChars`. The latest turn is always kept whole, so a tool call is never sent
  * without its result. When even that is too big, long tool results in it are shortened.
  */
-export function trimHistory(history: AgentMessage[], maxChars: number): { messages: AgentMessage[]; dropped: number } {
+export function trimHistory(history: AgentMessage[], maxChars: number, headroom = 0): { messages: AgentMessage[]; dropped: number } {
   const turns: AgentMessage[][] = [];
   for (const m of history) {
     if (m.role === 'user' || !turns.length) turns.push([m]);
@@ -39,7 +39,10 @@ export function trimHistory(history: AgentMessage[], maxChars: number): { messag
   }
   let total = history.reduce((n, m) => n + size(m), 0);
   let dropped = 0;
-  while (turns.length > 1 && total > maxChars) {
+  // once over, drop down to (1 - headroom) of the limit: the start of the conversation then stays
+  // the same for the next several requests, which keeps the provider's prompt cache useful
+  const goal = total > maxChars ? maxChars * (1 - headroom) : maxChars;
+  while (turns.length > 1 && total > goal) {
     const t = turns.shift()!;
     total -= t.reduce((n, m) => n + size(m), 0);
     dropped += t.length;
@@ -86,4 +89,54 @@ export function limitImages(history: AgentMessage[], max: number): AgentMessage[
     out[i] = { ...m, content: parts };
   }
   return out;
+}
+
+/** Tool results and edit arguments longer than this are shortened once their turn is over. */
+const COMPACT_OVER = 800;
+
+/**
+ * Makes earlier turns cheaper to resend. Every request carries the whole conversation, so once a
+ * turn is finished: what tools returned (file contents, search results) becomes a one-line note
+ * (the agent reads a file again if it needs it), and the text written by edit_file / write_file
+ * (already applied) is left out of their arguments. The latest turn is left whole. Pure; the
+ * result is the history kept from then on, so each turn is compacted once and the start of the
+ * conversation stays the same afterwards (good for prompt caching).
+ */
+export function compactHistory(history: AgentMessage[]): { history: AgentMessage[]; saved: number } {
+  let lastUser = -1;
+  for (let i = history.length - 1; i >= 0; i--) if (history[i].role === 'user') {
+    lastUser = i;
+    break;
+  }
+  let saved = 0;
+  const out = history.map((m, i): AgentMessage => {
+    if (i >= lastUser) return m;
+    if (m.role === 'tool' && m.content.length > COMPACT_OVER && !m.content.startsWith('[earlier result')) {
+      const first = m.content.split('\n', 1)[0].slice(0, 160);
+      const note = `[earlier result, ${m.content.length.toLocaleString('en-US')} characters, left out to save space: ${first}. Call the tool again if you need it.]`;
+      saved += m.content.length - note.length;
+      return { ...m, content: note };
+    }
+    if (m.role === 'assistant' && m.tool_calls?.length) {
+      let changed = false;
+      const calls = m.tool_calls.map((c) => {
+        if ((c.function.name !== 'write_file' && c.function.name !== 'edit_file') || c.function.arguments.length <= COMPACT_OVER) return c;
+        try {
+          const args = JSON.parse(c.function.arguments) as Record<string, unknown>;
+          for (const k of ['content', 'old_string', 'new_string']) {
+            if (typeof args[k] === 'string' && (args[k] as string).length > 200) args[k] = `[${(args[k] as string).length} characters, already applied]`;
+          }
+          const next = JSON.stringify(args);
+          saved += c.function.arguments.length - next.length;
+          changed = true;
+          return { ...c, function: { ...c.function, arguments: next } };
+        } catch {
+          return c;
+        }
+      });
+      return changed ? { ...m, tool_calls: calls } : m;
+    }
+    return m;
+  });
+  return { history: out, saved };
 }

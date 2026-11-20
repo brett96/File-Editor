@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { trimHistory } from '../src/core/agent/context';
+import { compactHistory, trimHistory } from '../src/core/agent/context';
 import { applyEdit, lineDiff, minimalChange } from '../src/core/agent/edits';
 import { ChatAssembler, RepetitionDetector, SseParser, buildChatBody, errorFromResponse, formatContext, parseModels, parseUsageToday, type AgentMessage } from '../src/core/agent/protocol';
 import { memoryFolder } from '../src/platform/folders';
@@ -32,6 +32,9 @@ describe('agent stream parsing', () => {
     expect(r.usage).toEqual({ promptTokens: 10, completionTokens: 5 });
     expect(r.model).toBe('m2');
     expect(r.costUsd).toBe(0.001);
+    const b = new ChatAssembler();
+    b.push({ choices: [{ delta: { content: 'x' }, finish_reason: 'stop' }], usage: { prompt_tokens: 900, completion_tokens: 5, prompt_tokens_details: { cached_tokens: 800 } } });
+    expect(b.result().usage).toEqual({ promptTokens: 900, completionTokens: 5, cachedTokens: 800 });
   });
 
   it('reads a whole (non-streamed) completion and inline <think> blocks', () => {
@@ -71,6 +74,7 @@ describe('stuck models', () => {
   it('reads today’s usage and passes a repetition penalty on', () => {
     expect(parseUsageToday({ requests: 3, tokens: 1200, dailyRequests: 300, dailyTokens: 2e6, resetsAt: '2026-11-21T00:00:00.000Z', paused: false })).toMatchObject({ requests: 3, dailyRequests: 300 });
     expect(parseUsageToday({ requests: 1 })).toBeNull();
+    expect(parseUsageToday({ requests: 0, tokens: 0, dailyRequests: 1, dailyTokens: 1, resetsAt: 'x', maxOutputTokens: 32768 })?.maxOutputTokens).toBe(32768);
     const a = new ChatAssembler();
     a.push({ choices: [{ delta: { content: 'x' } }] });
     a.push({ fe_usage: { requests: 4, tokens: 10, dailyRequests: 300, dailyTokens: 1000, resetsAt: '', paused: false } });
@@ -104,7 +108,7 @@ describe('agent models and requests', () => {
     expect('error' in buildChatBody({ model: 'm', messages: [{ role: 'admin', content: 'hi' }] })).toBe(true);
     const ok = buildChatBody({ model: 'm', messages: [{ role: 'user', content: 'hi', extra: 'dropped' }], maxTokens: 999999, tools: [{ type: 'function', function: { name: 'f', description: '', parameters: {} } }] });
     if ('error' in ok) throw new Error(ok.error);
-    expect(ok.body).toMatchObject({ model: 'm', stream: true, max_tokens: 16384, tool_choice: 'auto', messages: [{ role: 'user', content: 'hi' }] });
+    expect(ok.body).toMatchObject({ model: 'm', stream: true, max_tokens: 131072, tool_choice: 'auto', messages: [{ role: 'user', content: 'hi' }] });
     expect((ok.body.messages as object[])[0]).not.toHaveProperty('extra');
   });
 
@@ -169,6 +173,46 @@ describe('agent context', () => {
     expect(dropped).toBe(2);
     expect(messages.map((m) => m.role)).toEqual(['user', 'assistant', 'tool']);
   });
+
+  it('frees a margin when it trims, so the start stays the same for a while', () => {
+    const turn = (n: number): AgentMessage[] => [
+      { role: 'user', content: `q${n}` + 'x'.repeat(95) },
+      { role: 'assistant', content: 'y'.repeat(100) },
+    ];
+    const history = [1, 2, 3, 4, 5].flatMap(turn); // ~1000 characters
+    const plain = trimHistory(history, 900);
+    const roomy = trimHistory(history, 900, 0.25);
+    expect(plain.dropped).toBeGreaterThan(0);
+    expect(roomy.dropped).toBeGreaterThan(plain.dropped);
+    expect(JSON.stringify(roomy.messages).length).toBeLessThan(JSON.stringify(plain.messages).length * 0.85);
+    expect(roomy.messages[0].role).toBe('user');
+    expect(trimHistory(history, 2000, 0.25).dropped).toBe(0); // under the limit: untouched
+  });
+
+  it('compacts finished turns: tool results and applied edit text become notes', () => {
+    const file = 'line\n'.repeat(400);
+    const edit = JSON.stringify({ path: 'a.ts', old_string: 'o'.repeat(500), new_string: 'n'.repeat(500) });
+    const history: AgentMessage[] = [
+      { role: 'user', content: 'fix it' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'r', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }] },
+      { role: 'tool', tool_call_id: 'r', content: `a.ts: 400 lines\n\n${file}` },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'e', type: 'function', function: { name: 'edit_file', arguments: edit } }] },
+      { role: 'tool', tool_call_id: 'e', content: 'Applied.' },
+      { role: 'assistant', content: 'Done.' },
+      { role: 'user', content: 'now this' },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'r2', type: 'function', function: { name: 'read_file', arguments: '{"path":"a.ts"}' } }] },
+      { role: 'tool', tool_call_id: 'r2', content: file },
+    ];
+    const { history: out, saved } = compactHistory(history);
+    expect(saved).toBeGreaterThan(2500);
+    expect(out[2].content).toMatch(/^\[earlier result, 2,\d{3} characters, left out.*a\.ts: 400 lines/);
+    const args = JSON.parse((out[3] as Extract<AgentMessage, { role: 'assistant' }>).tool_calls![0].function.arguments) as Record<string, string>;
+    expect(args).toEqual({ path: 'a.ts', old_string: '[500 characters, already applied]', new_string: '[500 characters, already applied]' });
+    expect(out[4].content).toBe('Applied.');
+    expect(out[8].content).toBe(file); // the current turn is whole
+    // compacting again changes nothing (the start of the conversation stays the same)
+    expect(compactHistory(out).saved).toBe(0);
+  });
 });
 
 // ── tools against an in-memory folder and a fake code tab ──────────────────
@@ -224,6 +268,15 @@ describe('agent tools', () => {
       openElsewhere: () => false,
       folderChanged: () => undefined,
     };
+  });
+
+  it('answers a repeated, unchanged read of the same turn with a short note', async () => {
+    const h = { ...host(), readCache: new Map<string, string>() };
+    const first = await runTool(call('read_file', { path: 'src/a.ts' }), h);
+    expect(first.result).toContain('export const a = 1;');
+    expect((await runTool(call('read_file', { path: 'src/a.ts' }), h)).result).toMatch(/unchanged since you read it/);
+    files.set('src/a.ts', new Blob(['export const a = 2;\n']));
+    expect((await runTool(call('read_file', { path: 'src/a.ts' }), h)).result).toContain('export const a = 2;');
   });
 
   it('lists the folder without entering dependency folders', async () => {
@@ -336,7 +389,7 @@ describe('agent requests (main process)', () => {
     expect(url).toBe('https://license.example.test/api/agent/chat');
     expect(init.headers).not.toHaveProperty('Authorization');
     const sent = JSON.parse(String(init.body));
-    expect(sent).toMatchObject({ token: 'FE1.tok.sig', deviceId: 'd'.repeat(64), request: { model: 'm', maxTokens: 16384 } });
+    expect(sent).toMatchObject({ token: 'FE1.tok.sig', deviceId: 'd'.repeat(64), request: { model: 'm', maxTokens: 131072 } });
     expect((sender as unknown as { send: ReturnType<typeof vi.fn> }).send).toHaveBeenCalledWith('agent-delta', 'r2', { content: 'Hi' });
 
     // the server's refusals are shown as it words them; a lost license is re-checked
