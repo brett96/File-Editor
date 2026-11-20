@@ -45,3 +45,14 @@ describe('phone view', () => {
     expect(snap.sheets[snap.sheetOrder[0]].freeze).toMatchObject({ xSplit: 0, ySplit: 3 });
   });
 });
+
+describe('phone toolbars', () => {
+  it('never mask the strips menus open from (a mask hides and blocks the menus)', async () => {
+    const { readFileSync } = await import('node:fs');
+    const css = ['src/styles.css', 'src/media.css'].map((f) => readFileSync(f, 'utf8')).join('\n');
+    // every rule that sets a mask must not target the top bar actions or a toolbar
+    for (const m of css.matchAll(/([^{}]+)\{[^}]*\bmask(-image)?\s*:\s*(?!none)[^;]+;[^}]*\}/g)) {
+      expect(m[1]).not.toMatch(/\.topbar-actions|\.toolbar\b/);
+    }
+  });
+});
