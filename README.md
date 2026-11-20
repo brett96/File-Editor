@@ -265,8 +265,22 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   `node_modules` are skipped), edit files by exact string replacement, and create files. Each
   change is shown as a diff to **Apply** or **Reject** (or applied straight away with *Apply
   changes without asking*). A file open in a code tab is changed in the tab (one undo step, saved
-  as usual); other files are written in place. It cannot delete or rename files, run commands or
-  reach the internet.
+  as usual); other files are written in place.
+- **Permissions** (shield button under the message box, `src/core/agent/permissions.ts`). Three
+  more capabilities, each *Off*, *Ask every time* (default), *Ask once per session* or *Allowed
+  without asking*; a tool that is off isn't offered to the model at all, and the instructions
+  say what it may and may not do. Asking shows a card with the exact file, command or address,
+  and Allow / Deny; a denial goes back to the model as such.
+  - *Delete and rename files*: `delete_file` (to the recycle bin / Trash in the desktop app),
+    `rename_file` (rename, or move a file; open tabs follow). Agent mode only.
+  - *Run commands and tests*: `run_command` runs a shell command in a folder opened in the desktop
+    app (`electron/agent-actions.ts`): the user's shell (cmd.exe on Windows), the folder's id and
+    a relative directory only (checked to stay inside it), stdin closed, `CI=1`, a time limit
+    (default 120 s, at most 900), output streamed into the chat and capped (start and end kept),
+    and Stop kills the whole process tree. Agent mode only.
+  - *Go online*: `web_search` (DuckDuckGo's HTML results) and `fetch_url` (a page as text, with
+    its links, read on in parts). Addresses on this computer or the local network are refused,
+    checked on the address actually connected to and on every redirect. Chat mode too.
 
 Publish `SHA256SUMS` next to the downloads so users can verify them:
 

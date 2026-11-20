@@ -3432,6 +3432,134 @@ button.brand:focus-visible {
   color: var(--danger);
 }
 
+/* a command's output, under its line in the conversation */
+.agent-tool {
+  flex-wrap: wrap;
+}
+
+.agent-tool-output {
+  flex-basis: 100%;
+  min-width: 0;
+}
+
+.agent-tool-output summary {
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.agent-tool-output pre {
+  margin: 4px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* the agent asks to delete/rename, run a command or go online */
+.agent-permission {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.agent-permission.is-pending {
+  border-color: var(--accent);
+}
+
+.agent-permission-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px 4px;
+  overflow-wrap: anywhere;
+}
+
+.agent-permission-head svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.agent-permission-code {
+  margin: 4px 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 160px;
+  overflow: auto;
+}
+
+.agent-permission-detail {
+  margin: 2px 8px 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.agent-permission .agent-edit-foot {
+  flex-wrap: wrap;
+}
+
+.agent-permission-hint {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+/* Permissions menu (shield button) */
+.agent-permissions {
+  width: min(360px, calc(100vw - 32px));
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-permissions-title {
+  font-weight: 600;
+}
+
+.agent-permission-row {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.agent-permission-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-permission-label {
+  font-weight: 500;
+}
+
+.agent-permission-help,
+.agent-permissions-note {
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.4;
+  margin: 0;
+}
+
+.agent-permission-row select {
+  align-self: stretch;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
 .agent-edit {
   border: 1px solid var(--border);
   border-radius: 8px;

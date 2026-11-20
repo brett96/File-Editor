@@ -170,6 +170,12 @@ export interface DesktopBridge {
     chat(id: string, request: AgentChatRequest): Promise<AgentResponse<AgentChatResult>>;
     cancel(id: string): void;
     onDelta(callback: (id: string, delta: AgentDelta) => void): () => void;
+    /** runs a shell command in an opened desktop folder (when the user allows it) */
+    run?(opId: string, request: AgentRunRequest): Promise<AgentRunResult | AgentFailure>;
+    cancelRun?(opId: string): void;
+    onRunOutput?(callback: (opId: string, chunk: string) => void): () => void;
+    webSearch?(query: string): Promise<{ ok: true; results: { title: string; url: string; snippet: string }[] } | AgentFailure>;
+    fetchUrl?(url: string): Promise<AgentPage | AgentFailure>;
   };
   /** Git: runs the user's git in the repository of an opened folder or file (see electron/git.ts). */
   git?: {
@@ -561,6 +567,36 @@ export async function readDroppedFile(file: File, handle?: Promise<FileSystemHan
 
 export async function fileBytes(file: OpenedFile): Promise<Uint8Array> {
   return new Uint8Array(await file.blob.arrayBuffer());
+}
+
+export type AgentFailure = { ok: false; code: string; error: string };
+export interface AgentRunRequest {
+  folderId: string;
+  command: string;
+  /** directory relative to the folder root ('' for the root) */
+  cwd?: string;
+  timeoutSeconds?: number;
+}
+export interface AgentRunResult {
+  ok: true;
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  cancelled: boolean;
+  output: string;
+  cut: number;
+  durationMs: number;
+  shell: string;
+}
+export interface AgentPage {
+  ok: true;
+  url: string;
+  status: number;
+  contentType: string;
+  title: string;
+  text: string;
+  links: { text: string; url: string }[];
+  truncated: boolean;
 }
 
 /** The desktop app's coding-agent API, or null in the browser (the agent needs a desktop license). */

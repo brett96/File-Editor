@@ -279,6 +279,55 @@ describe('agent tools', () => {
     expect((await runTool(call('read_file', { path: 'src/a.ts' }), h)).result).toContain('export const a = 2;');
   });
 
+  it('deletes, renames and moves files only with permission', async () => {
+    const asked: string[] = [];
+    let allow = false;
+    const renamed: [string, string][] = [];
+    ws.renamed = (a, b) => renamed.push([a, b]);
+    const h = { ...host(), actions: { budget: 50_000, permit: async (r: { title: string }) => (asked.push(r.title), allow) } };
+    const denied = await runTool(call('delete_file', { path: 'src/a.ts' }), h);
+    expect(denied.result).toMatch(/did not allow/);
+    expect(files.has('src/a.ts')).toBe(true);
+    allow = true;
+    expect((await runTool(call('delete_file', { path: 'src/a.ts' }), h)).result).toMatch(/^Deleted src\/a\.ts/);
+    expect(files.has('src/a.ts')).toBe(false);
+    expect((await runTool(call('rename_file', { path: 'src/b.ts', new_path: 'src/main.ts' }), h)).result).toBe('Renamed src/b.ts to src/main.ts.');
+    expect((await runTool(call('rename_file', { path: 'src/main.ts', new_path: 'lib/deep/main.ts' }), h)).result).toBe('Moved src/main.ts to lib/deep/main.ts.');
+    expect(await text('lib/deep/main.ts')).toContain('console.log(a);');
+    expect(files.has('src/main.ts')).toBe(false);
+    expect(renamed).toEqual([['src/b.ts', 'src/main.ts'], ['src/main.ts', 'lib/deep/main.ts']]);
+    expect(asked).toEqual(['Delete src/a.ts', 'Delete src/a.ts', 'Rename src/b.ts to main.ts', 'Move src/main.ts to lib/deep/main.ts']);
+    expect((await runTool(call('delete_file', { path: 'nope.ts' }), h)).result).toMatch(/does not exist/);
+    // Chat mode, or permissions turned off
+    expect((await runTool(call('delete_file', { path: 'logo.png' }), { ...h, readOnly: true })).result).toMatch(/Chat mode/);
+    const off = { ...host(), actions: { budget: 1000, permit: () => Promise.reject(new Error('“Delete and rename files” is turned off')) } };
+    expect((await runTool(call('delete_file', { path: 'logo.png' }), off)).result).toMatch(/turned off/);
+    expect((await runTool(call('delete_file', { path: 'logo.png' }), host())).result).toMatch(/isn't available/);
+  });
+
+  it('runs commands and reads the web through the desktop bridge', async () => {
+    (ws.folder as { desktopId?: string }).desktopId = 'f1';
+    const runs: unknown[] = [];
+    const out: string[] = [];
+    const actions = {
+      run: async (_id: string, req: unknown) => (runs.push(req), { ok: true as const, exitCode: 1, signal: null, timedOut: false, cancelled: false, output: '1 failed\n', cut: 0, durationMs: 1234, shell: 'sh' }),
+      onRunOutput: (cb: (id: string, c: string) => void) => (cb('other', 'x'), () => undefined),
+      webSearch: async () => ({ ok: true as const, results: [{ title: 'Vitest', url: 'https://vitest.dev', snippet: 'fast' }] }),
+      fetchUrl: async () => ({ ok: true as const, url: 'https://vitest.dev/', status: 200, contentType: 'text/html', title: 'Vitest', text: 'x'.repeat(3000), links: [{ text: 'Guide', url: 'https://vitest.dev/guide' }], truncated: false }),
+    };
+    const h = { ...host(), actions: { budget: 1000, actions, onOutput: (c: string) => out.push(c), permit: async () => true } };
+    const ran = await runTool(call('run_command', { command: 'npm test', cwd: './src/', timeout_seconds: 30 }), h);
+    expect(runs).toEqual([{ folderId: 'f1', command: 'npm test', cwd: 'src', timeoutSeconds: 30 }]);
+    expect(ran.result).toBe('$ npm test\n(exit code 1, 1.2 s)\n\n1 failed');
+    expect(ran.activity).toMatchObject({ label: 'Ran npm test — exit code 1', error: true });
+    expect(out).toEqual([]); // output of another command isn't shown here
+    expect((await runTool(call('web_search', { query: 'vitest' }), h)).result).toBe('Results for “vitest”:\n1. Vitest\n   https://vitest.dev\n   fast');
+    const page = await runTool(call('fetch_url', { url: 'https://vitest.dev/' }), h);
+    expect(page.result).toMatch(/^Vitest\nhttps:\/\/vitest\.dev\/\n\nx+/);
+    expect(page.result).toMatch(/read on with start_char=\d+/);
+    expect(page.result).toContain('- Guide: https://vitest.dev/guide');
+  });
+
   it('lists the folder without entering dependency folders', async () => {
     const { result } = await runTool(call('list_files', {}), host());
     expect(result).toContain('node_modules/ (not listed)');

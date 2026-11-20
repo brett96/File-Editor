@@ -1,7 +1,8 @@
 /**
  * What the coding agent can do: list, read and search the opened folder (or the one open
  * file), and propose edits. Nothing is changed without the user's OK (unless they turned on
- * "Apply changes without asking"); it cannot delete, rename, run anything or go online.
+ * "Apply changes without asking"). Deleting and renaming, commands and the web are in
+ * actions.ts, each behind the permissions the user sets in the panel.
  *
  * Edits to a file that is open in a code tab are made in that tab (one undo step, saved like
  * any other change); edits to other files of the folder are written to the file.
@@ -11,6 +12,8 @@ import type { AgentToolCall, AgentToolSpec } from '../../core/agent/protocol';
 import { dirOf, leafOf, safeSegments } from '../../core/web/paths';
 import { IGNORED_DIRS, type OpenedFolder } from '../../platform/folders';
 import type { CodeEditorAccess } from './editors';
+import { runAction, type ActionHost } from './actions';
+import { toolCapability } from '../../core/agent/permissions';
 
 /** What the agent is working on, as the app shell sees it right now. */
 export interface AgentWorkspace {
@@ -23,6 +26,8 @@ export interface AgentWorkspace {
   openElsewhere(path: string): boolean;
   /** the folder's file list should show a new file */
   folderChanged(dir: string): void;
+  /** a file or folder of the folder was renamed or moved (tabs follow it) */
+  renamed?(from: string, to: string): void;
   /** opens a file of the folder in a tab and resolves to its editor once it is ready (Word files the agent changes) */
   openInTab?(path: string): Promise<CodeEditorAccess | null>;
 }
@@ -58,6 +63,8 @@ export interface ToolHost {
    * text again then answers with a short note instead, as the text is already in the conversation.
    */
   readCache?: Map<string, string>;
+  /** asking permission, commands and the web, for the tools in actions.ts */
+  actions?: ActionHost;
 }
 
 const MAX_READ_BYTES = 4 * 1024 * 1024;
@@ -266,8 +273,18 @@ export async function runTool(call: AgentToolCall, host: ToolHost): Promise<{ re
         }
         if (call.function.name === 'write_file') return await writeFile(ws, host, args.path, str(args.content));
         return await editFile(ws, host, args.path, str(args.old_string), str(args.new_string), args.replace_all === true);
-      default:
+      default: {
+        const cap = toolCapability(call.function.name);
+        if (cap && host.actions) {
+          if (host.readOnly && cap !== 'web') {
+            return fail(`Can't ${call.function.name.replace(/_/g, ' ')} in Chat mode`, 'That can’t be done in Chat mode. Tell the user to switch to Agent mode (the Agent button at the top of this panel).');
+          }
+          const done = await runAction(call.function.name, args, ws, host.actions);
+          if (done) return done;
+        }
+        if (cap) return fail(`${call.function.name.replace(/_/g, ' ')} isn't available`, `${call.function.name} isn't available here: it is turned off in the agent's permissions, or this folder can't do it.`);
         return fail(`Unknown tool ${call.function.name}`, `There is no tool called ${call.function.name}. Use list_files, read_file, search_files, edit_file or write_file.`);
+      }
     }
   } catch (err) {
     return fail(`${call.function.name} failed`, err instanceof Error ? err.message : 'It did not work.');

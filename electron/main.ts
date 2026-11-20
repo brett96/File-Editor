@@ -23,6 +23,7 @@ import { constants as fsConstants } from 'node:fs';
 import { appendFile, copyFile, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { registerAgentActions, stopAllCommands } from './agent-actions';
 import { agentStatus, cancelAllChats, cancelChat, chat as agentChat, imageModels, listModels, makeImage, usageToday } from './agent';
 import { registerGitIpc } from './git';
 import { activateLicense, getLicenseState, refreshLicenseStatus } from './license';
@@ -884,6 +885,9 @@ function registerIpc() {
   });
 
   // coding agent: requests go from here to the license server, which holds the key (see agent.ts)
+  // the agent's commands and web access, when the user allows them (agent-actions.ts)
+  registerAgentActions({ assertSender, folderRoot, pathInside });
+
   ipcMain.handle('agent-status', (e) => {
     assertSender(e);
     return agentStatus();
@@ -1185,6 +1189,7 @@ app.whenReady().then(async () => {
 
 app.on('window-all-closed', () => {
   cancelAllChats();
+  stopAllCommands();
   if (process.platform !== 'darwin') app.quit();
 });
 

@@ -29,6 +29,10 @@ import {
   Lock,
   RefreshCw,
   Send,
+  ShieldCheck,
+  Terminal,
+  Globe,
+  Trash2,
   Sparkles,
   Square,
   SquarePen,
@@ -52,6 +56,8 @@ import {
 } from '../../core/agent/protocol';
 import { agentBridge } from '../../platform/host';
 import { cx } from '../components';
+import { availableCapabilities, capabilityNote, extraTools, type PermissionRequest } from './actions';
+import { CAPABILITIES, LEVELS, decision, parsePermissions, type AgentPermissions, type Capability, type PermissionLevel } from '../../core/agent/permissions';
 import { AGENT_TOOLS, READ_TOOLS, folderOverview, readForContext, runTool, type AgentWorkspace, type EditProposal } from './tools';
 import { MenuItem, Popover } from '../components';
 
@@ -60,7 +66,8 @@ type Mode = 'agent' | 'chat';
 type Item =
   | { kind: 'user'; id: string; text: string; note?: string; attachments?: AttachmentChip[] }
   | { kind: 'assistant'; id: string; text: string; reasoning: string; streaming: boolean; tool?: string; meta?: string }
-  | { kind: 'tool'; id: string; label: string; status: 'running' | 'waiting' | 'done' | 'error' }
+  | { kind: 'tool'; id: string; label: string; status: 'running' | 'waiting' | 'done' | 'error'; output?: string }
+  | { kind: 'permission'; id: string; capability: Capability; title: string; code?: string; detail?: string; level: PermissionLevel; status: 'pending' | 'allowed' | 'denied' }
   | { kind: 'edit'; id: string; path: string; diff: Diff; isNew: boolean; status: 'pending' | 'applied' | 'rejected' | 'failed' }
   | { kind: 'notice'; id: string; text: string; error?: boolean };
 
@@ -77,7 +84,7 @@ function outputTokens(serverMax: number | undefined, contextLength: number): num
   const cap = Math.min(MAX_OUTPUT_TOKENS, serverMax || OUTPUT_TOKENS);
   return contextLength > 0 ? Math.max(Math.min(cap, 4096), Math.min(cap, Math.floor(contextLength / 4))) : cap;
 }
-const STORE = { model: 'fe.agent.model', mode: 'fe.agent.mode', auto: 'fe.agent.autoApply', width: 'fe.agent.width' };
+const STORE = { model: 'fe.agent.model', mode: 'fe.agent.mode', auto: 'fe.agent.autoApply', width: 'fe.agent.width', permissions: 'fe.agent.permissions' };
 
 function load(key: string): string | null {
   try {
@@ -110,7 +117,7 @@ function activePath(ws: AgentWorkspace): string | null {
   return a.folderId && ws.folder && a.folderId === ws.folder.id && a.path ? a.path : a.name;
 }
 
-function systemPrompt(mode: Mode, ws: AgentWorkspace, budget: number, overview?: string): string {
+function systemPrompt(mode: Mode, ws: AgentWorkspace, budget: number, overview?: string, capabilities?: string): string {
   const parts = ['You are the coding assistant built into File Editor, a desktop app for editing files and code.'];
   const path = activePath(ws);
   const canWork = !!(ws.folder || ws.active);
@@ -127,7 +134,6 @@ function systemPrompt(mode: Mode, ws: AgentWorkspace, budget: number, overview?:
         '- Make focused changes with edit_file. Use write_file for new files or complete rewrites.',
         '- Keep the project’s existing style, naming and formatting.',
         '- Each change is shown to the user as a diff, and they may reject it.',
-        '- You cannot run commands or tests, delete or rename files, or use the internet.',
         '- Don’t paste whole files into your reply: change them with the tools.',
         '- When you are done, reply with a short summary of what you changed and anything the user should check.',
       ].join('\n'),
@@ -144,6 +150,7 @@ function systemPrompt(mode: Mode, ws: AgentWorkspace, budget: number, overview?:
       );
     }
   }
+  if (capabilities) parts.push(capabilities);
   if (ws.folder && overview) parts.push(`Files in "${ws.folder.name}" (two levels):\n${overview}`);
   if (ws.active && path) {
     // (where the cursor is goes with the user's message, so this prompt stays the same between requests)
@@ -412,6 +419,20 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
   const [liveTokens, setLiveTokens] = useState(0);
   const autoApplyRef = useRef(autoApply);
   autoApplyRef.current = autoApply;
+  /** whether the agent may delete/rename files, run commands, go online, and if it asks first */
+  const [permissions, setPermissions] = useState<AgentPermissions>(() => parsePermissions(load(STORE.permissions)));
+  const permissionsRef = useRef(permissions);
+  permissionsRef.current = permissions;
+  /** what the user allowed for the rest of this session ("Ask once per session") */
+  const grants = useRef(new Set<Capability>());
+  /** stops the command running now */
+  const stopCommand = useRef<(() => void) | null>(null);
+  const setPermission = (c: Capability, level: PermissionLevel) => {
+    const next = { ...permissionsRef.current, [c]: level };
+    setPermissions(next);
+    save(STORE.permissions, JSON.stringify(next));
+    if (level !== 'session') grants.current.delete(c);
+  };
 
   const usable = !!status?.licensed;
 
@@ -562,12 +583,16 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
     const first = getWorkspace();
     // a map of the folder, so the model knows its files are there (cached for a moment)
     const overview = first.folder ? await folderOverview(first.folder).catch(() => undefined) : undefined;
-    const system = systemPrompt(mode, first, budget, overview);
+    // what this turn may do beyond reading and editing (fixed for the turn, like the instructions)
+    const can = availableCapabilities(first, bridge, mode);
+    const extra = extraTools(permissionsRef.current, can, window.desktop?.platform);
+    const system = systemPrompt(mode, first, budget, overview, first.folder || first.active || extra.length ? capabilityNote(permissionsRef.current, can, mode) : undefined);
     try {
       for (let step = 0; step < MAX_STEPS && !me.cancelled; step++) {
         const now = getWorkspace();
         // Agent mode reads and changes files; Chat mode can look at them but not change them
-        const tools = now.folder || now.active ? (mode === 'agent' ? AGENT_TOOLS : READ_TOOLS) : undefined;
+        const base = now.folder || now.active ? (mode === 'agent' ? AGENT_TOOLS : READ_TOOLS) : [];
+        const tools = base.length || extra.length ? [...base, ...extra] : undefined;
         // older pictures become a note: a request carries a few at most
         // when the conversation outgrows the context, the oldest turns go for good, with a margin, so
         // the start of the prompt then stays the same for a while (and keeps being cached)
@@ -669,11 +694,51 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
           show({ kind: 'tool', id: tid, label: describeCall(call), status: 'running' });
           let editId: string | null = null;
           let accepted = false;
+          // a command's output as it runs, shown under its line
+          let output = '';
+          let outFrame = 0;
           const { result, activity } = await runTool(call, {
             ws: getWorkspace,
             budget,
             readCache,
             readOnly: mode !== 'agent',
+            actions: {
+              budget,
+              platform: window.desktop?.platform,
+              actions: bridge,
+              permit: (req: PermissionRequest) => {
+                const level = permissionsRef.current[req.capability];
+                const what = CAPABILITIES.find((c) => c.id === req.capability)!.label;
+                const d = decision(level, grants.current.has(req.capability));
+                if (d === 'off') return Promise.reject(new Error(`“${what}” is turned off in the agent’s permissions. Don’t try again; tell the user if it’s needed.`));
+                if (d === 'allow') return Promise.resolve(!me.cancelled);
+                if (me.cancelled) return Promise.resolve(false);
+                const pid = uid('p');
+                show({ kind: 'permission', id: pid, capability: req.capability, title: req.title, code: req.code, detail: req.detail, level, status: 'pending' });
+                patch(tid, { label: `Waiting for you to allow or deny: ${req.title}`, status: 'waiting' } as Partial<Item>);
+                revealRef.current = pid;
+                return new Promise<boolean>((resolve) => {
+                  approvals.current.set(pid, (ok) => {
+                    approvals.current.delete(pid);
+                    patch(pid, { status: ok ? 'allowed' : 'denied' } as Partial<Item>);
+                    if (ok && level === 'session') grants.current.add(req.capability);
+                    patch(tid, { label: describeCall(call), status: 'running' } as Partial<Item>);
+                    resolve(ok && !me.cancelled);
+                  });
+                });
+              },
+              onOutput: (chunk: string) => {
+                output += chunk;
+                if (output.length > 12_000) output = output.slice(-8000);
+                if (!outFrame) outFrame = window.setTimeout(() => {
+                  outFrame = 0;
+                  patch(tid, { output } as Partial<Item>);
+                }, 120);
+              },
+              onCancel: (fn) => {
+                stopCommand.current = fn;
+              },
+            },
             confirm: (p: EditProposal) => {
               editId = uid('e');
               const auto = autoApplyRef.current;
@@ -697,6 +762,8 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
               });
             },
           });
+          if (outFrame) window.clearTimeout(outFrame);
+          if (output) patch(tid, { output } as Partial<Item>);
           if (editId) patch(editId, { status: activity.error ? 'failed' : accepted ? 'applied' : 'rejected' } as Partial<Item>);
           patch(tid, { label: activity.label, status: activity.error ? 'error' : 'done' } as Partial<Item>);
           hist.push({ role: 'tool', tool_call_id: call.id, content: result });
@@ -721,6 +788,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
       r.cancelled = true;
       if (r.requestId) bridge?.cancel(r.requestId);
     }
+    stopCommand.current?.();
     for (const resolve of [...approvals.current.values()]) resolve(false);
   }
 
@@ -742,7 +810,15 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
       turns: list.filter((i) => i.kind === 'user').length,
     };
     // a change still waiting for approval can't be applied after reopening
-    const items = list.map((i) => (i.kind === 'edit' && i.status === 'pending' ? { ...i, status: 'rejected' as const } : i.kind === 'assistant' ? { ...i, streaming: false } : i));
+    const items = list.map((i) =>
+      i.kind === 'edit' && i.status === 'pending'
+        ? { ...i, status: 'rejected' as const }
+        : i.kind === 'permission' && i.status === 'pending'
+          ? { ...i, status: 'denied' as const }
+          : i.kind === 'assistant'
+            ? { ...i, streaming: false }
+            : i,
+    );
     await saveSession(meta, { id: meta.id, items, history: history.current }).catch(() => undefined);
   }, [context.folder, context.file, model, mode]);
 
@@ -752,6 +828,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
     session.current++;
     sessionMeta.current = { id: uid('s'), createdAt: Date.now() };
     history.current = [];
+    grants.current.clear();
     trimmed.current = false;
     calibration.current = 1;
     setItems([]);
@@ -767,6 +844,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
     session.current++;
     sessionMeta.current = { id: meta.id, createdAt: meta.createdAt };
     history.current = data.history;
+    grants.current.clear();
     trimmed.current = false;
     calibration.current = 1;
     setItems([...data.items, { kind: 'notice', id: uid('n'), text: `Reopened “${meta.title}”. The agent continues with the files open now${meta.where ? ` (it worked on ${meta.where})` : ''}.` }]);
@@ -815,12 +893,14 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
     const total = chosen?.contextLength ?? 0;
     if (!total || !usable) return null;
     const budget = fileBudget(total);
-    const system = systemPrompt(mode, getWorkspace(), budget);
+    const ws = getWorkspace();
+    const can = availableCapabilities(ws, bridge, mode);
+    const system = systemPrompt(mode, ws, budget, undefined, capabilityNote(permissions, can, mode));
     const next: AgentMessage[] = attachments.length ? [{ role: 'user', content: composeMessage('', attachments, budget) }] : [];
     const { messages, dropped } = trimHistory(limitImages([...history.current, ...next], 4), historyBudget(total, outputTokens(usage?.maxOutputTokens, total)) - system.length);
     return { used: Math.round(estimateTokens(system, messages) * calibration.current), total, dropped: dropped > 0 || trimmed.current };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, attachments, chosen, mode, context, usable, busy]);
+  }, [items, attachments, chosen, mode, context, usable, busy, permissions]);
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -873,9 +953,9 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
   }, [models]);
 
   const hasWork = !!(context.folder || context.code);
-  const pendingEdits = items.filter((i): i is Extract<Item, { kind: 'edit' }> => i.kind === 'edit' && i.status === 'pending');
-  const pending = pendingEdits[0] ?? null;
-  const pendingCount = pendingEdits.length;
+  const pendingItems = items.filter((i): i is Extract<Item, { kind: 'edit' | 'permission' }> => (i.kind === 'edit' || i.kind === 'permission') && i.status === 'pending');
+  const pending = pendingItems[0] ?? null;
+  const pendingCount = pendingItems.length;
 
   // ── what is shown ──
   let body: ReactNode;
@@ -963,8 +1043,40 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
                   <div key={it.id} className={cx('agent-tool', `is-${it.status}`)}>
                     {it.status === 'running' ? <span className="spinner" /> : it.status === 'waiting' ? <Hand size={13} /> : it.status === 'error' ? <AlertTriangle size={13} /> : <Check size={13} />}
                     <span>{it.label}</span>
+                    {it.output && (
+                      <details className="agent-tool-output" open={it.status === 'running'}>
+                        <summary>Output</summary>
+                        <pre>{it.output}</pre>
+                      </details>
+                    )}
                   </div>
                 );
+              case 'permission': {
+                const Icon = it.capability === 'commands' ? Terminal : it.capability === 'web' ? Globe : Trash2;
+                return (
+                  <div key={it.id} data-item={it.id} className={cx('agent-permission', `is-${it.status}`)} role={it.status === 'pending' ? 'alert' : undefined}>
+                    <div className="agent-permission-head">
+                      <Icon size={14} />
+                      <strong>{it.title}</strong>
+                    </div>
+                    {it.code && <pre className="agent-permission-code">{it.code}</pre>}
+                    {it.detail && <p className="agent-permission-detail">{it.detail}</p>}
+                    <div className="agent-edit-foot">
+                      {it.status === 'pending' ? (
+                        <>
+                          <button type="button" className="btn btn-primary btn-sm" onClick={() => decide(it.id, true)}>
+                            <Check size={14} /> {it.level === 'session' ? 'Allow for this session' : 'Allow'}
+                          </button>
+                          <button type="button" className="btn btn-sm" onClick={() => decide(it.id, false)}><X size={14} /> Deny</button>
+                          <span className="agent-permission-hint">{it.level === 'session' ? 'You won’t be asked again for this in this session.' : 'Change how this asks in Permissions (shield button).'}</span>
+                        </>
+                      ) : (
+                        <span className="agent-edit-status">{it.status === 'allowed' ? (it.level === 'session' ? 'Allowed for this session' : 'Allowed') : 'Denied'}</span>
+                      )}
+                    </div>
+                  </div>
+                );
+              }
               case 'edit':
                 return (
                   <div key={it.id} data-item={it.id} className={cx('agent-edit', `is-${it.status}`)}>
@@ -1021,16 +1133,20 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
             <div className="agent-pending" role="alert">
               <Hand size={14} />
               <span>
-                {pendingCount > 1 ? `${pendingCount} changes are` : 'A change is'} waiting for you: <strong>{pending.path}</strong>
+                {pending.kind === 'permission' ? (
+                  <>The agent asks: <strong>{pending.title}</strong>{pendingCount > 1 ? ` (+${pendingCount - 1} more waiting)` : ''}</>
+                ) : (
+                  <>{pendingCount > 1 ? `${pendingCount} changes are` : 'A change is'} waiting for you: <strong>{pending.path}</strong></>
+                )}
               </span>
               <button type="button" className="btn btn-text btn-sm" onClick={() => listRef.current?.querySelector(`[data-item="${pending.id}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })}>
                 Show
               </button>
               <button type="button" className="btn btn-primary btn-sm" onClick={() => decide(pending.id, true)}>
-                Apply
+                {pending.kind === 'permission' ? (pending.level === 'session' ? 'Allow for session' : 'Allow') : 'Apply'}
               </button>
               <button type="button" className="btn btn-sm agent-stop" onClick={() => decide(pending.id, false)}>
-                Reject
+                {pending.kind === 'permission' ? 'Deny' : 'Reject'}
               </button>
             </div>
           )}
@@ -1083,6 +1199,35 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
                   </MenuItem>
                   <MenuItem onClick={() => (close(), fileInput.current?.click())}>From this computer… (files, photos, screenshots)</MenuItem>
                   <div className="menu-empty">Paste a screenshot (Ctrl+V) or drop files here too.</div>
+                </div>
+              )}
+            </Popover>
+            <Popover label="Permissions: what the agent may do beyond editing" align="left" button={<ShieldCheck size={15} />}>
+              {() => (
+                <div className="agent-permissions" role="group" aria-label="Agent permissions">
+                  <div className="agent-permissions-title">What the agent may do</div>
+                  {CAPABILITIES.map((c) => {
+                    const can = availableCapabilities(getWorkspace(), bridge, 'agent')[c.id];
+                    return (
+                      <label key={c.id} className="agent-permission-row">
+                        <span className="agent-permission-text">
+                          <span className="agent-permission-label">{c.label}</span>
+                          <span className="agent-permission-help">
+                            {c.detail}
+                            {!can && (c.id === 'commands' ? ' Needs a folder opened in the desktop app.' : c.id === 'files' ? ' Needs an opened folder.' : '')}
+                          </span>
+                        </span>
+                        <select value={permissions[c.id]} onChange={(e) => setPermission(c.id, e.target.value as PermissionLevel)} aria-label={c.label}>
+                          {LEVELS.map((l) => (
+                            <option key={l.id} value={l.id}>{l.label}</option>
+                          ))}
+                        </select>
+                      </label>
+                    );
+                  })}
+                  <p className="agent-permissions-note">
+                    Editing and creating files are reviewed as before (or applied at once with “Apply changes without asking”). Chat mode can only search and read the web. Takes effect from the next message.
+                  </p>
                 </div>
               )}
             </Popover>
