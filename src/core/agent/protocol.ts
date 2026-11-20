@@ -62,6 +62,9 @@ export interface AgentUsageToday {
   tokens: number;
   dailyRequests: number;
   dailyTokens: number;
+  /** AI pictures made today, and the daily allowance (0 when the server has none) */
+  images: number;
+  dailyImages: number;
   /** ISO time the daily counts restart */
   resetsAt: string;
   /** the service-wide monthly budget is used up */
@@ -79,6 +82,8 @@ export function parseUsageToday(v: unknown): AgentUsageToday | null {
     tokens: n(u.tokens),
     dailyRequests: n(u.dailyRequests),
     dailyTokens: n(u.dailyTokens),
+    images: n(u.images),
+    dailyImages: n(u.dailyImages),
     resetsAt: typeof u.resetsAt === 'string' ? u.resetsAt : '',
     paused: u.paused === true,
   };
@@ -453,3 +458,55 @@ export function repeatedTail(s: string, minSpan: number, maxUnit: number): boole
   }
   return false;
 }
+
+// ── AI pictures (the photo editor) ─────────────────────────────────────────
+export interface ImageModel {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  /** "generate" makes new pictures, "edit" changes one */
+  operations: ('generate' | 'edit')[];
+  maxInputImages: number;
+  priceUsd: number | null;
+}
+
+export interface ImageRequest {
+  mode: 'edit' | 'generate';
+  model: string;
+  prompt: string;
+  /** the picture to change, as a PNG / JPEG / WebP data URL (edit only) */
+  image?: string;
+  size?: string;
+  /** image-to-image models: how far the result may move from the picture (0–1) */
+  strength?: number;
+  negativePrompt?: string;
+}
+
+export interface ImageResult {
+  bytes: Uint8Array;
+  mime: string;
+  model: string;
+  costUsd: number;
+  today?: AgentUsageToday;
+}
+
+export function parseImageModels(json: unknown): ImageModel[] {
+  const list = (json as { data?: unknown })?.data;
+  if (!Array.isArray(list)) return [];
+  return list
+    .filter((m): m is Record<string, unknown> => !!m && typeof m === 'object' && isModelId((m as { id?: unknown }).id))
+    .map((m) => ({
+      id: m.id as string,
+      name: typeof m.name === 'string' ? m.name : (m.id as string),
+      description: typeof m.description === 'string' ? m.description : '',
+      tags: Array.isArray(m.tags) ? m.tags.filter((t): t is string => typeof t === 'string') : [],
+      operations: (Array.isArray(m.operations) ? m.operations : []).filter((o): o is 'generate' | 'edit' => o === 'generate' || o === 'edit'),
+      maxInputImages: Number(m.maxInputImages) || 0,
+      priceUsd: typeof m.priceUsd === 'number' ? m.priceUsd : null,
+    }))
+    .filter((m) => m.operations.length > 0);
+}
+
+/** Image-to-image models (generate + edit, one input picture) take a strength. */
+export const takesStrength = (m: ImageModel) => m.operations.includes('generate') && m.operations.includes('edit') && m.maxInputImages <= 1;

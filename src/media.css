@@ -747,3 +747,148 @@
 .update-speed {
   color: var(--muted);
 }
+
+/* ── photo editor: AI edit ─────────────────────────────────────────── */
+.ai-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 320px;
+}
+
+.ai-panel .spinner {
+  display: inline-block;
+  vertical-align: -2px;
+}
+
+.ai-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ai-head h3 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
+
+.ai-mode {
+  display: flex;
+}
+
+.ai-mode button {
+  flex: 1;
+}
+
+.ai-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ai-field select,
+.ai-field textarea,
+.ai-field .input {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+
+.ai-field textarea {
+  resize: vertical;
+  min-height: 72px;
+  line-height: 1.4;
+}
+
+.ai-more summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ai-more[open] {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ai-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ai-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.ai-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+
+.ai-result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.ai-result img {
+  width: 100%;
+  max-height: 320px;
+  object-fit: contain;
+  border-radius: 4px;
+  background: repeating-conic-gradient(#ccc 0 25%, #fff 0 50%) 0 0 / 16px 16px;
+}
+
+.ai-gate {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 4px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.panel-note.is-error {
+  color: var(--danger);
+}
+
+.ai-privacy {
+  font-size: 11px;
+}
+
+/* the panel scrolls; its parts keep their height (the mode switch would otherwise collapse) */
+.ai-panel > * {
+  flex-shrink: 0;
+}
+
+.ai-panel .segmented {
+  margin-bottom: 0;
+}

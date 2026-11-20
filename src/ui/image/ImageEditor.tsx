@@ -1,3 +1,5 @@
+import { AiImagePanel } from './AiImagePanel';
+import { agentBridge } from '../../platform/host';
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type PointerEvent as RPointerEvent } from 'react';
 import { useTabActive } from '../tab-active';
 import {
@@ -23,6 +25,7 @@ import {
   Undo2,
   ZoomIn,
   ZoomOut,
+  Sparkles,
 } from 'lucide-react';
 import {
   FILTER_LABELS,
@@ -55,7 +58,7 @@ export interface ImageEditorHandle {
 }
 
 type Tool = 'select' | 'crop' | 'text' | 'rect' | 'ellipse' | 'line' | 'arrow' | 'draw' | 'redact';
-type Panel = 'adjust' | 'resize' | null;
+type Panel = 'adjust' | 'resize' | 'ai' | null;
 
 interface Base {
   id: string;
@@ -75,7 +78,7 @@ interface Snapshot {
 interface Props {
   initial: DecodedImage;
   onChange: () => void;
-  onError: (message: string) => void;
+  onError: (message: string, kind?: 'error' | 'info') => void;
   onStatus?: (s: { width: number; height: number; zoom: number }) => void;
 }
 
@@ -788,6 +791,11 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
         <IconButton label="Flip vertically" onClick={() => runOp((px) => flip(px, 'vertical'))}><FlipVertical2 size={16} /></IconButton>
         <IconButton label="Resize" active={panel === 'resize'} onClick={() => setPanel(panel === 'resize' ? null : 'resize')}><Scaling size={16} /></IconButton>
         <IconButton label="Adjust & filters" active={panel === 'adjust'} onClick={() => { setPanel(panel === 'adjust' ? null : 'adjust'); setTool('select'); }}><SlidersHorizontal size={16} /></IconButton>
+        {agentBridge() && (
+          <IconButton label="AI edit: change the picture or make a new one with an image model" active={panel === 'ai'} onClick={() => { setPanel(panel === 'ai' ? null : 'ai'); setTool('select'); }}>
+            <Sparkles size={16} />
+          </IconButton>
+        )}
         <Divider />
         <IconButton label="Add text" active={tool === 'text'} onClick={() => setTool('text')}><Type size={16} /></IconButton>
         <IconButton label="Draw" active={tool === 'draw'} onClick={() => setTool('draw')}><PenLine size={16} /></IconButton>
@@ -1035,6 +1043,20 @@ export const ImageEditor = forwardRef<ImageEditorHandle, Props>(function ImageEd
             </div>
             {straighten !== 0 && <p className="panel-note">Straightening is shown after Apply; the corners become transparent — crop them off afterwards.</p>}
           </aside>
+        )}
+        {panel === 'ai' && (
+          <AiImagePanel
+            getSource={() => bake(pixelsRef.current, objectsRef.current)}
+            width={W}
+            height={H}
+            onApply={(px) => {
+              // text and drawings were part of the picture sent, so they are part of the result
+              commit({ pixels: px, objects: [] });
+              setSelected(null);
+            }}
+            onClose={() => setPanel(null)}
+            onError={onError}
+          />
         )}
         {panel === 'resize' && <ResizePanel width={W} height={H} onApply={(w, h) => { runOp((px) => resizePixels(px, w, h)); setPanel(null); }} onClose={() => setPanel(null)} />}
       </div>

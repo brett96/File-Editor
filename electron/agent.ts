@@ -29,6 +29,10 @@ import {
   type AgentResponse,
   type AgentStatus,
   type AgentUsageToday,
+  type ImageModel,
+  type ImageRequest,
+  type ImageResult,
+  parseImageModels,
 } from '../src/core/agent/protocol';
 import { apiBase, getLicenseState, licenseCredentials, refreshLicenseStatus } from './license';
 
@@ -228,6 +232,78 @@ export async function chat(target: WebContents, id: unknown, req: unknown): Prom
   } finally {
     clearTimeout(idle);
     clearTimeout(whole);
+    running.delete(rid);
+  }
+}
+
+// ── AI pictures ────────────────────────────────────────────────────────────
+export async function imageModels(): Promise<AgentResponse<{ models: ImageModel[]; usage?: AgentUsageToday }>> {
+  const creds = await licenseCredentials();
+  if (!creds) return UNLICENSED;
+  try {
+    const res = await netSession().fetch(`${apiBase()}/api/agent/image-models`, { method: 'POST', headers: headers('application/json'), body: JSON.stringify(creds), signal: AbortSignal.timeout(20_000) });
+    const json = (await res.json().catch(() => null)) as unknown;
+    if (!res.ok) {
+      const err = errorFromResponse(res.status, json);
+      onRefused(err.code);
+      return { ok: false, ...err };
+    }
+    const models = parseImageModels(json);
+    if (!models.length) return { ok: false, code: 'unavailable', error: 'The image service listed no models. Try again in a moment.' };
+    return { ok: true, models, usage: parseUsageToday((json as { usage?: unknown })?.usage) ?? undefined };
+  } catch {
+    return { ok: false, code: 'network', error: "Couldn't reach the license server. Check your internet connection and try again." };
+  }
+}
+
+const MAX_IMAGE_REQUEST_CHARS = 4_200_000;
+
+/** One AI picture: the license server makes it with OpenUncensored and answers with its bytes. */
+export async function makeImage(id: unknown, req: unknown): Promise<AgentResponse<ImageResult>> {
+  const rid = String(id ?? '');
+  if (!/^[A-Za-z0-9_-]{1,64}$/.test(rid)) return { ok: false, code: 'invalid-request', error: 'Bad request id.' };
+  const creds = await licenseCredentials();
+  if (!creds) return UNLICENSED;
+  const r = req as Partial<ImageRequest> | null;
+  if (!r || typeof r.prompt !== 'string' || !r.prompt.trim()) return { ok: false, code: 'invalid-request', error: 'Describe what you want first.' };
+  const request: ImageRequest = {
+    mode: r.mode === 'generate' ? 'generate' : 'edit',
+    model: String(r.model ?? ''),
+    prompt: r.prompt.slice(0, 4000),
+    image: r.mode === 'generate' ? undefined : typeof r.image === 'string' ? r.image : undefined,
+    size: typeof r.size === 'string' ? r.size : undefined,
+    strength: typeof r.strength === 'number' ? r.strength : undefined,
+    negativePrompt: typeof r.negativePrompt === 'string' ? r.negativePrompt.slice(0, 2000) : undefined,
+  };
+  const body = JSON.stringify({ ...creds, request });
+  if (body.length > MAX_IMAGE_REQUEST_CHARS) return { ok: false, code: 'invalid-request', error: 'The picture is too large to send.' };
+  if (running.size >= MAX_CONCURRENT) return { ok: false, code: 'rate-limited', error: 'Another request is still running. Wait for it to finish.' };
+  const ctrl = new AbortController();
+  running.set(rid, ctrl);
+  const timer = setTimeout(() => ctrl.abort(), 300_000);
+  try {
+    const res = await netSession().fetch(`${apiBase()}/api/agent/image`, { method: 'POST', headers: headers('image/*, application/json'), body, signal: ctrl.signal });
+    if (!res.ok) {
+      const json = (await res.json().catch(() => null)) as unknown;
+      const err = errorFromResponse(res.status, json);
+      onRefused(err.code);
+      return { ok: false, ...err };
+    }
+    const mime = (res.headers.get('content-type') ?? '').split(';')[0];
+    if (!/^image\/(png|jpeg|webp)$/.test(mime)) return { ok: false, code: 'unavailable', error: 'The image service sent something that isn’t a picture.' };
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    let today: AgentUsageToday | undefined;
+    try {
+      today = parseUsageToday(JSON.parse(res.headers.get('x-fe-usage') ?? 'null')) ?? undefined;
+    } catch {
+      /* the meter catches up later */
+    }
+    return { ok: true, bytes, mime, model: res.headers.get('x-fe-model') ?? request.model, costUsd: Number(res.headers.get('x-fe-cost')) || 0, today };
+  } catch {
+    if (ctrl.signal.aborted) return { ok: false, code: 'cancelled', error: 'Stopped.' };
+    return { ok: false, code: 'network', error: "Couldn't reach the license server. Check your internet connection and try again." };
+  } finally {
+    clearTimeout(timer);
     running.delete(rid);
   }
 }

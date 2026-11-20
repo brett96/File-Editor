@@ -246,6 +246,11 @@ export const SECTIONS: GuideSection[] = [
             a <Ui>.docx</Ui> and it makes a real Word file.
           </li>
           <li>Some models can't use tools. If one fails in Agent mode, switch to Chat or pick another model.</li>
+          <li>
+            In the photo editor, the <Ui>AI edit</Ui> button (✨) changes a picture from a description, or makes a new one, with an image
+            model you pick. Check the result, then <Ui>Apply</Ui> it (<Keys k="Ctrl+Z" /> takes it back). Each license has a daily number of AI
+            pictures; a picture that fails doesn't count.
+          </li>
         </ul>
         <Note>
           Everything else in File Editor stays on your computer. The agent is the exception: your messages, and the files it reads, go through

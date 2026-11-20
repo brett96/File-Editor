@@ -208,6 +208,14 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   written in Markdown and becomes headings, lists, bold and tables. A closed Word file it changes
   is opened in a tab first (saved like any other edit), and `write_file` to a new .docx / .odt /
   .rtf creates a real file of that format.
+- **AI pictures (photo editor).** The ✨ **AI edit** button in the photo editor's toolbar changes
+  the picture from a description ("make it a sunset", "remove the person on the left") or makes a
+  new one, with OpenUncensored's image models (edit models such as Qwen Image Edit and Seedream,
+  image-to-image models with a *Change* strength, and generate models for new pictures). The
+  picture, with any text or drawings on it, is sent scaled to at most 1536 px through the license
+  server (`/api/agent/image`), which checks the license and a daily picture allowance. The result
+  is previewed (hold *Before* to compare) and **Apply** puts it on the canvas as one undoable
+  step, at the picture's own size unless that option is turned off (`src/ui/image/AiImagePanel.tsx`).
 - **Usage meter.** Under the model list: today's requests and tokens against the license's
   daily limits, a bar that turns amber at 80% and red when used up, and when it resets. It
   updates while an answer streams (estimated) and with the server's figure after each request.
