@@ -648,3 +648,17 @@
   font: inherit;
   opacity: 0.6;
 }
+
+/* AI edit: the photo editor's panel, in Pro Photo's colours, beside the Layers column */
+.pi-root .pi-ai-panel {
+  width: 300px;
+  background: var(--pi-panel);
+  border-left: 1px solid var(--pi-border);
+  color: var(--pi-text);
+  --surface: var(--pi-panel);
+  --surface-2: var(--pi-bg);
+  --border: var(--pi-border);
+  --text: var(--pi-text);
+  --muted: var(--pi-muted);
+  --accent: var(--pi-accent);
+}

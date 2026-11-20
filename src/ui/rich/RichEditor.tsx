@@ -88,6 +88,8 @@ import { applyFormat, captureFormat, CASE_MODES, changeCase, LINE_SPACINGS, sort
 
 export interface RichEditorHandle {
   getDocument(): RichDocument;
+  /** the TipTap editor of the document body (the coding agent reads and edits through it) */
+  getEditor(): Editor | null;
 }
 
 interface Props {
@@ -989,6 +991,7 @@ export const RichEditor = forwardRef<RichEditorHandle, Props>(function RichEdito
   useImperativeHandle(
     ref,
     () => ({
+      getEditor: () => editor ?? null,
       getDocument: () => {
         drawRef.current?.flush(); // strokes still being grouped become part of the document
         return {

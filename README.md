@@ -200,6 +200,34 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   requests per minute, requests running at once, output tokens per request, plus a monthly
   spending cap across all licenses and a kill switch. A single license can have the agent
   turned off. The app shows the server's message when a limit is reached.
+- **Documents.** The agent also works on Word-style documents: a .txt, .docx, .odt, .rtf, .md or
+  .doc open in the document editor, and Word / OpenDocument / RTF files in the opened folder. It
+  reads a document as text, one line per paragraph, with its headings and list items noted
+  (`src/core/agent/doc-text.ts`). Its edits change only the words that differ, inside the
+  document, so formatting around them is kept and each is one undo step; a full rewrite is
+  written in Markdown and becomes headings, lists, bold and tables. A closed Word file it changes
+  is opened in a tab first (saved like any other edit), and `write_file` to a new .docx / .odt /
+  .rtf creates a real file of that format.
+- **AI pictures (photo editor).** The ✨ **AI edit** button in the photo editor's toolbar changes
+  the picture from a description ("make it a sunset", "remove the person on the left") or makes a
+  new one, with OpenUncensored's image models (edit models such as Qwen Image Edit and Seedream,
+  image-to-image models with a *Change* strength, and generate models for new pictures). The
+  picture, with any text or drawings on it, is sent scaled to at most 1536 px through the license
+  server (`/api/agent/image`), which checks the license and a daily picture allowance. The result
+  is previewed (hold *Before* to compare) and **Apply** puts it on the canvas as one undoable
+  step, at the picture's own size unless that option is turned off (`src/ui/image/AiImagePanel.tsx`).
+  In **Pro Photo** the same panel opens from the ✦ button, **Filter ▸ AI Edit** or **Layer ▸ New
+  Layer from AI Edit**: it sends the whole picture or only the active layer, and the result is
+  added as a new layer above the active one, named after the description, so the original stays
+  untouched (a picture larger than the canvas is scaled to fit and centred).
+- **Usage meter.** Under the model list: today's requests and tokens against the license's
+  daily limits, a bar that turns amber at 80% and red when used up, and when it resets. It
+  updates while an answer streams (estimated) and with the server's figure after each request.
+- **Stuck models.** Some models degenerate into repeating one character or line. The main
+  process watches the streamed answer, thinking and tool arguments (`RepetitionDetector`),
+  stops the request as soon as the end of the text is one unit repeated over 1,200+ characters
+  (which also stops it, and its token use, on the server), and the panel retries once with a
+  repetition penalty. A second loop is reported with a suggestion to pick another model.
 - **Network.** Agent requests go through their own in-memory Electron session that can reach
   only the license server. The app also checks and caps requests itself (16K output tokens, 3
   running and 40 a minute, 25 tool steps per turn), so a runaway loop stops before the server

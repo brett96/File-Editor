@@ -36,6 +36,7 @@ import {
   Stamp,
   Sun,
   Moon,
+  Sparkle,
   Sparkles,
   Type,
   Undo2,
@@ -94,6 +95,9 @@ import { LayersPanel, PropertiesPanel, Slider } from './panels';
 import { bakeForPsd, bucketFill, canvasToPixels, clearSelection, copySelection, cropToSelection, fillRaster, flattenDocument, flipImage, mergeDown, rasterize, resizeCanvas, resizeImage, rotateImage, transformLayer } from './ops';
 import { composite, flatten, invalidateLayer, invalidateMask, pixelsCanvas, rasterizeLayer, textBox } from './render';
 import './pro-image.css';
+import { AiImagePanel } from '../image/AiImagePanel';
+import { agentBridge } from '../../platform/host';
+import { resizePixels } from '../../core/media/image-codecs';
 
 export interface ProImageEditorHandle {
   /** Flattened pixels (Save As image formats). */
@@ -106,7 +110,7 @@ export interface ProImageEditorHandle {
 interface Props {
   initial: ProDocument;
   onChange: () => void;
-  onError: (message: string) => void;
+  onError: (message: string, kind?: 'error' | 'info') => void;
   onStatus?: (s: { width: number; height: number; zoom: number }) => void;
 }
 
@@ -1030,6 +1034,26 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
   };
 
   const newLayer = () => addLayer(emptyRaster(`Layer ${docRef.current.layers.length}`, docRef.current.width, docRef.current.height));
+
+  // ── AI edit (licensed desktop copies): the result becomes a new layer above the active one ──
+  const [aiOpen, setAiOpen] = useState(false);
+  const aiSources = () => {
+    const d = docRef.current;
+    const l = d.layers.find((x) => x.id === activeRef.current);
+    const list = [{ id: 'all', label: 'The whole picture (all visible layers)', get: () => flatten(docRef.current) }];
+    // adjustment layers have no pixels of their own
+    if (l && l.kind !== 'adjust') list.push({ id: 'layer', label: `Only the layer “${l.name}”`, get: () => rasterizeLayer(l, docRef.current) });
+    return list;
+  };
+  const addAiLayer = (px: Pixels, info: { mode: 'edit' | 'generate'; prompt: string }) => {
+    const d = docRef.current;
+    let out = px;
+    // a picture larger than the canvas is scaled down to fit it; then it is centred
+    const k = Math.min(1, d.width / out.width, d.height / out.height);
+    if (k < 1) out = resizePixels(out, Math.max(1, Math.round(out.width * k)), Math.max(1, Math.round(out.height * k)));
+    const words = info.prompt.replace(/\s+/g, ' ').slice(0, 36);
+    addLayer(rasterLayer(`AI: ${words}${info.prompt.length > 36 ? '…' : ''}`, out, Math.round((d.width - out.width) / 2), Math.round((d.height - out.height) / 2)));
+  };
   const newAdjust = (t: AdjustType) => addLayer(adjustLayer(t, ADJUST_LABELS[t]));
   const selectAll = () => {
     pushHistory();
@@ -1428,6 +1452,7 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
           {(close) => (
             <div className="format-menu pi-menu-scroll">
               <MenuItem onClick={() => { close(); newLayer(); }}>New Layer</MenuItem>
+              {agentBridge() && <MenuItem onClick={() => { close(); setAiOpen(true); }}>New Layer from AI Edit…</MenuItem>}
               <MenuItem hint="Ctrl+J" onClick={() => { close(); layerViaCopy(); }}>Layer via Copy</MenuItem>
               <MenuItem hint="Ctrl+Shift+J" onClick={() => { close(); layerViaCopy(true); }}>Layer via Cut</MenuItem>
               <MenuItem onClick={() => { close(); addLayer(fillLayer('Color Fill', fg)); }}>New Fill Layer (Solid Color)</MenuItem>
@@ -1465,6 +1490,12 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         <Popover label="Filter" text button={<span>Filter</span>}>
           {(close) => (
             <div className="format-menu">
+              {agentBridge() && (
+                <>
+                  <MenuItem onClick={() => { close(); setAiOpen(true); }}>AI Edit (as a new layer)…</MenuItem>
+                  <div className="menu-sep" role="separator" />
+                </>
+              )}
               {(Object.keys(FILTER_DEFS) as FilterId[]).map((id) => (
                 <MenuItem
                   key={id}
@@ -1526,6 +1557,11 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
         <span className="pi-menubar-sep" />
         <div className="pi-options">{options}</div>
         <span className="spacer" />
+        {agentBridge() && (
+          <button type="button" className={cx('pi-icon-btn', aiOpen && 'is-on')} aria-label="AI edit" aria-pressed={aiOpen} title="AI edit: change the picture or a layer, or make a new picture, as a new layer" onClick={() => setAiOpen((v) => !v)}>
+            <Sparkle size={16} />
+          </button>
+        )}
         <button
           type="button"
           className={cx('pi-icon-btn', compare !== 'off' && 'is-on')}
@@ -1609,6 +1645,20 @@ export const ProImageEditor = forwardRef<ProImageEditorHandle, Props>(function P
           )}
         </div>
 
+        {aiOpen && (
+          <AiImagePanel
+            className="pi-ai-panel"
+            getSource={() => flatten(docRef.current)}
+            sources={aiSources()}
+            width={doc.width}
+            height={doc.height}
+            applyLabel="Add as layer"
+            appliedMessage={() => 'Added as a new layer. Hide it, mask it or change its blend mode in Layers; Undo takes it back.'}
+            onApply={addAiLayer}
+            onClose={() => setAiOpen(false)}
+            onError={onError}
+          />
+        )}
         <aside className="pi-side">
           <PropertiesPanel
             doc={doc}

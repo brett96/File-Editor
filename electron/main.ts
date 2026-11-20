@@ -23,7 +23,7 @@ import { constants as fsConstants } from 'node:fs';
 import { appendFile, copyFile, mkdir, readdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { agentStatus, cancelAllChats, cancelChat, chat as agentChat, listModels } from './agent';
+import { agentStatus, cancelAllChats, cancelChat, chat as agentChat, imageModels, listModels, makeImage, usageToday } from './agent';
 import { registerGitIpc } from './git';
 import { activateLicense, getLicenseState, refreshLicenseStatus } from './license';
 import { CODE_EXTENSIONS, isCodeFileName } from '../src/core/code/languages';
@@ -892,6 +892,21 @@ function registerIpc() {
   ipcMain.handle('agent-models', (e, force: unknown) => {
     assertSender(e);
     return listModels(force === true);
+  });
+
+  // the photo editor's AI edit (licensed copies; made on the license server)
+  ipcMain.handle('agent-image-models', (e) => {
+    assertSender(e);
+    return imageModels();
+  });
+  ipcMain.handle('agent-image', (e, id: unknown, req: unknown) => {
+    assertSender(e);
+    return makeImage(id, req);
+  });
+
+  ipcMain.handle('agent-usage', (e) => {
+    assertSender(e);
+    return usageToday();
   });
 
   ipcMain.handle('agent-chat', (e, id: unknown, req: unknown) => {

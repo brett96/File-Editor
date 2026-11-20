@@ -8,7 +8,7 @@
  */
 import { applyEdit, clip, lineDiff, looksBinary, sliceLines, type Diff } from '../../core/agent/edits';
 import type { AgentToolCall, AgentToolSpec } from '../../core/agent/protocol';
-import { dirOf, safeSegments } from '../../core/web/paths';
+import { dirOf, leafOf, safeSegments } from '../../core/web/paths';
 import { IGNORED_DIRS, type OpenedFolder } from '../../platform/folders';
 import type { CodeEditorAccess } from './editors';
 
@@ -23,7 +23,13 @@ export interface AgentWorkspace {
   openElsewhere(path: string): boolean;
   /** the folder's file list should show a new file */
   folderChanged(dir: string): void;
+  /** opens a file of the folder in a tab and resolves to its editor once it is ready (Word files the agent changes) */
+  openInTab?(path: string): Promise<CodeEditorAccess | null>;
 }
+
+/** Word-style files that aren't plain text: read through the app's importers, changed in a tab. */
+const WORD_FILE = /\.(docx|docm|dotx|odt|rtf|doc|dot)$/i;
+const isDocument = (t: Target) => t.kind === 'editor' && t.editor.kind === 'document';
 
 export interface EditProposal {
   path: string;
@@ -72,7 +78,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Read a text file. Returns its content exactly (unsaved changes in open tabs included). Long files can be read in parts with start_line / end_line.',
+      description: 'Read a file. Code and text come back exactly (unsaved changes in open tabs included). Word-style documents (.docx, .odt, .rtf, and documents open in the document editor) come back as text, one line per paragraph, with a note on how to change them. Long files can be read in parts with start_line / end_line.',
       parameters: {
         type: 'object',
         properties: {
@@ -106,7 +112,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     function: {
       name: 'edit_file',
       description:
-        'Change part of a file by replacing old_string with new_string. old_string must match the file exactly (whitespace and indentation included) and occur once, unless replace_all is true. Read the file first. The user reviews the change.',
+        'Change part of a file by replacing old_string with new_string. old_string must match the file exactly (whitespace and indentation included) and occur once, unless replace_all is true. Read the file first. In a Word-style document the formatting around the change is kept, and a newline in new_string starts a new paragraph. The user reviews the change.',
       parameters: {
         type: 'object',
         properties: {
@@ -123,7 +129,7 @@ export const AGENT_TOOLS: AgentToolSpec[] = [
     type: 'function',
     function: {
       name: 'write_file',
-      description: 'Create a new file, or replace the whole content of an existing one. Prefer edit_file for changes to part of a file. The user reviews the change.',
+      description: 'Create a new file, or replace the whole content of an existing one. Prefer edit_file for changes to part of a file. For a Word-style document (.docx, .odt, .rtf, or one open in the document editor) write the content in Markdown: it becomes headings, lists, bold, links and tables in the document. The user reviews the change.',
       parameters: {
         type: 'object',
         properties: {
@@ -164,12 +170,24 @@ function resolveTarget(ws: AgentWorkspace, raw: unknown): Target | { error: stri
 const decoder = new TextDecoder('utf-8');
 
 /** A file's text, or null when it does not exist; an error for binary or huge files. */
-async function readText(t: Target): Promise<{ text: string; bom: boolean } | null | { error: string }> {
+async function readText(t: Target): Promise<{ text: string; bom: boolean; closedDocument?: boolean; outline?: [number, string][] } | null | { error: string }> {
   if (t.kind === 'editor') return { text: t.editor.getText(), bom: false };
   const blob = await t.folder.read(t.path);
   if (!blob) return null;
   if (blob.size > MAX_READ_BYTES) return { error: `${t.path} is too large to read (${Math.round(blob.size / 1024 / 1024)} MB).` };
   const bytes = new Uint8Array(await blob.arrayBuffer());
+  if (WORD_FILE.test(t.path)) {
+    // a Word / OpenDocument / RTF file that isn't open: its text, one line per paragraph
+    const [{ openDocument }, { documentText }] = await Promise.all([import('../../core/registry'), import('../rich/agent-doc')]);
+    try {
+      const opened = await openDocument(leafOf(t.path), bytes);
+      if (opened.kind !== 'flow') return { error: `${t.path} can't be read as a document.` };
+      const { text, outline } = await documentText(opened.doc.html);
+      return { text, bom: false, closedDocument: true, outline };
+    } catch (err) {
+      return { error: `${t.path} couldn't be read: ${err instanceof Error ? err.message : 'unknown error'}` };
+    }
+  }
   if (looksBinary(bytes)) return { error: `${t.path} is not a text file.` };
   const bom = bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
   return { text: decoder.decode(bytes), bom };
@@ -265,6 +283,18 @@ async function listFiles(ws: AgentWorkspace, path: string, depth = 2) {
   return { result: `${where}/\n${text}${truncated ? `\n[… more entries not shown; list a subfolder]` : ''}`, activity: { label: `Listed ${path || 'the project'}` } };
 }
 
+/** How a document reads and changes, for the model (added to read_file's answer). */
+function documentNote(t: Target, closedOutline?: [number, string][]): string {
+  const ed = t.kind === 'editor' ? t.editor : null;
+  const outline = ed?.outline?.() ?? closedOutline ?? [];
+  const styles = outline.length ? ` Paragraph styles: ${outline.slice(0, 60).map(([l, s]) => `line ${l + 1} ${s}`).join(', ')}${outline.length > 60 ? ', …' : ''}.` : '';
+  return (
+    `This is a ${ed?.format ?? 'Word-style document'}${ed ? '' : ' (not open; changing it opens it in a tab)'}: one line per paragraph.${styles} ` +
+    'edit_file replaces text and keeps the formatting around it; a newline in new_string starts a new paragraph. ' +
+    'write_file replaces the whole document: write it in Markdown (# headings, - lists, **bold**, tables).'
+  );
+}
+
 async function readFile(ws: AgentWorkspace, rawPath: unknown, start: number | undefined, end: number | undefined, budget: number) {
   const t = resolveTarget(ws, rawPath);
   const label = `Read ${cleanPath(rawPath) || 'file'}`;
@@ -276,7 +306,8 @@ async function readFile(ws: AgentWorkspace, rawPath: unknown, start: number | un
   const { text, clipped } = clip(part.text, budget);
   const shownTo = clipped ? part.from + text.split('\n').length - 1 : part.to;
   const range = part.from === 1 && shownTo === part.total ? '' : ` (lines ${part.from}–${shownTo})`;
-  const head = `${t.path}: ${part.total} lines${range ? `, showing lines ${part.from}–${shownTo}` : ''}${t.kind === 'editor' ? ' (open in the editor, unsaved changes included)' : ''}`;
+  let head = `${t.path}: ${part.total} lines${range ? `, showing lines ${part.from}–${shownTo}` : ''}${t.kind === 'editor' ? ' (open in the editor, unsaved changes included)' : ''}`;
+  if (isDocument(t) || ('closedDocument' in got && got.closedDocument)) head += `\n${documentNote(t, 'outline' in got ? got.outline : undefined)}`;
   const more = clipped ? `\n[… cut here to fit; read on with start_line=${shownTo + 1}]` : '';
   return { result: `${head}\n\n${text}${more}`, activity: { label: `Read ${t.path}${range}` } };
 }
@@ -346,10 +377,10 @@ async function searchFiles(ws: AgentWorkspace, query: string, under: string, reg
   };
 }
 
-async function propose(ws: AgentWorkspace, host: ToolHost, t: Target, before: string | null, after: string, bom: boolean) {
+async function propose(ws: AgentWorkspace, host: ToolHost, t: Target, before: string | null, after: string, apply: (isNew: boolean) => Promise<void>) {
   const isNew = before === null;
   if (t.kind === 'folder' && ws.openElsewhere(t.path)) {
-    return { result: `Error: ${t.path} is open in a tab that isn't a code editor. Ask the user to close that tab first.`, activity: { label: `Couldn't change ${t.path}`, error: true } };
+    return { result: `Error: ${t.path} is open in a tab the agent can't edit (a PDF, picture, spreadsheet…). Ask the user to close that tab first.`, activity: { label: `Couldn't change ${t.path}`, error: true } };
   }
   if (t.kind === 'folder' && !t.folder.canWrite) {
     return { result: 'Error: this folder was opened read-only, so files cannot be changed.', activity: { label: `Couldn't change ${t.path}`, error: true } };
@@ -357,7 +388,7 @@ async function propose(ws: AgentWorkspace, host: ToolHost, t: Target, before: st
   const diff = lineDiff(before ?? '', after);
   const ok = await host.confirm({ path: t.path, before: before ?? '', after, diff, isNew });
   if (!ok) return { result: `The user rejected this change to ${t.path}. Ask what they would like instead, or continue without it.`, activity: { label: `Change to ${t.path} rejected` } };
-  await writeText(ws, t, after, isNew, bom);
+  await apply(isNew);
   const where = t.kind === 'editor' ? ' in its open tab (unsaved until the user saves)' : '';
   return {
     result: `${isNew ? 'Created' : 'Changed'} ${t.path}${where}: +${diff.added} −${diff.removed} lines.`,
@@ -365,24 +396,74 @@ async function propose(ws: AgentWorkspace, host: ToolHost, t: Target, before: st
   };
 }
 
+/** A closed Word file the agent is about to change: open it in a tab and work there. */
+async function openForChange(ws: AgentWorkspace, t: Target): Promise<Target | { error: string }> {
+  if (t.kind !== 'folder' || !WORD_FILE.test(t.path)) return t;
+  if (!ws.openInTab) return { error: `${t.path} has to be open in a tab to be changed. Ask the user to open it.` };
+  const editor = await ws.openInTab(t.path);
+  return editor ? { kind: 'editor', editor, path: t.path } : { error: `${t.path} couldn't be opened for editing.` };
+}
+
 async function editFile(ws: AgentWorkspace, host: ToolHost, rawPath: unknown, oldString: string, newString: string, replaceAll: boolean) {
-  const t = resolveTarget(ws, rawPath);
   const label = `Edit ${cleanPath(rawPath) || 'file'}`;
+  const found = resolveTarget(ws, rawPath);
+  if ('error' in found) return { result: `Error: ${found.error}`, activity: { label, error: true } };
+  if (found.kind === 'folder' && WORD_FILE.test(found.path) && !(await found.folder.read(found.path))) {
+    return { result: `Error: ${found.path} does not exist. Use write_file to create it.`, activity: { label, error: true } };
+  }
+  const t = await openForChange(ws, found);
   if ('error' in t) return { result: `Error: ${t.error}`, activity: { label, error: true } };
   const got = await readText(t);
   if (!got) return { result: `Error: ${t.path} does not exist. Use write_file to create it.`, activity: { label, error: true } };
   if ('error' in got) return { result: `Error: ${got.error}`, activity: { label, error: true } };
   const edited = applyEdit(got.text, oldString, newString, replaceAll);
-  if ('error' in edited) return { result: `Error: ${edited.error}`, activity: { label: `Edit to ${t.path} didn't match`, error: true } };
-  return propose(ws, host, t, got.text, edited.text, got.bom);
+  if ('error' in edited) {
+    const hint = isDocument(t) && found.kind === 'folder' ? ' It is now open in a tab: read it again (the text may differ slightly from the closed file) and retry.' : '';
+    return { result: `Error: ${edited.error}${hint}`, activity: { label: `Edit to ${t.path} didn't match`, error: true } };
+  }
+  if (isDocument(t) && t.kind === 'editor') {
+    const ed = t.editor;
+    return propose(ws, host, t, got.text, edited.text, async () => {
+      const res = ed.editText?.(oldString, newString, replaceAll);
+      if (!res || 'error' in res) throw new Error(res && 'error' in res ? res.error : 'The document could not be changed.');
+    });
+  }
+  return propose(ws, host, t, got.text, edited.text, (isNew) => writeText(ws, t, edited.text, isNew, got.bom));
 }
 
 async function writeFile(ws: AgentWorkspace, host: ToolHost, rawPath: unknown, content: string) {
-  const t = resolveTarget(ws, rawPath);
   const label = `Write ${cleanPath(rawPath) || 'file'}`;
+  const found = resolveTarget(ws, rawPath);
+  if ('error' in found) return { result: `Error: ${found.error}`, activity: { label, error: true } };
+  const exists = found.kind === 'editor' || !!(await found.folder.read(found.path));
+  // a new Word / OpenDocument / RTF file: made from the Markdown content, in that format
+  if (!exists && found.kind === 'folder' && WORD_FILE.test(found.path)) {
+    const folder = found.folder;
+    return propose(ws, host, found, null, content, async () => {
+      const [{ importMarkdown }, { exportFlow, formatFromExtension }] = await Promise.all([import('../../core/formats/markdown'), import('../../core/registry')]);
+      const format = formatFromExtension(found.path);
+      if (!format) throw new Error(`Files like ${found.path} can't be created.`);
+      const doc = await importMarkdown(new TextEncoder().encode(content));
+      const bytes = await exportFlow(doc, format);
+      const dirs: string[] = [];
+      for (let d = dirOf(found.path); d; d = dirOf(d)) dirs.unshift(d);
+      for (const d of dirs) await folder.createDir(d).catch(() => undefined);
+      await folder.createFile(found.path, bytes);
+      ws.folderChanged(dirOf(found.path));
+    });
+  }
+  const t = exists ? await openForChange(ws, found) : found;
   if ('error' in t) return { result: `Error: ${t.error}`, activity: { label, error: true } };
   const got = await readText(t);
   if (got && 'error' in got) return { result: `Error: ${got.error}`, activity: { label, error: true } };
   if (got && got.text === content) return { result: `${t.path} already has exactly this content.`, activity: { label: `${t.path} unchanged` } };
-  return propose(ws, host, t, got ? got.text : null, content, got ? got.bom : false);
+  if (isDocument(t) && t.kind === 'editor') {
+    const ed = t.editor;
+    // the review shows the document's text against the Markdown it is replaced with
+    return propose(ws, host, t, got ? got.text : null, content, async () => {
+      if (!ed.writeMarkdown) throw new Error('The document could not be replaced.');
+      await ed.writeMarkdown(content);
+    });
+  }
+  return propose(ws, host, t, got ? got.text : null, content, (isNew) => writeText(ws, t, content, isNew, got ? got.bom : false));
 }

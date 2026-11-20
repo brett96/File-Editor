@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { trimHistory } from '../src/core/agent/context';
 import { applyEdit, lineDiff, minimalChange } from '../src/core/agent/edits';
-import { ChatAssembler, SseParser, buildChatBody, errorFromResponse, formatContext, parseModels, type AgentMessage } from '../src/core/agent/protocol';
+import { ChatAssembler, RepetitionDetector, SseParser, buildChatBody, errorFromResponse, formatContext, parseModels, parseUsageToday, type AgentMessage } from '../src/core/agent/protocol';
 import { memoryFolder } from '../src/platform/folders';
 import type { CodeEditorAccess } from '../src/ui/agent/editors';
 import { runTool, type AgentWorkspace, type EditProposal } from '../src/ui/agent/tools';
@@ -44,6 +44,39 @@ describe('agent stream parsing', () => {
     const a = new ChatAssembler();
     a.push({ error: { message: 'provider failed' } });
     expect(a.error).toBe('provider failed');
+  });
+});
+
+describe('stuck models', () => {
+  const feed = (text: string, chunk = 37) => {
+    const d = new RepetitionDetector();
+    for (let i = 0; i < text.length; i += chunk) if (d.push(text.slice(i, i + chunk))) return true;
+    return false;
+  };
+  const code = Array.from({ length: 300 }, (_, i) => `const value${i} = compute(${i}, "item-${i * 7}");`).join('\n');
+
+  it('spots a run of one character and a line repeated over and over', () => {
+    expect(feed(`Let me think. ${'!'.repeat(1500)}`)).toBe(true);
+    expect(feed(`intro\n${"- '    if ($m.SID -and $m.SID.Value -eq $user.SID.Value) { continue }'\n".repeat(40)}`)).toBe(true);
+    expect(feed('ok '.repeat(500))).toBe(true);
+  });
+
+  it('leaves normal answers, code, separators and blank space alone', () => {
+    expect(feed(code)).toBe(false);
+    expect(feed(`Python:\n${'-'.repeat(40)}\n\n${code}`)).toBe(false);
+    expect(feed(`a${' '.repeat(3000)}b${'\n'.repeat(2000)}`)).toBe(false);
+    expect(feed('The quick brown fox jumps over the lazy dog. '.repeat(3))).toBe(false);
+  });
+
+  it('reads today’s usage and passes a repetition penalty on', () => {
+    expect(parseUsageToday({ requests: 3, tokens: 1200, dailyRequests: 300, dailyTokens: 2e6, resetsAt: '2026-11-21T00:00:00.000Z', paused: false })).toMatchObject({ requests: 3, dailyRequests: 300 });
+    expect(parseUsageToday({ requests: 1 })).toBeNull();
+    const a = new ChatAssembler();
+    a.push({ choices: [{ delta: { content: 'x' } }] });
+    a.push({ fe_usage: { requests: 4, tokens: 10, dailyRequests: 300, dailyTokens: 1000, resetsAt: '', paused: false } });
+    expect(a.result().today?.requests).toBe(4);
+    const b = buildChatBody({ model: 'm', messages: [{ role: 'user', content: 'x' }], frequencyPenalty: 9 });
+    expect('body' in b && b.body.frequency_penalty).toBe(1.5);
   });
 });
 
@@ -276,6 +309,8 @@ describe('agent requests (main process)', () => {
     expect(await agent.agentStatus()).toEqual({ licensed: false, purchaseUrl: 'https://license.example.test' });
     expect(await agent.chat(sender, 'r1', req)).toMatchObject({ ok: false, code: 'unlicensed' });
     expect(await agent.listModels()).toMatchObject({ ok: false, code: 'unlicensed' });
+    expect(await agent.makeImage('i0', { mode: 'generate', model: 'z', prompt: 'x' })).toMatchObject({ ok: false, code: 'unlicensed' });
+    expect(await agent.imageModels()).toMatchObject({ ok: false, code: 'unlicensed' });
     expect(fetch).not.toHaveBeenCalled();
 
     state.active = true;
@@ -296,5 +331,37 @@ describe('agent requests (main process)', () => {
     fetch.mockResolvedValueOnce(Response.json({ error: 'This license was revoked.', code: 'revoked' }, { status: 403 }));
     expect(await agent.chat(sender, 'r4', req)).toMatchObject({ ok: false, code: 'unlicensed' });
     expect(refresh).toHaveBeenCalledWith(true);
+
+    // a model stuck repeating itself is stopped mid-stream (aborting the request) and reported
+    let aborted = false;
+    fetch.mockImplementationOnce(async (_url: string, init: RequestInit) => {
+      init.signal?.addEventListener('abort', () => (aborted = true));
+      const piece = `data: ${JSON.stringify({ choices: [{ delta: { reasoning_content: '!'.repeat(100) } }] })}\n\n`;
+      let n = 0;
+      const body = new ReadableStream({
+        pull(c) {
+          if (aborted) return c.error(new Error('aborted'));
+          if (n++ > 200) return c.close();
+          c.enqueue(new TextEncoder().encode(piece));
+        },
+      });
+      return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    });
+    expect(await agent.chat(sender, 'r5', req)).toMatchObject({ ok: false, code: 'loop' });
+    expect(aborted).toBe(true);
+
+    // AI pictures: sent to the license server, answered as image bytes with usage in a header
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 1, 2]);
+    fetch.mockResolvedValueOnce(
+      new Response(png, { status: 200, headers: { 'content-type': 'image/png', 'x-fe-model': 'qwen-image-3-edit', 'x-fe-cost': '0.03', 'x-fe-usage': JSON.stringify({ requests: 1, tokens: 5, dailyRequests: 300, dailyTokens: 1000, images: 4, dailyImages: 20, resetsAt: '', paused: false }) } }),
+    );
+    const pic = await agent.makeImage('i1', { mode: 'edit', model: 'qwen-image-3-edit', prompt: 'purple sky', image: 'data:image/png;base64,AAAA' });
+    expect(pic).toMatchObject({ ok: true, mime: 'image/png', model: 'qwen-image-3-edit', costUsd: 0.03, today: { images: 4, dailyImages: 20 } });
+    expect(pic.ok && Array.from(pic.bytes)).toEqual(Array.from(png));
+    const [picUrl, picInit] = fetch.mock.calls[fetch.mock.calls.length - 1] as [string, RequestInit];
+    expect(picUrl).toBe('https://license.example.test/api/agent/image');
+    expect(JSON.parse(String(picInit.body))).toMatchObject({ token: 'FE1.tok.sig', request: { mode: 'edit', model: 'qwen-image-3-edit', prompt: 'purple sky', image: 'data:image/png;base64,AAAA' } });
+    fetch.mockResolvedValueOnce(Response.json({ error: "You've reached today's limit of 20 AI images.", code: 'daily-limit' }, { status: 429 }));
+    expect(await agent.makeImage('i2', { mode: 'generate', model: 'z', prompt: 'x' })).toMatchObject({ ok: false, code: 'quota', error: "You've reached today's limit of 20 AI images." });
   });
 });

@@ -15,6 +15,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import {
   AlertTriangle,
   Bot,
+  Hand,
   Check,
   ChevronDown,
   ChevronRight,
@@ -41,6 +42,7 @@ import {
   type AgentModel,
   type AgentStatus,
   type AgentToolCall,
+  type AgentUsageToday,
 } from '../../core/agent/protocol';
 import { agentBridge } from '../../platform/host';
 import { cx } from '../components';
@@ -51,7 +53,7 @@ type Mode = 'agent' | 'chat';
 type Item =
   | { kind: 'user'; id: string; text: string; note?: string }
   | { kind: 'assistant'; id: string; text: string; reasoning: string; streaming: boolean; tool?: string; meta?: string }
-  | { kind: 'tool'; id: string; label: string; status: 'running' | 'done' | 'error' }
+  | { kind: 'tool'; id: string; label: string; status: 'running' | 'waiting' | 'done' | 'error' }
   | { kind: 'edit'; id: string; path: string; diff: Diff; isNew: boolean; status: 'pending' | 'applied' | 'rejected' | 'failed' }
   | { kind: 'notice'; id: string; text: string; error?: boolean };
 
@@ -121,6 +123,14 @@ function systemPrompt(mode: Mode, ws: AgentWorkspace, budget: number): string {
   if (ws.active && path) {
     const sel = ws.active.getSelection();
     parts.push(`The file on screen is ${path}${sel ? `; the cursor is on line ${sel.cursorLine}` : ''}.`);
+    if (ws.active.kind === 'document') {
+      parts.push(
+        `${path} is a ${ws.active.format ?? 'Word-style document'} open in the document editor, not code: you see it as text, one line per paragraph. ` +
+          (mode === 'agent'
+            ? 'Change wording with edit_file (formatting around the change is kept; a newline starts a new paragraph). To restructure it, use write_file with the whole document in Markdown.'
+            : 'When you suggest new text for it, give plain paragraphs rather than code blocks unless the user asks for code.'),
+      );
+    }
     if (mode === 'chat') {
       const { text, clipped } = clip(ws.active.getText(), budget);
       const fence = fenceFor(text);
@@ -270,7 +280,58 @@ function Thinking({ text, live }: { text: string; live: boolean }) {
       <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
         {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />} {live ? 'Thinking…' : 'Thought process'}
       </button>
-      {open && <pre>{text}</pre>}
+      {open && <pre>{text.length > 20_000 ? `…${text.slice(-20_000)}` : text}</pre>}
+    </div>
+  );
+}
+
+// ── usage meter ────────────────────────────────────────────────────────────
+const fmtTokens = (n: number) => (n >= 1_000_000 ? `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M` : n >= 1000 ? `${Math.round(n / 1000)}K` : String(Math.round(n)));
+
+function untilReset(iso: string): string {
+  const ms = Date.parse(iso) - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return 'soon';
+  const h = Math.floor(ms / 3_600_000);
+  const m = Math.floor((ms % 3_600_000) / 60_000);
+  return h ? `${h}h ${m}m` : `${m}m`;
+}
+
+/** Today's use against the license's daily limits; `live` adds the request streaming right now. */
+function UsageMeter({ usage, live }: { usage: AgentUsageToday; live: number }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    const t = window.setInterval(() => tick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, []);
+  const requests = usage.requests;
+  const tokens = usage.tokens + live;
+  const share = Math.min(1, Math.max(requests / usage.dailyRequests, tokens / usage.dailyTokens));
+  const full = share >= 1 || usage.paused;
+  const level = full ? 'is-full' : share >= 0.8 ? 'is-warn' : '';
+  const left = full
+    ? usage.paused
+      ? 'Paused by the service’s monthly limit until the 1st'
+      : `Today’s limit reached · resets in ${untilReset(usage.resetsAt)}`
+    : `${Math.round((1 - share) * 100)}% left today · resets in ${untilReset(usage.resetsAt)}`;
+  return (
+    <div
+      className={cx('agent-usage', level)}
+      role="meter"
+      aria-label="Agent use today"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={Math.round(share * 100)}
+      title={`Today (UTC): ${requests.toLocaleString()} of ${usage.dailyRequests.toLocaleString()} requests and ${Math.round(tokens).toLocaleString()} of ${usage.dailyTokens.toLocaleString()} tokens${live ? ' (including the answer being written, estimated)' : ''}. Each step the agent takes is one request.`}
+    >
+      <div className="agent-usage-bar">
+        <span style={{ width: `${Math.max(share * 100, share > 0 ? 2 : 0)}%` }} />
+      </div>
+      <div className="agent-usage-text">
+        <span>
+          {requests.toLocaleString()}/{usage.dailyRequests.toLocaleString()} requests · {fmtTokens(tokens)}/{fmtTokens(usage.dailyTokens)} tokens
+        </span>
+        <span className="agent-usage-left">{left}</span>
+      </div>
     </div>
   );
 }
@@ -308,6 +369,11 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
   const approvals = useRef(new Map<string, (ok: boolean) => void>());
   const listRef = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  /** an item to scroll into view after the next render (a change waiting for approval) */
+  const revealRef = useRef<string | null>(null);
+  const [usage, setUsage] = useState<AgentUsageToday | null>(null);
+  /** this moment's request, estimated while it streams */
+  const [liveTokens, setLiveTokens] = useState(0);
   const autoApplyRef = useRef(autoApply);
   autoApplyRef.current = autoApply;
 
@@ -334,7 +400,10 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
       setModelsError(null);
       try {
         const res = await bridge.models(force);
-        if (res.ok) setModels(res.models);
+        if (res.ok) {
+          setModels(res.models);
+          if (res.usage) setUsage(res.usage);
+        }
         else {
           setModelsError(res.error);
           if (res.code === 'unlicensed') void refreshStatus();
@@ -370,8 +439,31 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
 
   useLayoutEffect(() => {
     const el = listRef.current;
+    const reveal = revealRef.current;
+    if (el && reveal) {
+      const target = el.querySelector(`[data-item="${reveal}"]`);
+      if (target) {
+        revealRef.current = null;
+        target.scrollIntoView({ block: 'nearest' });
+        stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+        return;
+      }
+    }
     if (el && stick.current) el.scrollTop = el.scrollHeight;
   }, [items]);
+
+  // ── usage meter: today's use against this license's limits ──
+  const refreshUsage = useCallback(async () => {
+    if (!bridge) return;
+    const res = await bridge.usage().catch(() => null);
+    if (res?.ok) setUsage(res.usage);
+  }, [bridge]);
+  useEffect(() => {
+    if (hidden || !usable) return;
+    void refreshUsage();
+    const timer = window.setInterval(() => !run.current && void refreshUsage(), 60_000);
+    return () => clearInterval(timer);
+  }, [hidden, usable, refreshUsage]);
 
   const insertCode = useCallback(
     (code: string) => {
@@ -417,37 +509,59 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
         const system = systemPrompt(mode, now, budget);
         const tools = mode === 'agent' && (now.folder || now.active) ? AGENT_TOOLS : undefined;
         const { messages } = trimHistory(hist, historyBudget(ctx, OUTPUT_TOKENS) - system.length);
-        const aid = uid('a');
-        show({ kind: 'assistant', id: aid, text: '', reasoning: '', streaming: true });
-        const rid = uid('r');
-        me.requestId = rid;
-
-        // pieces of the answer as they arrive, shown once per frame
-        const buf = { text: '', reasoning: '', tool: undefined as string | undefined };
-        let frame = 0;
-        const flush = () => {
-          frame = 0;
-          patch(aid, { text: buf.text, reasoning: buf.reasoning, tool: buf.tool } as Partial<Item>);
+        const chatMessages: AgentMessage[] = [{ role: 'system', content: system }, ...messages];
+        const promptTokens = Math.round(JSON.stringify(chatMessages).length / 4);
+        /** One request, its answer streamed into a new assistant item. */
+        const ask = async (extra: { frequencyPenalty?: number; temperature?: number } = {}) => {
+          const aid = uid('a');
+          show({ kind: 'assistant', id: aid, text: '', reasoning: '', streaming: true });
+          const rid = uid('r');
+          me.requestId = rid;
+          // pieces of the answer as they arrive, shown once per frame
+          const buf = { text: '', reasoning: '', tool: undefined as string | undefined };
+          let frame = 0;
+          const flush = () => {
+            frame = 0;
+            patch(aid, { text: buf.text, reasoning: buf.reasoning, tool: buf.tool } as Partial<Item>);
+            // the usage meter counts this request as it goes (an estimate until the server's figure arrives)
+            setLiveTokens(promptTokens + Math.round((buf.text.length + buf.reasoning.length) / 4));
+          };
+          const off = bridge.onDelta((id, d) => {
+            if (id !== rid) return;
+            if (d.content) buf.text += d.content;
+            if (d.reasoning) buf.reasoning += d.reasoning;
+            if (d.tool) buf.tool = d.tool;
+            if (!frame) frame = requestAnimationFrame(flush);
+          });
+          setLiveTokens(promptTokens);
+          try {
+            const res = await bridge.chat(rid, { model, messages: chatMessages, tools, maxTokens: OUTPUT_TOKENS, ...extra });
+            if (res.ok && res.today) setUsage(res.today);
+            else if (!res.ok) void refreshUsage();
+            return { res, aid, buf };
+          } finally {
+            off();
+            if (frame) cancelAnimationFrame(frame);
+            me.requestId = null;
+            setLiveTokens(0);
+          }
         };
-        const off = bridge.onDelta((id, d) => {
-          if (id !== rid) return;
-          if (d.content) buf.text += d.content;
-          if (d.reasoning) buf.reasoning += d.reasoning;
-          if (d.tool) buf.tool = d.tool;
-          if (!frame) frame = requestAnimationFrame(flush);
-        });
-        let res;
-        try {
-          res = await bridge.chat(rid, { model, messages: [{ role: 'system', content: system }, ...messages], tools, maxTokens: OUTPUT_TOKENS });
-        } finally {
-          off();
-          if (frame) cancelAnimationFrame(frame);
-          me.requestId = null;
+        let { res, aid, buf } = await ask();
+        if (!res.ok && res.code === 'loop' && !me.cancelled) {
+          // the model degenerated ("!!!!…" or the same line over and over): it was stopped at once;
+          // try once more, discouraging repetition
+          setItems((list) => list.filter((i) => i.id !== aid));
+          show({ kind: 'notice', id: uid('n'), text: 'The model got stuck repeating itself, so it was stopped. Trying again…' });
+          ({ res, aid, buf } = await ask({ frequencyPenalty: 0.6, temperature: 0.6 }));
+          if (!res.ok && res.code === 'loop') {
+            res = { ...res, error: 'The model got stuck repeating itself again. Pick another model (“thinking” variants loop more often), or rephrase the request.' };
+          }
         }
         if (!res.ok) {
           setItems((list) => list.filter((i) => !(i.id === aid && i.kind === 'assistant' && !buf.text && !buf.reasoning)).map((i) => (i.id === aid ? ({ ...i, streaming: false } as Item) : i)));
           if (res.code !== 'cancelled') show({ kind: 'notice', id: uid('n'), text: res.error, error: true });
           if (res.code === 'unlicensed') void refreshStatus();
+          if (res.code === 'loop') setItems((list) => list.filter((i) => i.id !== aid));
           break;
         }
         const { content: answer, reasoning, toolCalls } = res.message;
@@ -483,6 +597,11 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
               editId = uid('e');
               const auto = autoApplyRef.current;
               show({ kind: 'edit', id: editId, path: p.path, diff: p.diff, isNew: p.isNew, status: auto ? 'applied' : 'pending' });
+              if (!auto && !me.cancelled) {
+                // the turn waits for the user here: say so, and bring the change into view
+                patch(tid, { label: `Waiting for you to apply or reject the ${p.isNew ? 'new file' : 'change to'} ${p.path}`, status: 'waiting' } as Partial<Item>);
+                revealRef.current = editId;
+              }
               if (auto || me.cancelled) {
                 accepted = auto && !me.cancelled;
                 return Promise.resolve(accepted);
@@ -583,6 +702,9 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
   }, [models]);
 
   const hasWork = !!(context.folder || context.code);
+  const pendingEdits = items.filter((i): i is Extract<Item, { kind: 'edit' }> => i.kind === 'edit' && i.status === 'pending');
+  const pending = pendingEdits[0] ?? null;
+  const pendingCount = pendingEdits.length;
 
   // ── what is shown ──
   let body: ReactNode;
@@ -639,8 +761,8 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
                 {mode === 'agent'
                   ? hasWork
                     ? `Ask the agent to explain, fix or change ${context.folder ? `the files in ${context.folder}` : context.file}. It reads what it needs and shows each change for you to apply.`
-                    : 'Open a folder (Open ▸ Open folder) or a code file, then ask the agent to work on it.'
-                  : 'Ask about the code on screen. Select lines first to ask about just those.'}
+                    : 'Open a folder (Open ▸ Open folder), a code file or a document, then ask the agent to work on it.'
+                  : 'Ask about the file on screen. Select text first to ask about just that.'}
               </p>
             </div>
           )}
@@ -665,13 +787,13 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
               case 'tool':
                 return (
                   <div key={it.id} className={cx('agent-tool', `is-${it.status}`)}>
-                    {it.status === 'running' ? <span className="spinner" /> : it.status === 'error' ? <AlertTriangle size={13} /> : <Check size={13} />}
+                    {it.status === 'running' ? <span className="spinner" /> : it.status === 'waiting' ? <Hand size={13} /> : it.status === 'error' ? <AlertTriangle size={13} /> : <Check size={13} />}
                     <span>{it.label}</span>
                   </div>
                 );
               case 'edit':
                 return (
-                  <div key={it.id} className={cx('agent-edit', `is-${it.status}`)}>
+                  <div key={it.id} data-item={it.id} className={cx('agent-edit', `is-${it.status}`)}>
                     <div className="agent-edit-head">
                       <FileCode size={14} />
                       <span className="agent-edit-path" title={it.path}>{it.path}</span>
@@ -706,6 +828,23 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
           })}
         </div>
         <div className="agent-composer">
+          {pending && (
+            <div className="agent-pending" role="alert">
+              <Hand size={14} />
+              <span>
+                {pendingCount > 1 ? `${pendingCount} changes are` : 'A change is'} waiting for you: <strong>{pending.path}</strong>
+              </span>
+              <button type="button" className="btn btn-text btn-sm" onClick={() => listRef.current?.querySelector(`[data-item="${pending.id}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })}>
+                Show
+              </button>
+              <button type="button" className="btn btn-primary btn-sm" onClick={() => decide(pending.id, true)}>
+                Apply
+              </button>
+              <button type="button" className="btn btn-sm agent-stop" onClick={() => decide(pending.id, false)}>
+                Reject
+              </button>
+            </div>
+          )}
           <div className="agent-context">
             {context.folder && <span className="agent-chip" title="The agent can read and change this folder’s files"><FolderOpen size={12} /> {context.folder}</span>}
             {context.file && <span className="agent-chip" title="The file on screen"><FileCode size={12} /> {context.file}</span>}
@@ -805,6 +944,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
           </button>
         </div>
       )}
+      {usable && usage && <UsageMeter usage={usage} live={liveTokens} />}
       {body}
     </aside>
   );

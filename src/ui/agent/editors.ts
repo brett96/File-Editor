@@ -1,6 +1,8 @@
 /**
- * The code editors of open tabs, for the coding agent: it reads a file from the tab it is
- * open in (unsaved changes included) and applies its edits there, as one undoable change.
+ * The editors of open tabs, for the coding agent: it reads a file from the tab it is open in
+ * (unsaved changes included) and applies its edits there, as one undoable change. Code tabs
+ * (CodeMirror) and Word-style document tabs (txt, docx, odt, rtf, md… in the rich editor) both
+ * register; a document's text is one line per paragraph (src/core/agent/doc-text.ts).
  */
 
 export interface CodeSelection {
@@ -12,6 +14,10 @@ export interface CodeSelection {
 
 export interface CodeEditorAccess {
   tabId: number;
+  /** 'document': a Word-style document; edits keep its formatting, a rewrite takes Markdown */
+  kind?: 'code' | 'document';
+  /** the document's format, e.g. "Word document" (documents only) */
+  format?: string;
   /** the file name shown on the tab */
   name: string;
   /** set (by the app shell) when the tab's file belongs to the opened folder */
@@ -24,6 +30,12 @@ export interface CodeEditorAccess {
   setText(text: string): void;
   /** Replaces the selection (or inserts at the cursor). */
   insert(text: string): void;
+  /** Documents: replaces text inside the document, keeping its formatting (one undo step). */
+  editText?(oldString: string, newString: string, replaceAll: boolean): { count: number } | { error: string };
+  /** Documents: replaces the whole document with Markdown (headings, lists, bold, tables…). */
+  writeMarkdown?(markdown: string): Promise<void>;
+  /** Documents: paragraph styles by line, for the agent's outline */
+  outline?(): [number, string][];
 }
 
 const editors = new Map<number, CodeEditorAccess>();
