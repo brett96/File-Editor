@@ -396,6 +396,8 @@ export class ChatAssembler {
 // ── checking what the renderer asks for ────────────────────────────────────
 /** Stays under the license server's 4.5 MB request limit with room for the envelope. */
 export const MAX_REQUEST_CHARS = 4_000_000;
+/** Most messages in one request (the license server allows the same). */
+export const MAX_MESSAGES = 2000;
 /** The most output tokens the app asks for in one request (the license server may set less). */
 export const MAX_OUTPUT_TOKENS = 131_072;
 const ROLES = new Set(['system', 'user', 'assistant', 'tool']);
@@ -408,7 +410,7 @@ export function buildChatBody(req: unknown): { body: Record<string, unknown> } |
   const r = req as Partial<AgentChatRequest> | null;
   if (!r || typeof r !== 'object') return { error: 'Empty request.' };
   if (!isModelId(r.model)) return { error: 'Pick a model first.' };
-  if (!Array.isArray(r.messages) || r.messages.length === 0 || r.messages.length > 400) return { error: 'The conversation is empty or too long. Start a new session.' };
+  if (!Array.isArray(r.messages) || r.messages.length === 0 || r.messages.length > MAX_MESSAGES) return { error: 'The conversation is empty or too long. Start a new session.' };
   const messages: Record<string, unknown>[] = [];
   let images = 0;
   for (const m of r.messages as unknown[]) {
