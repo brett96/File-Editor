@@ -104,7 +104,11 @@ export type GitContext = { folder: string } | { file: string };
 
 /** License state reported by the desktop app's main process (electron/license.ts). */
 export interface LicenseState {
-  status: 'unlicensed' | 'active' | 'revoked';
+  /** "expired": a monthly / yearly license whose subscription isn't paid (it comes back when it is) */
+  status: 'unlicensed' | 'active' | 'revoked' | 'expired';
+  plan?: 'lifetime' | 'monthly' | 'yearly';
+  renewsAt?: string | null;
+  endsAt?: string | null;
   email?: string;
   keyHint?: string;
   activatedAt?: string;

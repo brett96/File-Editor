@@ -148,6 +148,8 @@ export interface AgentStatus {
   /** this computer holds an active File Editor license */
   licensed: boolean;
   purchaseUrl: string;
+  /** why the license isn't usable now (a subscription that isn't paid) */
+  message?: string;
 }
 
 /** A streamed piece of the answer, sent while a request is under way. */
@@ -209,6 +211,7 @@ export function formatContext(tokens: number): string {
 const SERVER_CODES: Record<string, AgentErrorCode> = {
   unlicensed: 'unlicensed',
   revoked: 'unlicensed',
+  expired: 'unlicensed',
   'daily-limit': 'quota',
   budget: 'quota',
   'rate-limited': 'rate-limited',

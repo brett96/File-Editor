@@ -61,15 +61,20 @@ function netSession(): Session {
 const headers = (accept: string) => ({ 'Content-Type': 'application/json', Accept: accept, 'User-Agent': `FileEditor/${app.getVersion()}` });
 
 export async function agentStatus(): Promise<AgentStatus> {
-  const lic = await getLicenseState().catch(() => null);
-  return { licensed: lic?.status === 'active', purchaseUrl: lic?.purchaseUrl ?? PURCHASE_URL };
+  let lic = await getLicenseState().catch(() => null);
+  // a paused subscription: ask the server again (throttled), in case it was renewed
+  if (lic?.status === 'expired') {
+    await refreshLicenseStatus().catch(() => undefined);
+    lic = await getLicenseState().catch(() => null);
+  }
+  return { licensed: lic?.status === 'active', purchaseUrl: lic?.purchaseUrl ?? PURCHASE_URL, ...(lic?.status === 'expired' ? { message: lic.message } : {}) };
 }
 
 const UNLICENSED = { ok: false as const, code: 'unlicensed' as const, error: 'The agent is part of licensed copies of File Editor. Enter your license key under Help ▸ License.' };
 
 /** The server said the license isn't good any more: re-check it, so the app shows that. */
 function onRefused(code: string) {
-  if (code === 'unlicensed') void refreshLicenseStatus(true).catch(() => undefined);
+  if (code === 'unlicensed' || code === 'expired') void refreshLicenseStatus(true).catch(() => undefined);
 }
 
 // ── models ─────────────────────────────────────────────────────────────────

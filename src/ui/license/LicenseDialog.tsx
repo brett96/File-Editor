@@ -65,8 +65,11 @@ export function LicenseDialog({ onClose, onActivated }: { onClose: () => void; o
   };
 
   const active = state?.status === 'active';
-  const showForm = state && !active;
+  const expired = state?.status === 'expired';
+  const showForm = state && !active && !expired;
   const revokedNote = state?.status === 'unlicensed' ? state.message : state?.status === 'revoked' ? (state.message ?? 'This license was revoked.') : null;
+  const day = (iso?: string | null) => (iso ? new Date(iso).toLocaleDateString(undefined, { dateStyle: 'medium' }) : null);
+  const subscription = state?.plan === 'monthly' || state?.plan === 'yearly';
   const activatedOn = state?.activatedAt ? new Date(state.activatedAt).toLocaleDateString(undefined, { dateStyle: 'medium' }) : null;
 
   return (
@@ -109,7 +112,37 @@ export function LicenseDialog({ onClose, onActivated }: { onClose: () => void; o
               Key {state.keyHint}
               {activatedOn ? ` · activated ${activatedOn}` : ''}
             </p>
-            <p className="dialog-hint">This lifetime license is tied to this computer and can't be moved to another device.</p>
+            {subscription ? (
+              <p className="dialog-hint">
+                {state.plan === 'monthly' ? 'Monthly' : 'Yearly'} subscription
+                {state.endsAt ? `, cancelled: it works until ${day(state.endsAt)}` : state.renewsAt ? `, renews ${day(state.renewsAt)}` : ''}. Manage or cancel it on the{' '}
+                <a href={state.purchaseUrl} target="_blank" rel="noopener noreferrer">
+                  license page
+                </a>{' '}
+                with your key. The license is tied to this computer and can't be moved to another device.
+              </p>
+            ) : (
+              <p className="dialog-hint">This lifetime license is tied to this computer and can't be moved to another device.</p>
+            )}
+          </div>
+        </div>
+      ) : expired ? (
+        <div className="license-card license-card-warn" role="alert">
+          <ShieldAlert size={28} aria-hidden />
+          <div>
+            <p className="license-title">Your subscription is paused</p>
+            <p className="dialog-text">{state.message ?? 'Your subscription has ended.'}</p>
+            <p className="dialog-text">
+              Licensed to <strong>{state.email}</strong> · key {state.keyHint}
+            </p>
+            <p className="dialog-hint">
+              Renew or update your payment on the{' '}
+              <a href={state.purchaseUrl} target="_blank" rel="noopener noreferrer">
+                license page
+              </a>{' '}
+              (Manage your subscription, with your key). This computer stays activated: the license works again as soon as the subscription is paid. Reopen this
+              window to check.
+            </p>
           </div>
         </div>
       ) : (

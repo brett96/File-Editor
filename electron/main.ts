@@ -597,8 +597,8 @@ async function refreshLicenseMenu() {
     if (app.isReady()) buildMenu();
   }
   applyWindowTitle();
-  // Tell the renderer when an active license goes away (refund / revoke) so it can update UI.
-  if (wasLicensed && !now && state) {
+  // Tell the renderer when a license goes away (refund / revoke / a lapsed subscription) or comes back.
+  if (wasLicensed !== now && state) {
     mainWindow?.webContents.send('license-changed', state);
   }
 }

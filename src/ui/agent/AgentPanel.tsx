@@ -985,7 +985,8 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
     body = (
       <div className="agent-gate">
         <Lock size={28} />
-        <h3>A license unlocks the coding agent</h3>
+        <h3>{status.message ? 'Your subscription is paused' : 'A license unlocks the coding agent'}</h3>
+        {status.message && <p>{status.message}</p>}
         <p>
           With a File Editor license, an AI agent works alongside you in the code editor and in opened folders: it reads your project, answers
           questions and proposes changes you can apply with one click. Pick the model you like from more than 60.
