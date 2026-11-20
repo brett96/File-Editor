@@ -624,8 +624,24 @@
     scrollbar-width: none;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior-x: contain;
-    /* fade the edge that has more tools behind it */
-    mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
+  }
+
+  /*
+   * Fade the edge that has more tools behind it. Not a mask-image on the strip: a mask clips
+   * everything inside the element, including the menus that open from its buttons (they are
+   * position: fixed, but masks still clip them), which left them invisible and untappable.
+   */
+  .topbar-actions::after,
+  .toolbar::after {
+    content: '';
+    position: sticky;
+    right: 0;
+    flex: none;
+    align-self: stretch;
+    width: 18px;
+    margin-left: -18px;
+    pointer-events: none;
+    background: linear-gradient(to right, transparent, var(--surface));
   }
 
   .topbar-actions::-webkit-scrollbar,
@@ -661,8 +677,8 @@
   }
 
   /* Done stays in reach while the drawing tools scroll sideways */
-  .draw-toolbar {
-    mask-image: none;
+  .draw-toolbar::after {
+    display: none;
   }
 
   .draw-done {
