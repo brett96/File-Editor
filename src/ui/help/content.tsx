@@ -249,7 +249,9 @@ export const SECTIONS: GuideSection[] = [
           <li>
             In the photo editor, the <Ui>AI edit</Ui> button (✨) changes a picture from a description, or makes a new one, with an image
             model you pick. Check the result, then <Ui>Apply</Ui> it (<Keys k="Ctrl+Z" /> takes it back). Each license has a daily number of AI
-            pictures; a picture that fails doesn't count.
+            pictures; a picture that fails doesn't count. In Pro Photo the same AI edit (the ✦ button, <Ui>Filter ▸ AI Edit</Ui> or{' '}
+            <Ui>Layer ▸ New Layer from AI Edit</Ui>) can send the whole picture or just the active layer, and adds the result as a new layer, so you
+            can mask it, change its blend mode or hide it.
           </li>
         </ul>
         <Note>

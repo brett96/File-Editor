@@ -216,6 +216,10 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   server (`/api/agent/image`), which checks the license and a daily picture allowance. The result
   is previewed (hold *Before* to compare) and **Apply** puts it on the canvas as one undoable
   step, at the picture's own size unless that option is turned off (`src/ui/image/AiImagePanel.tsx`).
+  In **Pro Photo** the same panel opens from the ✦ button, **Filter ▸ AI Edit** or **Layer ▸ New
+  Layer from AI Edit**: it sends the whole picture or only the active layer, and the result is
+  added as a new layer above the active one, named after the description, so the original stays
+  untouched (a picture larger than the canvas is scaled to fit and centred).
 - **Usage meter.** Under the model list: today's requests and tokens against the license's
   daily limits, a bar that turns amber at 80% and red when used up, and when it resets. It
   updates while an answer streams (estimated) and with the server's figure after each request.

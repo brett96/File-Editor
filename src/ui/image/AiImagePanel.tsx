@@ -57,22 +57,41 @@ export function pictureForSending(px: Pixels): string {
 
 const price = (m: ImageModel) => (m.priceUsd !== null ? ` · $${m.priceUsd.toFixed(m.priceUsd < 0.1 ? 3 : 2).replace(/0$/, '')}` : '');
 
+/** What happened, for the host to place the result (Pro Photo makes a layer of it). */
+export interface AiApplyInfo {
+  mode: Mode;
+  prompt: string;
+  /** the result was scaled to the picture's size */
+  fitted: boolean;
+}
+
 export function AiImagePanel({
   getSource,
+  sources,
   width,
   height,
   onApply,
   onClose,
   onError,
+  applyLabel = 'Apply',
+  appliedMessage,
+  className,
 }: {
   /** the picture as it is now (text and drawings included) */
   getSource: () => Pixels;
+  /** a choice of what to send instead of getSource (Pro Photo: the whole picture or one layer) */
+  sources?: { id: string; label: string; get: () => Pixels }[];
   width: number;
   height: number;
-  onApply: (px: Pixels) => void;
+  onApply: (px: Pixels, info: AiApplyInfo) => void;
   onClose: () => void;
   onError: (message: string, kind?: 'error' | 'info') => void;
+  applyLabel?: string;
+  appliedMessage?: (mode: Mode) => string;
+  className?: string;
 }) {
+  const [sourceId, setSourceId] = useState(sources?.[0]?.id ?? '');
+  const source = () => (sources?.find((s) => s.id === sourceId) ?? sources?.[0])?.get() ?? getSource();
   const bridge = agentBridge();
   const [licensed, setLicensed] = useState<boolean | null>(null);
   const [models, setModels] = useState<ImageModel[] | null>(null);
@@ -128,7 +147,7 @@ export function AiImagePanel({
     const id = `img${Date.now().toString(36)}`;
     requestId.current = id;
     try {
-      const image = mode === 'edit' ? pictureForSending(getSource()) : undefined;
+      const image = mode === 'edit' ? pictureForSending(source()) : undefined;
       const res = await bridge.image(id, {
         mode,
         model: model.id,
@@ -160,10 +179,10 @@ export function AiImagePanel({
 
   const apply = () => {
     if (!result) return;
-    const px = mode === 'edit' && keepSize && (result.px.width !== width || result.px.height !== height) ? resizePixels(result.px, width, height) : result.px;
-    onApply(px);
+    const fitted = mode === 'edit' && keepSize && (result.px.width !== width || result.px.height !== height);
+    onApply(fitted ? resizePixels(result.px, width, height) : result.px, { mode, prompt: prompt.trim(), fitted });
     setResult(null);
-    onError(mode === 'edit' ? 'AI edit applied. Undo (Ctrl+Z) takes it back.' : 'New picture placed. Undo (Ctrl+Z) takes it back.', 'info');
+    onError(appliedMessage?.(mode) ?? (mode === 'edit' ? 'AI edit applied. Undo (Ctrl+Z) takes it back.' : 'New picture placed. Undo (Ctrl+Z) takes it back.'), 'info');
   };
 
   let body: ReactNode;
@@ -215,6 +234,16 @@ export function AiImagePanel({
           </select>
         </label>
         {model?.description && <p className="panel-note">{model.description}</p>}
+        {mode === 'edit' && sources && sources.length > 1 && (
+          <label className="ai-field">
+            <span>Send</span>
+            <select value={sourceId} disabled={busy} onChange={(e) => (setSourceId(e.target.value), setResult(null))}>
+              {sources.map((s) => (
+                <option key={s.id} value={s.id}>{s.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className="ai-field">
           <span>{mode === 'edit' ? 'What should change?' : 'Describe the picture'}</span>
           <textarea
@@ -287,7 +316,7 @@ export function AiImagePanel({
                 <Eye size={13} /> Before
               </button>
             </div>
-            <img src={showBefore ? pixelsToCanvas(getSource()).toDataURL('image/jpeg', 0.8) : result.url} alt={showBefore ? 'Before' : 'AI result'} />
+            <img src={showBefore ? pixelsToCanvas(source()).toDataURL('image/jpeg', 0.8) : result.url} alt={showBefore ? 'Before' : 'AI result'} />
             <p className="panel-note">
               {result.px.width}×{result.px.height}
               {mode === 'edit' && keepSize && (result.px.width !== width || result.px.height !== height) ? ` · placed at ${width}×${height}` : ''}
@@ -295,7 +324,7 @@ export function AiImagePanel({
             <div className="panel-actions">
               <button type="button" className="btn btn-text" onClick={() => setResult(null)}>Discard</button>
               <span className="spacer" />
-              <button type="button" className="btn btn-primary" onClick={apply}>Apply</button>
+              <button type="button" className="btn btn-primary" onClick={apply}>{applyLabel}</button>
             </div>
           </div>
         )}
@@ -310,7 +339,7 @@ export function AiImagePanel({
   }
 
   return (
-    <aside className="side-panel ai-panel" aria-label="AI edit">
+    <aside className={cx('side-panel', 'ai-panel', className)} aria-label="AI edit">
       <div className="ai-head">
         <h3>
           <Sparkles size={15} /> AI edit
