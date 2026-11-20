@@ -4526,3 +4526,327 @@ button.brand:focus-visible {
   color: var(--accent);
   font-weight: 600;
 }
+
+/* agent: usage meter + context ring row, attachments, earlier sessions */
+.agent-meters {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 10px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+
+.agent-meters .agent-usage {
+  flex: 1;
+  min-width: 0;
+  border-bottom: 0;
+}
+
+.agent-context-ring {
+  position: relative;
+  flex: none;
+  width: 32px;
+  height: 32px;
+  margin: 4px 0;
+  color: var(--accent);
+}
+
+.agent-context-ring svg {
+  display: block;
+}
+
+.agent-context-ring span {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.agent-ring-track,
+.agent-ring-fill {
+  fill: none;
+  stroke-width: 3.5;
+}
+
+.agent-ring-track {
+  stroke: var(--border);
+}
+
+.agent-ring-fill {
+  stroke: currentColor;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.3s ease;
+}
+
+.agent-context-ring.is-warn {
+  color: #d29922;
+}
+
+.agent-context-ring.is-full {
+  color: var(--danger);
+}
+
+.agent-icon.is-on {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.agent-attachments,
+.agent-sent-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.agent-sent-attachments {
+  align-items: flex-start;
+  margin-bottom: 4px;
+}
+
+.agent-attachment {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 2px 4px 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-size: 11.5px;
+  color: var(--text);
+}
+
+.agent-attachment img {
+  width: 22px;
+  height: 22px;
+  object-fit: cover;
+  border-radius: 3px;
+}
+
+.agent-attachment.is-image {
+  padding-left: 3px;
+}
+
+.agent-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.agent-attachment button {
+  display: inline-flex;
+  border: 0;
+  padding: 2px;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.agent-attachment button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.agent-attachment.is-sent {
+  padding-right: 6px;
+  background: var(--surface);
+}
+
+.agent-sent-thumb {
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+
+.agent-attachment-warn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--danger);
+}
+
+.agent-composer-row .popover-wrap {
+  flex: none;
+}
+
+.agent-composer-row .btn-popover {
+  height: 28px;
+  padding: 0 6px;
+  color: var(--muted);
+}
+
+.agent-history {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-history-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+}
+
+.agent-history-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 10px 8px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.agent-history-search input {
+  flex: 1;
+  min-width: 0;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  outline: none;
+}
+
+.agent-history-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 6px 12px;
+}
+
+.agent-history-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  border-radius: 8px;
+}
+
+.agent-history-row:hover,
+.agent-history-row.is-current {
+  background: var(--surface-2);
+}
+
+.agent-history-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-history-open:disabled {
+  cursor: default;
+}
+
+.agent-history-open svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--muted);
+}
+
+.agent-history-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-history-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-history-meta {
+  font-size: 11px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-history-note {
+  padding: 12px 8px;
+  font-size: 12px;
+  color: var(--muted);
+  list-style: none;
+}
+
+.agent-history-note.is-error {
+  color: var(--danger);
+}
+
+.agent-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.agent-picker-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 50vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.agent-picker-list button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-picker-list button:hover {
+  background: var(--accent-soft);
+}
+
+.agent-picker-name {
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.agent-picker-dir {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 11.5px;
+}

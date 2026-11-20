@@ -247,6 +247,12 @@ export const SECTIONS: GuideSection[] = [
           </li>
           <li>Some models can't use tools. If one fails in Agent mode, switch to Chat or pick another model.</li>
           <li>
+            The paperclip adds files to your message: the file on screen, a file of the folder, or files and pictures from your computer. You
+            can also paste a screenshot or drop files on the message box. Pictures need a model marked <Ui>sees images</Ui>.
+          </li>
+          <li>The ring next to the usage meter shows how much of the model's memory (its context window) the conversation fills.</li>
+          <li>The clock button lists earlier sessions, kept on this computer: open one to read it or carry on where you left off.</li>
+          <li>
             In the photo editor, the <Ui>AI edit</Ui> button (✨) changes a picture from a description, or makes a new one, with an image
             model you pick. Check the result, then <Ui>Apply</Ui> it (<Keys k="Ctrl+Z" /> takes it back). Each license has a daily number of AI
             pictures; a picture that fails doesn't count. In Pro Photo the same AI edit (the ✦ button, <Ui>Filter ▸ AI Edit</Ui> or{' '}

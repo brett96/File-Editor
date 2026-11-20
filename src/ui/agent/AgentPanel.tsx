@@ -16,6 +16,8 @@ import {
   AlertTriangle,
   Bot,
   Hand,
+  History as HistoryIcon,
+  Paperclip,
   Check,
   ChevronDown,
   ChevronRight,
@@ -33,7 +35,10 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { fileBudget, historyBudget, trimHistory } from '../../core/agent/context';
+import { estimateTokens, fileBudget, historyBudget, limitImages, trimHistory } from '../../core/agent/context';
+import { attachmentFromFile, chipsOf, composeMessage, fileAttachment, imageAttachment, type Attachment, type AttachmentChip } from './attachments';
+import { loadSession, saveSession, sessionTitle, type SessionMeta } from './session-store';
+import { AttachmentChips, ContextRing, FilePicker, SessionHistory } from './panel-parts';
 import { clip, type Diff } from '../../core/agent/edits';
 import {
   DEFAULT_AGENT_MODEL,
@@ -46,12 +51,13 @@ import {
 } from '../../core/agent/protocol';
 import { agentBridge } from '../../platform/host';
 import { cx } from '../components';
-import { AGENT_TOOLS, runTool, type AgentWorkspace, type EditProposal } from './tools';
+import { AGENT_TOOLS, folderFiles, readForContext, runTool, type AgentWorkspace, type EditProposal } from './tools';
+import { MenuItem, Popover } from '../components';
 
 type Mode = 'agent' | 'chat';
 
 type Item =
-  | { kind: 'user'; id: string; text: string; note?: string }
+  | { kind: 'user'; id: string; text: string; note?: string; attachments?: AttachmentChip[] }
   | { kind: 'assistant'; id: string; text: string; reasoning: string; streaming: boolean; tool?: string; meta?: string }
   | { kind: 'tool'; id: string; label: string; status: 'running' | 'waiting' | 'done' | 'error' }
   | { kind: 'edit'; id: string; path: string; diff: Diff; isNew: boolean; status: 'pending' | 'applied' | 'rejected' | 'failed' }
@@ -165,7 +171,7 @@ function describeCall(call: AgentToolCall): string {
 
 function modelLabel(m: AgentModel): string {
   const ctx = formatContext(m.contextLength);
-  return `${m.id}${ctx ? ` · ${ctx}` : ''}`;
+  return `${m.id}${ctx ? ` · ${ctx}` : ''}${m.vision ? ' · sees images' : ''}`;
 }
 
 function modelTitle(m: AgentModel): string {
@@ -174,6 +180,7 @@ function modelTitle(m: AgentModel): string {
   if (m.contextLength) bits.push(`Context window: ${m.contextLength.toLocaleString()} tokens`);
   if (m.promptPrice !== undefined && m.completionPrice !== undefined) bits.push(`$${m.promptPrice} in / $${m.completionPrice} out per million tokens`);
   if (m.thinking) bits.push('Reasons before it answers (slower)');
+  if (m.vision) bits.push('Can look at pictures you attach');
   return bits.join('\n');
 }
 
@@ -363,6 +370,14 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
   const history = useRef<AgentMessage[]>([]);
+  /** files and pictures waiting to go with the next message */
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  /** this conversation in the saved sessions */
+  const sessionMeta = useRef<{ id: string; createdAt: number }>({ id: uid('s'), createdAt: Date.now() });
+  const [view, setView] = useState<'chat' | 'history'>('chat');
+  const [picking, setPicking] = useState(false);
+  /** the last answer's real prompt size against our estimate of it, to correct the context meter */
+  const calibration = useRef(1);
   /** bumps on New session, so a turn still winding down can't write into the new one */
   const session = useRef(0);
   const run = useRef<{ cancelled: boolean; requestId: string | null } | null>(null);
@@ -475,10 +490,16 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
 
   // ── one session turn: ask, run the tools it calls, ask again… ──
   const send = async () => {
-    const text = draft.trim();
-    if (!text || busy || !bridge || !usable || !model) return;
+    const typed = draft.trim();
+    if ((!typed && !attachments.length) || busy || !bridge || !usable || !model) return;
+    const pictures = attachments.filter((a) => a.kind === 'image').length;
+    if (pictures && chosen && !chosen.vision) {
+      add({ kind: 'notice', id: uid('n'), text: `${chosen.id} can’t look at pictures. Pick a model marked “sees images”, or remove the pictures.`, error: true });
+      return;
+    }
+    const text = typed || (pictures ? 'Look at the attached pictures.' : 'Look at the attached files.');
     const ws = getWorkspace();
-    let content = text;
+    let content: AgentMessage['content'] = text;
     let note: string | undefined;
     const sel = ws.active?.getSelection();
     if (sel && !sel.empty && sel.text.trim()) {
@@ -488,7 +509,11 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
       content = `Selected in ${path} (lines ${sel.fromLine}–${sel.toLine}):\n${fence}\n${picked}\n${fence}\n\n${text}`;
       note = `With the selection in ${ws.active!.name} (lines ${sel.fromLine}–${sel.toLine})`;
     }
+    const sent = attachments;
+    // attached files go before the words (cut to what the model can take), pictures after them
+    content = composeMessage(typeof content === 'string' ? content : text, sent, fileBudget(chosen?.contextLength ?? 0));
     setDraft('');
+    setAttachments([]);
     stick.current = true;
     const hist = history.current;
     const mine = session.current;
@@ -496,7 +521,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
     const show = (item: Item) => {
       if (session.current === mine) add(item);
     };
-    show({ kind: 'user', id: uid('u'), text, note });
+    show({ kind: 'user', id: uid('u'), text, note, attachments: sent.length ? chipsOf(sent) : undefined });
     hist.push({ role: 'user', content });
     const me = { cancelled: false, requestId: null as string | null };
     run.current = me;
@@ -508,7 +533,8 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
         const now = getWorkspace();
         const system = systemPrompt(mode, now, budget);
         const tools = mode === 'agent' && (now.folder || now.active) ? AGENT_TOOLS : undefined;
-        const { messages } = trimHistory(hist, historyBudget(ctx, OUTPUT_TOKENS) - system.length);
+        // older pictures become a note: a request carries a few at most
+        const { messages } = trimHistory(limitImages(hist, 4), historyBudget(ctx, OUTPUT_TOKENS) - system.length);
         const chatMessages: AgentMessage[] = [{ role: 'system', content: system }, ...messages];
         const promptTokens = Math.round(JSON.stringify(chatMessages).length / 4);
         /** One request, its answer streamed into a new assistant item. */
@@ -537,6 +563,11 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
           try {
             const res = await bridge.chat(rid, { model, messages: chatMessages, tools, maxTokens: OUTPUT_TOKENS, ...extra });
             if (res.ok && res.today) setUsage(res.today);
+            // how far off the context estimate was, so the meter shows real sizes
+            if (res.ok && res.usage?.promptTokens) {
+              const est = estimateTokens(system, messages);
+              if (est > 0) calibration.current = Math.max(0.3, Math.min(3, res.usage.promptTokens / est));
+            }
             else if (!res.ok) void refreshUsage();
             return { res, aid, buf };
           } finally {
@@ -629,6 +660,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
     } finally {
       if (run.current === me) run.current = null;
       setBusy(false);
+      if (session.current === mine) void persist();
       setItems((list) => list.map((i) => (i.kind === 'assistant' && i.streaming ? { ...i, streaming: false } : i)));
     }
   };
@@ -642,14 +674,101 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
     for (const resolve of [...approvals.current.values()]) resolve(false);
   }
 
+  // ── saved sessions ──
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+  const persist = useCallback(async () => {
+    const list = itemsRef.current;
+    const first = list.find((i) => i.kind === 'user');
+    if (!first || first.kind !== 'user') return;
+    const meta: SessionMeta = {
+      id: sessionMeta.current.id,
+      title: sessionTitle(first.text),
+      where: context.folder ?? context.file ?? '',
+      model,
+      mode,
+      createdAt: sessionMeta.current.createdAt,
+      updatedAt: Date.now(),
+      turns: list.filter((i) => i.kind === 'user').length,
+    };
+    // a change still waiting for approval can't be applied after reopening
+    const items = list.map((i) => (i.kind === 'edit' && i.status === 'pending' ? { ...i, status: 'rejected' as const } : i.kind === 'assistant' ? { ...i, streaming: false } : i));
+    await saveSession(meta, { id: meta.id, items, history: history.current }).catch(() => undefined);
+  }, [context.folder, context.file, model, mode]);
+
   const newSession = () => {
     stop();
+    void persist();
     session.current++;
+    sessionMeta.current = { id: uid('s'), createdAt: Date.now() };
     history.current = [];
+    calibration.current = 1;
     setItems([]);
+    setAttachments([]);
+    setView('chat');
+  };
+
+  const openSession = async (meta: SessionMeta) => {
+    if (busy) return;
+    const data = await loadSession<Item>(meta.id).catch(() => null);
+    if (!data) return add({ kind: 'notice', id: uid('n'), text: 'That session couldn’t be opened.', error: true });
+    void persist();
+    session.current++;
+    sessionMeta.current = { id: meta.id, createdAt: meta.createdAt };
+    history.current = data.history;
+    calibration.current = 1;
+    setItems([...data.items, { kind: 'notice', id: uid('n'), text: `Reopened “${meta.title}”. The agent continues with the files open now${meta.where ? ` (it worked on ${meta.where})` : ''}.` }]);
+    setAttachments([]);
+    if (models?.some((m) => m.id === meta.model)) setModel(meta.model);
+    setMode(meta.mode);
+    stick.current = true;
+    setView('chat');
   };
 
   const decide = (id: string, ok: boolean) => approvals.current.get(id)?.(ok);
+
+  // ── attachments ──
+  const attachFailed = (err: unknown) => add({ kind: 'notice', id: uid('n'), text: err instanceof Error ? err.message : 'That couldn’t be added.', error: true });
+  const addFiles = async (files: File[]) => {
+    for (const f of files.slice(0, 10)) {
+      try {
+        const a = await attachmentFromFile(f);
+        setAttachments((list) => [...list, a]);
+      } catch (err) {
+        attachFailed(err);
+      }
+    }
+  };
+  const attachScreenFile = () => {
+    const ws = getWorkspace();
+    if (!ws.active) return;
+    const path = activePath(ws) ?? ws.active.name;
+    setAttachments((list) => [...list.filter((a) => a.where !== path), fileAttachment(ws.active!.name, ws.active!.getText(), path)]);
+  };
+  const attachFolderFile = async (path: string) => {
+    const got = await readForContext(getWorkspace(), path);
+    if ('error' in got) return attachFailed(new Error(got.error));
+    const leaf = got.path.split('/').pop() ?? got.path;
+    try {
+      const a = 'image' in got ? await imageAttachment(got.image, leaf, got.path) : fileAttachment(leaf, got.text, got.path);
+      setAttachments((list) => [...list.filter((x) => x.where !== got.path), a]);
+    } catch (err) {
+      attachFailed(err);
+    }
+  };
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  // ── context window: how much of the model's context this conversation takes ──
+  const contextInfo = useMemo(() => {
+    const total = chosen?.contextLength ?? 0;
+    if (!total || !usable) return null;
+    const budget = fileBudget(total);
+    const system = systemPrompt(mode, getWorkspace(), budget);
+    const next: AgentMessage[] = attachments.length ? [{ role: 'user', content: composeMessage('', attachments, budget) }] : [];
+    const { messages, dropped } = trimHistory(limitImages([...history.current, ...next], 4), historyBudget(total, OUTPUT_TOKENS) - system.length);
+    return { used: Math.round(estimateTokens(system, messages) * calibration.current), total, dropped: dropped > 0 };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [items, attachments, chosen, mode, context, usable, busy]);
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
@@ -772,6 +891,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
                 return (
                   <div key={it.id} className="agent-msg agent-user">
                     {it.note && <div className="agent-user-note">{it.note}</div>}
+                    {it.attachments && <AttachmentChips chips={it.attachments} />}
                     <div className="agent-user-text">{it.text}</div>
                   </div>
                 );
@@ -827,7 +947,22 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
             }
           })}
         </div>
-        <div className="agent-composer">
+        <div
+          className="agent-composer"
+          onDragOver={(e) => {
+            if (e.dataTransfer.types.includes('Files')) {
+              e.preventDefault();
+              e.stopPropagation();
+            }
+          }}
+          onDrop={(e) => {
+            if (!e.dataTransfer.files.length) return;
+            // files dropped here go to the agent, not open in a tab
+            e.preventDefault();
+            e.stopPropagation();
+            void addFiles(Array.from(e.dataTransfer.files));
+          }}
+        >
           {pending && (
             <div className="agent-pending" role="alert">
               <Hand size={14} />
@@ -850,21 +985,67 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
             {context.file && <span className="agent-chip" title="The file on screen"><FileCode size={12} /> {context.file}</span>}
             {!context.folder && !context.file && <span className="agent-chip is-muted">No file open</span>}
           </div>
+          {attachments.length > 0 && (
+            <div className="agent-attachments">
+              {attachments.map((a) => (
+                <span key={a.id} className={cx('agent-attachment', a.kind === 'image' && 'is-image')} title={a.where ?? a.name}>
+                  {a.thumb ? <img src={a.thumb} alt="" /> : <FileCode size={12} />}
+                  <span className="agent-attachment-name">{a.kind === 'file' && a.where && a.where !== 'from this computer' ? a.where : a.name}</span>
+                  <button type="button" aria-label={`Remove ${a.name}`} onClick={() => setAttachments((list) => list.filter((x) => x.id !== a.id))}>
+                    <X size={11} />
+                  </button>
+                </span>
+              ))}
+              {attachments.some((a) => a.kind === 'image') && chosen && !chosen.vision && (
+                <span className="agent-attachment-warn"><AlertTriangle size={12} /> {chosen.id} can’t see pictures: pick a model marked “sees images”.</span>
+              )}
+            </div>
+          )}
           <textarea
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKey}
+            onPaste={(e) => {
+              // pasted screenshots and copied files become attachments
+              const files = Array.from(e.clipboardData.files);
+              if (!files.length) return;
+              e.preventDefault();
+              void addFiles(files);
+            }}
             placeholder={mode === 'agent' ? 'Ask the agent to change something…' : 'Ask about your code…'}
             rows={3}
             aria-label="Message to the agent"
             disabled={!models}
           />
           <div className="agent-composer-row">
-            <label className="agent-auto" title="Apply the agent’s changes as soon as it makes them, without a review step">
+            <Popover label="Add files or pictures" align="left" button={<Paperclip size={15} />} disabled={busy}>
+              {(close) => (
+                <div className="format-menu" role="menu" aria-label="Add to the message">
+                  <MenuItem disabled={!context.file} hint={context.file ?? undefined} onClick={() => (close(), attachScreenFile())}>
+                    The file on screen
+                  </MenuItem>
+                  <MenuItem disabled={!context.folder} onClick={() => (close(), setPicking(true))}>
+                    A file from {context.folder ?? 'the folder'}…
+                  </MenuItem>
+                  <MenuItem onClick={() => (close(), fileInput.current?.click())}>From this computer… (files, photos, screenshots)</MenuItem>
+                  <div className="menu-empty">Paste a screenshot (Ctrl+V) or drop files here too.</div>
+                </div>
+              )}
+            </Popover>
+            <input
+              ref={fileInput}
+              type="file"
+              multiple
+              hidden
+              onChange={(e) => {
+                void addFiles(Array.from(e.target.files ?? []));
+                e.target.value = '';
+              }}
+            />
+            <label className="agent-auto" title="Agent mode: apply the agent’s changes as soon as it makes them, without a review step">
               <input
                 type="checkbox"
                 checked={autoApply}
-                disabled={mode !== 'agent'}
                 onChange={(e) => {
                   setAutoApply(e.target.checked);
                   save(STORE.auto, e.target.checked ? '1' : '0');
@@ -875,7 +1056,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
             {busy ? (
               <button type="button" className="btn btn-sm agent-stop" onClick={stop}><Square size={13} /> Stop</button>
             ) : (
-              <button type="button" className="btn btn-primary btn-sm" onClick={() => void send()} disabled={!draft.trim() || !models}>
+              <button type="button" className="btn btn-primary btn-sm" onClick={() => void send()} disabled={(!draft.trim() && !attachments.length) || !models}>
                 <Send size={14} /> Send
               </button>
             )}
@@ -915,6 +1096,11 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
         )}
         <span className="spacer" />
         {usable && (
+          <button type="button" className={cx('agent-icon', view === 'history' && 'is-on')} title="Earlier sessions" aria-label="Earlier sessions" aria-pressed={view === 'history'} onClick={() => setView((v) => (v === 'history' ? 'chat' : 'history'))}>
+            <HistoryIcon size={15} />
+          </button>
+        )}
+        {usable && (
           <button type="button" className="agent-icon" title="New session" aria-label="New session" onClick={newSession}><SquarePen size={15} /></button>
         )}
         <button type="button" className="agent-icon" title="Close the agent (the session is kept)" aria-label="Close the agent" onClick={onClose}><X size={15} /></button>
@@ -944,8 +1130,27 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
           </button>
         </div>
       )}
-      {usable && usage && <UsageMeter usage={usage} live={liveTokens} />}
-      {body}
+      {usable && (usage || contextInfo) && (
+        <div className="agent-meters">
+          {usage ? <UsageMeter usage={usage} live={liveTokens} /> : <span className="spacer" />}
+          {contextInfo && <ContextRing used={contextInfo.used + (busy ? 0 : Math.round(draft.length / 3.2))} total={contextInfo.total} dropped={contextInfo.dropped} />}
+        </div>
+      )}
+      {usable && view === 'history' ? (
+        <SessionHistory currentId={sessionMeta.current.id} busy={busy} onOpen={(m) => void openSession(m)} onNew={newSession} onBack={() => setView('chat')} />
+      ) : (
+        body
+      )}
+      {picking && (
+        <FilePicker
+          getWorkspace={getWorkspace}
+          onPick={(path) => {
+            setPicking(false);
+            void attachFolderFile(path);
+          }}
+          onClose={() => setPicking(false)}
+        />
+      )}
     </aside>
   );
 }

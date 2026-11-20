@@ -467,3 +467,35 @@ async function writeFile(ws: AgentWorkspace, host: ToolHost, rawPath: unknown, c
   }
   return propose(ws, host, t, got ? got.text : null, content, (isNew) => writeText(ws, t, content, isNew, got ? got.bom : false));
 }
+
+/**
+ * A file of the folder (or the one on screen) for attaching to a message: its text as the agent
+ * would read it (open tabs with unsaved changes, Word files as text), or a picture's bytes.
+ */
+export async function readForContext(ws: AgentWorkspace, rawPath: string): Promise<{ text: string; path: string } | { image: Blob; path: string } | { error: string }> {
+  const t = resolveTarget(ws, rawPath);
+  if ('error' in t) return t;
+  if (t.kind === 'folder' && /\.(png|jpe?g|webp|gif|bmp|avif)$/i.test(t.path)) {
+    const blob = await t.folder.read(t.path);
+    return blob ? { image: blob, path: t.path } : { error: `${t.path} does not exist.` };
+  }
+  const got = await readText(t);
+  if (!got) return { error: `${t.path} does not exist.` };
+  if ('error' in got) return got;
+  return { text: got.text, path: t.path };
+}
+
+/** The files of the folder, for choosing one to attach (dependency folders left out). */
+export async function folderFiles(folder: OpenedFolder, limit = 3000): Promise<string[]> {
+  const out: string[] = [];
+  const queue = [''];
+  while (queue.length && out.length < limit) {
+    const dir = queue.shift()!;
+    for (const e of await folder.list(dir).catch(() => [])) {
+      if (e.kind === 'dir') {
+        if (!e.ignored && !IGNORED_DIRS.includes(e.name)) queue.push(e.path);
+      } else if (out.length < limit) out.push(e.path);
+    }
+  }
+  return out.sort((a, b) => a.localeCompare(b));
+}

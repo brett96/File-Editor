@@ -365,3 +365,34 @@ describe('agent requests (main process)', () => {
     expect(await agent.makeImage('i2', { mode: 'generate', model: 'z', prompt: 'x' })).toMatchObject({ ok: false, code: 'quota', error: "You've reached today's limit of 20 AI images." });
   });
 });
+
+describe('attachments and pictures', async () => {
+  const { composeMessage, fileAttachment } = await import('../src/ui/agent/attachments');
+  const { estimateTokens, limitImages, IMAGE_TOKENS } = await import('../src/core/agent/context');
+  const pic = 'data:image/png;base64,iVBORw0KGgo=';
+
+  it('puts attached files before the words, and pictures after them', () => {
+    expect(composeMessage('fix it', [fileAttachment('a.ts', 'let x = 1;', 'src/a.ts')], 1000)).toBe('Attached file src/a.ts:\n```\nlet x = 1;\n```\n\nfix it');
+    const withPic = composeMessage('what is this?', [{ id: 'i', kind: 'image', name: 'shot.png', dataUrl: pic }], 1000);
+    expect(withPic).toEqual([{ type: 'text', text: 'what is this?' }, { type: 'image_url', image_url: { url: pic } }]);
+    const long = composeMessage('x', [fileAttachment('big.txt', 'line\n'.repeat(1000))], 200);
+    expect(typeof long === 'string' && long).toContain('the rest was cut to fit');
+  });
+
+  it('sends well-formed pictures and refuses others', () => {
+    const ok = buildChatBody({ model: 'm', messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }, { type: 'image_url', image_url: { url: pic } }] }] });
+    expect('body' in ok && (ok.body.messages as { content: unknown }[])[0].content).toEqual([{ type: 'text', text: 'hi' }, { type: 'image_url', image_url: { url: pic } }]);
+    expect('error' in buildChatBody({ model: 'm', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'https://x.test/a.png' } }] }] })).toBe(true);
+    expect('error' in buildChatBody({ model: 'm', messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:text/html;base64,PGI+' } }] }] })).toBe(true);
+    const nine = Array.from({ length: 9 }, () => ({ type: 'image_url', image_url: { url: pic } }));
+    expect('error' in buildChatBody({ model: 'm', messages: [{ role: 'user', content: nine }] })).toBe(true);
+  });
+
+  it('keeps only the newest pictures, and counts pictures in the context estimate', () => {
+    const msg = (n: number): AgentMessage => ({ role: 'user', content: [{ type: 'text', text: `turn ${n}` }, { type: 'image_url', image_url: { url: pic } }] });
+    const limited = limitImages([msg(1), msg(2), msg(3)], 2);
+    expect(limited.map((m) => (m.content as { type: string }[]).map((p) => p.type).join(','))).toEqual(['text,text', 'text,image_url', 'text,image_url']);
+    const textOnly = estimateTokens('', [{ role: 'user', content: 'turn 1' }]);
+    expect(estimateTokens('', [msg(1)]) - textOnly).toBeGreaterThanOrEqual(IMAGE_TOKENS - 10);
+  });
+});

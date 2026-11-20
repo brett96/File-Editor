@@ -220,6 +220,18 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   Layer from AI Edit**: it sends the whole picture or only the active layer, and the result is
   added as a new layer above the active one, named after the description, so the original stays
   untouched (a picture larger than the canvas is scaled to fit and centred).
+- **Attachments.** The 📎 button adds the file on screen, a file of the opened folder (searchable
+  list) or files from the computer (text, Word / OpenDocument / RTF documents, pictures); pasting a
+  screenshot or dropping files on the message box works too. Files go into the message as text;
+  pictures go as images to models marked *sees images* (the panel warns before sending pictures to
+  one that can't). Pictures are scaled to at most 1568 px, and only the newest 4 are resent with
+  later turns (`src/ui/agent/attachments.ts`).
+- **Context ring.** Beside the usage meter, a ring shows how much of the model's context window
+  the conversation takes (instructions, files read, history and what is about to be sent),
+  corrected by the model's own token counts as answers come in. When it fills, the oldest turns
+  are left out.
+- **Earlier sessions.** Sessions are saved on this computer (IndexedDB, newest 100). The history
+  button lists them with search; open one to read it and carry on, or delete it.
 - **Usage meter.** Under the model list: today's requests and tokens against the license's
   daily limits, a bar that turns amber at 80% and red when used up, and when it resets. It
   updates while an answer streams (estimated) and with the server's figure after each request.

@@ -37,9 +37,27 @@ export interface AgentToolCall {
 
 export type AgentMessage =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
+  | { role: 'user'; content: string | AgentContentPart[] }
   | { role: 'assistant'; content: string | null; tool_calls?: AgentToolCall[] }
   | { role: 'tool'; tool_call_id: string; content: string };
+
+/** A piece of a user message: text, or a picture (a data URL) for models that can see images. */
+export type AgentContentPart = { type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } };
+
+/** Pictures in prompts: PNG, JPEG or WebP data URLs, a few per request, each a bounded size. */
+export const IMAGE_DATA_URL = /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/]+=*$/;
+export const MAX_IMAGE_CHARS = 1_500_000;
+export const MAX_IMAGES_PER_REQUEST = 8;
+
+/** The text of a message's content, pictures left out. */
+export function contentText(content: string | AgentContentPart[] | null): string {
+  if (content === null) return '';
+  if (typeof content === 'string') return content;
+  return content.map((p) => (p.type === 'text' ? p.text : '')).join('\n');
+}
+
+/** How many pictures a message's content has. */
+export const contentImages = (content: string | AgentContentPart[] | null): number => (Array.isArray(content) ? content.filter((p) => p.type === 'image_url').length : 0);
 
 export interface AgentToolSpec {
   type: 'function';
@@ -363,7 +381,8 @@ export class ChatAssembler {
 }
 
 // ── checking what the renderer asks for ────────────────────────────────────
-export const MAX_REQUEST_CHARS = 3_000_000;
+/** Stays under the license server's 4.5 MB request limit with room for the envelope. */
+export const MAX_REQUEST_CHARS = 4_000_000;
 export const MAX_OUTPUT_TOKENS = 16_384;
 const ROLES = new Set(['system', 'user', 'assistant', 'tool']);
 
@@ -377,6 +396,7 @@ export function buildChatBody(req: unknown): { body: Record<string, unknown> } |
   if (!isModelId(r.model)) return { error: 'Pick a model first.' };
   if (!Array.isArray(r.messages) || r.messages.length === 0 || r.messages.length > 400) return { error: 'The conversation is empty or too long. Start a new session.' };
   const messages: Record<string, unknown>[] = [];
+  let images = 0;
   for (const m of r.messages as unknown[]) {
     const msg = m as Record<string, unknown>;
     if (!msg || !ROLES.has(String(msg.role))) return { error: 'The conversation has a message the model cannot take.' };
@@ -394,6 +414,19 @@ export function buildChatBody(req: unknown): { body: Record<string, unknown> } |
         }));
       }
       messages.push(out);
+    } else if (msg.role === 'user' && Array.isArray(msg.content)) {
+      // text and pictures: only well-formed parts go out
+      const parts: AgentContentPart[] = [];
+      for (const raw of msg.content as Record<string, unknown>[]) {
+        if (raw?.type === 'text' && typeof raw.text === 'string') parts.push({ type: 'text', text: raw.text });
+        else if (raw?.type === 'image_url') {
+          const url = (raw.image_url as { url?: unknown } | undefined)?.url;
+          if (typeof url !== 'string' || !IMAGE_DATA_URL.test(url) || url.length > MAX_IMAGE_CHARS) return { error: 'A picture in the conversation is too large or not a PNG, JPEG or WebP.' };
+          if (++images > MAX_IMAGES_PER_REQUEST) return { error: `Up to ${MAX_IMAGES_PER_REQUEST} pictures fit in one conversation. Start a new session to send more.` };
+          parts.push({ type: 'image_url', image_url: { url } });
+        } else return { error: 'The conversation has a message part the model cannot take.' };
+      }
+      messages.push({ role: 'user', content: parts });
     } else {
       messages.push({ role: msg.role, content: content ?? '' });
     }

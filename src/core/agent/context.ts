@@ -2,7 +2,10 @@
  * Fitting a coding session into a model's context window. Models range from 8K to 1M tokens,
  * so how much of a file is sent, and how much history is kept, follows the chosen model.
  */
-import type { AgentMessage } from './protocol';
+import { contentImages, contentText, type AgentMessage } from './protocol';
+
+/** What one picture in a prompt costs, roughly, in tokens (most vision models: 500–1,500). */
+export const IMAGE_TOKENS = 1_000;
 
 /** Rough characters per token for source code and prose. */
 const CHARS_PER_TOKEN = 3.2;
@@ -20,7 +23,8 @@ export function historyBudget(contextTokens: number, outputTokens: number): numb
 }
 
 const size = (m: AgentMessage) =>
-  (m.content?.length ?? 0) + (m.role === 'assistant' && m.tool_calls ? m.tool_calls.reduce((n, c) => n + c.function.arguments.length + 40, 0) : 0) + 16;
+  contentText(m.content).length +
+  contentImages(m.content) * IMAGE_TOKENS * CHARS_PER_TOKEN + (m.role === 'assistant' && m.tool_calls ? m.tool_calls.reduce((n, c) => n + c.function.arguments.length + 40, 0) : 0) + 16;
 
 /**
  * Drops the oldest turns (a user message and everything after it up to the next one) until the
@@ -53,4 +57,33 @@ export function trimHistory(history: AgentMessage[], maxChars: number): { messag
     }
   }
   return { messages, dropped };
+}
+
+/**
+ * Roughly how many tokens a request of this system prompt and history takes (pictures counted
+ * at IMAGE_TOKENS each). The context meter shows this against the model's context window.
+ */
+export function estimateTokens(system: string, history: AgentMessage[]): number {
+  return Math.round((system.length + history.reduce((n, m) => n + size(m), 0)) / CHARS_PER_TOKEN);
+}
+
+/**
+ * Keeps the newest `max` pictures of a conversation and replaces older ones with a short note,
+ * so a long session with screenshots stays within what one request may carry.
+ */
+export function limitImages(history: AgentMessage[], max: number): AgentMessage[] {
+  let left = max;
+  const out = [...history];
+  for (let i = out.length - 1; i >= 0; i--) {
+    const m = out[i];
+    if (m.role !== 'user' || !Array.isArray(m.content)) continue;
+    const parts = [...m.content];
+    for (let k = parts.length - 1; k >= 0; k--) {
+      if (parts[k].type !== 'image_url') continue;
+      if (left > 0) left--;
+      else parts[k] = { type: 'text', text: '[a picture sent earlier in the conversation]' };
+    }
+    out[i] = { ...m, content: parts };
+  }
+  return out;
 }
