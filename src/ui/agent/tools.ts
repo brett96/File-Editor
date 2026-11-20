@@ -51,6 +51,8 @@ export interface ToolHost {
   confirm(proposal: EditProposal): Promise<boolean>;
   /** characters of one file / result the chosen model can take */
   budget: number;
+  /** Chat mode: the files can be looked at but not changed */
+  readOnly?: boolean;
 }
 
 const MAX_READ_BYTES = 4 * 1024 * 1024;
@@ -242,9 +244,15 @@ export async function runTool(call: AgentToolCall, host: ToolHost): Promise<{ re
       case 'search_files':
         return await searchFiles(ws, str(args.query), cleanPath(args.path), args.regex === true, args.case_sensitive === true);
       case 'edit_file':
-        return await editFile(ws, host, args.path, str(args.old_string), str(args.new_string), args.replace_all === true);
       case 'write_file':
-        return await writeFile(ws, host, args.path, str(args.content));
+        if (host.readOnly) {
+          return fail(
+            `Can't change ${cleanPath(args.path) || 'files'} in Chat mode`,
+            'Files can’t be changed in Chat mode. Show the change in your answer, and tell the user to switch to Agent mode (the Agent button at the top of this panel) to have it applied.',
+          );
+        }
+        if (call.function.name === 'write_file') return await writeFile(ws, host, args.path, str(args.content));
+        return await editFile(ws, host, args.path, str(args.old_string), str(args.new_string), args.replace_all === true);
       default:
         return fail(`Unknown tool ${call.function.name}`, `There is no tool called ${call.function.name}. Use list_files, read_file, search_files, edit_file or write_file.`);
     }
@@ -498,4 +506,36 @@ export async function folderFiles(folder: OpenedFolder, limit = 3000): Promise<s
     }
   }
   return out.sort((a, b) => a.localeCompare(b));
+}
+
+/** The tools for looking only (Chat mode): list, read and search. */
+export const READ_TOOLS = AGENT_TOOLS.filter((t) => ['list_files', 'read_file', 'search_files'].includes(t.function.name));
+
+const overviews = new Map<string, { at: number; text: string }>();
+
+/**
+ * A short map of the folder for the model's instructions (two levels, dependency folders not
+ * entered), so it knows the files are there and what they are called before it reads any.
+ */
+export async function folderOverview(folder: OpenedFolder, maxEntries = 150): Promise<string> {
+  const hit = overviews.get(folder.id);
+  if (hit && Date.now() - hit.at < 30_000) return hit.text;
+  const out: string[] = [];
+  let more = false;
+  const walk = async (dir: string, level: number, indent: string) => {
+    for (const e of await folder.list(dir).catch(() => [])) {
+      if (out.length >= maxEntries) {
+        more = true;
+        return;
+      }
+      if (e.kind === 'dir') {
+        out.push(`${indent}${e.name}/${e.ignored ? ' (dependencies; not listed)' : ''}`);
+        if (!e.ignored && level < 2) await walk(e.path, level + 1, `${indent}  `);
+      } else out.push(`${indent}${e.name}`);
+    }
+  };
+  await walk('', 1, '');
+  const text = `${out.join('\n')}${more ? '\n… (more; use list_files)' : ''}`;
+  overviews.set(folder.id, { at: Date.now(), text });
+  return text;
 }

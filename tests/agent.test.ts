@@ -4,7 +4,7 @@ import { applyEdit, lineDiff, minimalChange } from '../src/core/agent/edits';
 import { ChatAssembler, RepetitionDetector, SseParser, buildChatBody, errorFromResponse, formatContext, parseModels, parseUsageToday, type AgentMessage } from '../src/core/agent/protocol';
 import { memoryFolder } from '../src/platform/folders';
 import type { CodeEditorAccess } from '../src/ui/agent/editors';
-import { runTool, type AgentWorkspace, type EditProposal } from '../src/ui/agent/tools';
+import { READ_TOOLS, folderOverview, runTool, type AgentWorkspace, type EditProposal } from '../src/ui/agent/tools';
 
 describe('agent stream parsing', () => {
   it('splits server-sent events across chunk boundaries and skips comments', () => {
@@ -274,6 +274,20 @@ describe('agent tools', () => {
     const r = await runTool(call('edit_file', { path: 'src/a.ts', old_string: 'nope', new_string: 'x' }), host());
     expect(r.result).toMatch(/not found/);
     expect(approved).toHaveLength(0);
+  });
+
+  it('in Chat mode reads files but does not change them, and maps the folder', async () => {
+    expect(READ_TOOLS.map((t) => t.function.name)).toEqual(['list_files', 'read_file', 'search_files']);
+    const chat = { ...host(), readOnly: true };
+    expect((await runTool(call('read_file', { path: 'src/a.ts' }), chat)).result).toContain('export const a = 1;');
+    const refused = await runTool(call('edit_file', { path: 'src/a.ts', old_string: '= 1', new_string: '= 2' }), chat);
+    expect(refused.result).toMatch(/Chat mode.*Agent mode/s);
+    expect(approved).toHaveLength(0);
+    expect(await text('src/a.ts')).toBe('export const a = 1;\n');
+    const map = await folderOverview(ws.folder!);
+    expect(map).toContain('src/\n  a.ts');
+    expect(map).toContain('node_modules/ (dependencies; not listed)');
+    expect(map).not.toContain('index.js');
   });
 
   it('works on the one open file when no folder is open', async () => {

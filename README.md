@@ -220,6 +220,9 @@ The **Agent** panel (`src/ui/agent/`) runs coding sessions against
   Layer from AI Edit**: it sends the whole picture or only the active layer, and the result is
   added as a new layer above the active one, named after the description, so the original stays
   untouched (a picture larger than the canvas is scaled to fit and centred).
+- **Chat and Agent modes.** Both see the opened folder: each request carries a two-level map of
+  its files, and the model can list, read and search them. Agent mode also changes files (each
+  change reviewed); Chat mode only looks, and points to Agent mode when asked for changes.
 - **Attachments.** The 📎 button adds the file on screen, a file of the opened folder (searchable
   list) or files from the computer (text, Word / OpenDocument / RTF documents, pictures); pasting a
   screenshot or dropping files on the message box works too. Files go into the message as text;

@@ -51,7 +51,7 @@ import {
 } from '../../core/agent/protocol';
 import { agentBridge } from '../../platform/host';
 import { cx } from '../components';
-import { AGENT_TOOLS, folderFiles, readForContext, runTool, type AgentWorkspace, type EditProposal } from './tools';
+import { AGENT_TOOLS, READ_TOOLS, folderOverview, readForContext, runTool, type AgentWorkspace, type EditProposal } from './tools';
 import { MenuItem, Popover } from '../components';
 
 type Mode = 'agent' | 'chat';
@@ -98,7 +98,7 @@ function activePath(ws: AgentWorkspace): string | null {
   return a.folderId && ws.folder && a.folderId === ws.folder.id && a.path ? a.path : a.name;
 }
 
-function systemPrompt(mode: Mode, ws: AgentWorkspace, budget: number): string {
+function systemPrompt(mode: Mode, ws: AgentWorkspace, budget: number, overview?: string): string {
   const parts = ['You are the coding assistant built into File Editor, a desktop app for editing files and code.'];
   const path = activePath(ws);
   const canWork = !!(ws.folder || ws.active);
@@ -124,8 +124,15 @@ function systemPrompt(mode: Mode, ws: AgentWorkspace, budget: number): string {
     parts.push('No file or folder is open, so there is nothing to read or change. Answer the user directly, and suggest opening a folder (Open ▸ Open folder) to work on a project.');
   } else {
     parts.push('Answer the user’s questions about their code. Put code in fenced code blocks with the language name; the user can insert a block into the editor with one click. Be concise.');
-    if (ws.folder) parts.push(`The user has the project folder "${ws.folder.name}" open.`);
+    if (ws.folder) {
+      parts.push(
+        `The user has the project folder "${ws.folder.name}" open, and you can look at its files: list_files, search_files and read_file (paths relative to the folder, with "/"). ` +
+          'Read the files a question is about before answering; never say you can’t see the project. ' +
+          'In Chat mode you can’t change files: show changes in your answer, and if the user wants them made, tell them to switch to Agent mode (the Agent button at the top of this panel), where the changes are applied for them to review.',
+      );
+    }
   }
+  if (ws.folder && overview) parts.push(`Files in "${ws.folder.name}" (two levels):\n${overview}`);
   if (ws.active && path) {
     const sel = ws.active.getSelection();
     parts.push(`The file on screen is ${path}${sel ? `; the cursor is on line ${sel.cursorLine}` : ''}.`);
@@ -531,8 +538,11 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
     try {
       for (let step = 0; step < MAX_STEPS && !me.cancelled; step++) {
         const now = getWorkspace();
-        const system = systemPrompt(mode, now, budget);
-        const tools = mode === 'agent' && (now.folder || now.active) ? AGENT_TOOLS : undefined;
+        // a map of the folder, so the model knows its files are there (cached for a moment)
+        const overview = now.folder ? await folderOverview(now.folder).catch(() => undefined) : undefined;
+        const system = systemPrompt(mode, now, budget, overview);
+        // Agent mode reads and changes files; Chat mode can look at them but not change them
+        const tools = now.folder || now.active ? (mode === 'agent' ? AGENT_TOOLS : READ_TOOLS) : undefined;
         // older pictures become a note: a request carries a few at most
         const { messages } = trimHistory(limitImages(hist, 4), historyBudget(ctx, OUTPUT_TOKENS) - system.length);
         const chatMessages: AgentMessage[] = [{ role: 'system', content: system }, ...messages];
@@ -624,6 +634,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
           const { result, activity } = await runTool(call, {
             ws: getWorkspace,
             budget,
+            readOnly: mode !== 'agent',
             confirm: (p: EditProposal) => {
               editId = uid('e');
               const auto = autoApplyRef.current;
@@ -881,7 +892,9 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
                   ? hasWork
                     ? `Ask the agent to explain, fix or change ${context.folder ? `the files in ${context.folder}` : context.file}. It reads what it needs and shows each change for you to apply.`
                     : 'Open a folder (Open ▸ Open folder), a code file or a document, then ask the agent to work on it.'
-                  : 'Ask about the file on screen. Select text first to ask about just that.'}
+                  : context.folder
+                    ? `Ask about the files in ${context.folder} or the file on screen: Chat reads them but doesn’t change them. Switch to Agent to have changes made.`
+                    : 'Ask about the file on screen. Select text first to ask about just that.'}
               </p>
             </div>
           )}
@@ -1012,7 +1025,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
               e.preventDefault();
               void addFiles(files);
             }}
-            placeholder={mode === 'agent' ? 'Ask the agent to change something…' : 'Ask about your code…'}
+            placeholder={mode === 'agent' ? 'Ask the agent to change something…' : context.folder ? 'Ask about the files (Chat reads, Agent changes)…' : 'Ask about your code…'}
             rows={3}
             aria-label="Message to the agent"
             disabled={!models}
@@ -1082,7 +1095,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
                 role="radio"
                 aria-checked={mode === m}
                 className={cx(mode === m && 'is-active')}
-                title={m === 'agent' ? 'The agent reads your files and proposes changes' : 'Ask about the code on screen'}
+                title={m === 'agent' ? 'The agent reads your files and makes changes for you to review' : 'Ask questions: it reads the folder’s files but doesn’t change them'}
                 onClick={() => {
                   setMode(m);
                   save(STORE.mode, m);
