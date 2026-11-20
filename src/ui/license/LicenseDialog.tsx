@@ -119,10 +119,16 @@ export function LicenseDialog({ onClose, onActivated }: { onClose: () => void; o
                 <a href={state.purchaseUrl} target="_blank" rel="noopener noreferrer">
                   license page
                 </a>{' '}
-                with your key. The license is tied to this computer and can't be moved to another device.
+                with your key. To move the license to another computer, release it there first.
               </p>
             ) : (
-              <p className="dialog-hint">This lifetime license is tied to this computer and can't be moved to another device.</p>
+              <p className="dialog-hint">
+                This lifetime license works on one computer at a time. To move it to another computer, release it under Manage your license on the{' '}
+                <a href={state.purchaseUrl} target="_blank" rel="noopener noreferrer">
+                  license page
+                </a>
+                , then enter the key there.
+              </p>
             )}
           </div>
         </div>
@@ -187,7 +193,7 @@ export function LicenseDialog({ onClose, onActivated }: { onClose: () => void; o
             </p>
           )}
           <p className="dialog-hint">
-            A license activates on one device only and can't be moved later, so activate it on the computer you'll use. Activation sends the key and an
+            A license activates on one computer at a time (to move it, release it on the license page first). Activation sends the key and an
             anonymous id for this computer to the license server; your documents never leave this computer.
           </p>
           <p className="dialog-hint">

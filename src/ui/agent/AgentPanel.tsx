@@ -330,6 +330,14 @@ function untilReset(iso: string): string {
 }
 
 /** Today's use against the license's daily limits; `live` adds the request streaming right now. */
+const usd = (v: number) => (v > 0 && v < 0.01 ? '<$0.01' : `$${v.toFixed(2)}`);
+
+/** What a request costs at a model's listed prices (US dollars per million tokens); 0 when it lists none. */
+function costOf(model: AgentModel | null, promptTokens: number, outputTokens: number): number {
+  return ((model?.promptPrice ?? 0) * promptTokens + (model?.completionPrice ?? 0) * outputTokens) / 1e6;
+}
+
+/** `live`: the estimated cost of the request being answered now, in US dollars. */
 function UsageMeter({ usage, live }: { usage: AgentUsageToday; live: number }) {
   const [, tick] = useState(0);
   useEffect(() => {
@@ -337,8 +345,8 @@ function UsageMeter({ usage, live }: { usage: AgentUsageToday; live: number }) {
     return () => clearInterval(t);
   }, []);
   const requests = usage.requests;
-  const tokens = usage.tokens + live;
-  const share = Math.min(1, Math.max(requests / usage.dailyRequests, tokens / usage.dailyTokens));
+  const cost = usage.costUsd + live;
+  const share = Math.min(1, Math.max(requests / usage.dailyRequests, usage.dailyCostUsd ? cost / usage.dailyCostUsd : 0));
   const full = share >= 1 || usage.paused;
   const level = full ? 'is-full' : share >= 0.8 ? 'is-warn' : '';
   const left = full
@@ -354,14 +362,14 @@ function UsageMeter({ usage, live }: { usage: AgentUsageToday; live: number }) {
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuenow={Math.round(share * 100)}
-      title={`Today (UTC): ${requests.toLocaleString()} of ${usage.dailyRequests.toLocaleString()} requests and ${Math.round(tokens).toLocaleString()} of ${usage.dailyTokens.toLocaleString()} tokens${live ? ' (including the answer being written, estimated)' : ''}. Each step the agent takes is one request.`}
+      title={`Today (UTC): ${usd(cost)} of your ${usd(usage.dailyCostUsd)} daily allowance for model use${live ? ' (including the answer being written, estimated)' : ''}, and ${requests.toLocaleString()} of ${usage.dailyRequests.toLocaleString()} requests (${usage.tokens.toLocaleString()} tokens). Each step the agent takes is one request, priced by the model's tokens: longer conversations and pricier models cost more.`}
     >
       <div className="agent-usage-bar">
         <span style={{ width: `${Math.max(share * 100, share > 0 ? 2 : 0)}%` }} />
       </div>
       <div className="agent-usage-text">
         <span>
-          {requests.toLocaleString()}/{usage.dailyRequests.toLocaleString()} requests · {fmtTokens(tokens)}/{fmtTokens(usage.dailyTokens)} tokens
+          {usd(cost)}/{usd(usage.dailyCostUsd)} · {requests.toLocaleString()}/{usage.dailyRequests.toLocaleString()} requests
         </span>
         <span className="agent-usage-left">{left}</span>
       </div>
@@ -617,7 +625,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
             frame = 0;
             patch(aid, { text: buf.text, reasoning: buf.reasoning, tool: buf.tool } as Partial<Item>);
             // the usage meter counts this request as it goes (an estimate until the server's figure arrives)
-            setLiveTokens(promptTokens + Math.round((buf.text.length + buf.reasoning.length) / 4));
+            setLiveTokens(costOf(chosen, promptTokens, Math.round((buf.text.length + buf.reasoning.length) / 4)));
           };
           const off = bridge.onDelta((id, d) => {
             if (id !== rid) return;
@@ -626,7 +634,7 @@ export function AgentPanel({ hidden, onClose, getWorkspace, context, licenseVers
             if (d.tool) buf.tool = d.tool;
             if (!frame) frame = requestAnimationFrame(flush);
           });
-          setLiveTokens(promptTokens);
+          setLiveTokens(costOf(chosen, promptTokens, 0));
           try {
             let res = await bridge.chat(rid, { model, messages: chatMessages, tools, maxTokens, ...extra });
             // a provider that refuses that long an answer: ask again for a shorter one (and keep to it)
