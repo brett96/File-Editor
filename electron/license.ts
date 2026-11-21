@@ -29,7 +29,7 @@ import { dirname, join } from 'node:path';
 /** Base64 SPKI DER of the server's Ed25519 public key (Admin → Licenses shows the server's). */
 export const LICENSE_PUBLIC_KEY = 'MCowBQYDK2VwAyEAup+QSSXf7sveuyvbJCoTzkggXxsKEXggI27sgJkG01c=';
 const DEFAULT_API = 'https://license.bretttomita.com';
-const PURCHASE_URL = 'https://license.bretttomita.com';
+const PURCHASE_URL = 'https://license.bretttomita.com/file-editor';
 const TOKEN_VERSION = 'FE1';
 const TOKEN_TYPE = 'file-editor-license';
 const CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;

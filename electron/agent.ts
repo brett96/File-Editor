@@ -43,7 +43,7 @@ const IDLE_TIMEOUT_MS = 120_000;
 const REQUEST_TIMEOUT_MS = 320_000;
 const MAX_CONCURRENT = 3;
 const MAX_PER_MINUTE = 40;
-const PURCHASE_URL = 'https://license.bretttomita.com';
+const PURCHASE_URL = 'https://license.bretttomita.com/file-editor';
 
 let agentSession: Session | null = null;
 

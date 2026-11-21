@@ -4,7 +4,7 @@
  */
 
 const RELEASES_API = 'https://api.github.com/repos/brett96/File-Editor/releases/latest';
-export const LICENSE_PURCHASE_URL = 'https://license.bretttomita.com';
+export const LICENSE_PURCHASE_URL = 'https://license.bretttomita.com/file-editor';
 
 export type DesktopOs = 'windows' | 'mac' | 'other';
 

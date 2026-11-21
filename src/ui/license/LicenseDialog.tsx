@@ -33,7 +33,7 @@ export function LicenseDialog({ onClose, onActivated }: { onClose: () => void; o
 
   useEffect(() => {
     let live = true;
-    bridge?.get().then((s) => live && setState(s)).catch(() => live && setState({ status: 'unlicensed', purchaseUrl: 'https://license.bretttomita.com' }));
+    bridge?.get().then((s) => live && setState(s)).catch(() => live && setState({ status: 'unlicensed', purchaseUrl: 'https://license.bretttomita.com/file-editor' }));
     return () => {
       live = false;
     };
